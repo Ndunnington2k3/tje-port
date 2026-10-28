@@ -1,6 +1,7 @@
 #include "genesis.h"
 #include "m68k_rt.h"
 #include "vdp.h"
+#include "sound.h"
 #include "platform/platform.h"
 
 #include <setjmp.h>
@@ -94,6 +95,9 @@ void genesis_check_interrupts(void)
 
 static void end_of_frame(void)
 {
+    const int16_t *audio;
+    int n = snd_end_frame(&audio);
+    if (n > 0) plat_audio(audio, n);
     g_frame++;
     plat_present(vdp_framebuffer(), vdp_width(), VDP_HEIGHT, VDP_FB_PITCH);
     if (!plat_poll(g_pad)) {
@@ -109,6 +113,7 @@ void genesis_run_events(void)
     while ((int32_t)(R.cycles - R.next_event) >= 0) {
         in_events = 1;
         R.next_event += GEN_CYCLES_PER_LINE;
+        snd_line(line);
         if (line < VDP_HEIGHT) {
             vdp_render_line(line);
             /* horizontal interrupt counter runs during active display */
@@ -123,6 +128,7 @@ void genesis_run_events(void)
         if (line == VDP_HEIGHT) {
             vdp_set_vblank(1);
             vint_pending = 1;
+            snd_vint();
             end_of_frame();
         } else if (line == GEN_LINES_NTSC) {
             line = 0;
@@ -153,7 +159,7 @@ int genesis_load_state(const char *path)
 
 static uint32_t le32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
 
-/* Gens state layout: 68k regs at $80, VDP regs $FA, CRAM $112, VSRAM $192,
+/* Gens state layout: 68k regs at $80, VDP regs $FA, CRAM $112, VSRAM $192, YM2612 regs $1E4,
  * Z80 RAM $474, 68k RAM $2478 and VRAM $12478 (both big-endian byte order). */
 static void apply_state(const uint8_t *st)
 {
@@ -168,6 +174,7 @@ static void apply_state(const uint8_t *st)
         R.d[i] = le32(st + 0x80 + i * 4);
         R.a[i] = le32(st + 0xA0 + i * 4);
     }
+    snd_load_state(st + 0x474, st + 0x1E4);
 }
 
 int genesis_run(void)
@@ -175,6 +182,7 @@ int genesis_run(void)
     memset(&R, 0, sizeof R);
     memset(g_ram, 0, sizeof g_ram);
     vdp_reset();
+    snd_init(plat_audio_enabled());
     line = 0;
     hint_counter = 0;
     vint_pending = hint_pending = 0;

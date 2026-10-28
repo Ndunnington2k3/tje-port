@@ -4,7 +4,7 @@
  * Controls (player 1):  arrows = d-pad, Z = A, X = B, C = C, Enter = Start
  * Controls (player 2):  W/A/S/D = d-pad, J = A, K = B, L = C, Right Shift = Start
  * Game controllers are assigned to players 1 and 2 in the order they are connected.
- * F11 / Alt+Enter toggles fullscreen, Escape quits.
+ * F11 / Alt+Enter toggles fullscreen, Escape quits. --mute disables sound.
  */
 #include "platform/platform.h"
 #include "core/genesis.h"
@@ -22,17 +22,20 @@ static const char *rom_path = "tje.bin";
 static SDL_GameController *pads[2];
 static Uint64 next_frame_time;
 static int vsync_ok;
+static SDL_AudioDeviceID audio_dev;
+static int audio_on = 1;
 
 int plat_init(int argc, char **argv)
 {
     int i;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--state")) i++;  /* handled in main.c */
+        else if (!strcmp(argv[i], "--mute")) audio_on = 0;
         else if (argv[i][0] != '-') rom_path = argv[i];
     }
 
     SDL_SetMainReady();
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
@@ -58,6 +61,17 @@ int plat_init(int argc, char **argv)
                 vsync_ok = 0;
         }
     }
+    if (audio_on) {
+        SDL_AudioSpec want, have;
+        SDL_zero(want);
+        want.freq = 48000;
+        want.format = AUDIO_S16SYS;
+        want.channels = 2;
+        want.samples = 1024;
+        audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+        if (audio_dev) SDL_PauseAudioDevice(audio_dev, 0);
+        else { fprintf(stderr, "No audio: %s\n", SDL_GetError()); audio_on = 0; }
+    }
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
     SDL_RenderSetLogicalSize(renderer, 320, 224);
     next_frame_time = SDL_GetPerformanceCounter();
@@ -69,6 +83,7 @@ void plat_shutdown(void)
     int i;
     for (i = 0; i < 2; i++)
         if (pads[i]) SDL_GameControllerClose(pads[i]);
+    if (audio_dev) SDL_CloseAudioDevice(audio_dev);
     if (texture) SDL_DestroyTexture(texture);
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
@@ -76,6 +91,18 @@ void plat_shutdown(void)
 }
 
 const char *plat_rom_path(void) { return rom_path; }
+
+int plat_audio_enabled(void) { return audio_on; }
+
+void plat_audio(const int16_t *samples, int frames)
+{
+    Uint32 queued;
+    if (!audio_dev) return;
+    queued = SDL_GetQueuedAudioSize(audio_dev) / 4;
+    /* keep latency bounded: the game runs at ~59.92 fps, displays may run a bit faster */
+    if (queued > 48000 / 8) return;
+    SDL_QueueAudio(audio_dev, samples, (Uint32)frames * 4);
+}
 
 void plat_message(const char *title, const char *text)
 {

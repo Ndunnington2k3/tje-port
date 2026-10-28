@@ -8,6 +8,8 @@
  *                          (buttons: any of U D L R A B C S)
  *     --random SEED        after frame 500, mash random buttons (Start only rarely)
  *     --dumpram F:path     save the 64 KB of work RAM at frame F (repeatable)
+ *     --wav path.wav       emulate sound and record it to a WAV file
+ *     --audio              emulate sound (Z80, FM, PSG) without recording it
  *     --elevator N         every N frames, put ToeJam in the elevator (ELEVATOR_FLAG = 1)
  *                          (test hook: exercises level transitions)
  */
@@ -34,6 +36,9 @@ static unsigned random_seed;
 static uint16_t random_buttons;
 static unsigned random_left;
 static unsigned elevator_period;
+static FILE *wav;
+static int audio_flag;
+static uint32_t wav_frames;
 
 
 static uint16_t parse_buttons(const char *s)
@@ -82,6 +87,11 @@ int plat_init(int argc, char **argv)
             dumps[ndumps].frame = (unsigned)atoi(a);
             snprintf(dumps[ndumps].path, sizeof dumps[ndumps].path, "%s", c + 1);
             ndumps++;
+        } else if (!strcmp(argv[i], "--audio")) {
+            audio_flag = 1;
+        } else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
+            wav = fopen(argv[++i], "wb");
+            if (wav) { static const uint8_t hdr[44] = {0}; fwrite(hdr, 1, 44, wav); }
         } else if (!strcmp(argv[i], "--elevator") && i + 1 < argc) {
             elevator_period = (unsigned)atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--random") && i + 1 < argc) {
@@ -92,7 +102,40 @@ int plat_init(int argc, char **argv)
     return 0;
 }
 
-void plat_shutdown(void) {}
+static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
+
+void plat_shutdown(void)
+{
+    if (wav) {
+        uint8_t h[44];
+        memcpy(h, "RIFF\0\0\0\0WAVEfmt ", 16);
+        put32(h + 4, 36 + wav_frames * 4);
+        put32(h + 16, 16);
+        h[20] = 1; h[21] = 0; h[22] = 2; h[23] = 0;      /* PCM, stereo */
+        put32(h + 24, 48000);
+        put32(h + 28, 48000 * 4);
+        h[32] = 4; h[33] = 0; h[34] = 16; h[35] = 0;
+        memcpy(h + 36, "data", 4);
+        put32(h + 40, wav_frames * 4);
+        fseek(wav, 0, SEEK_SET);
+        fwrite(h, 1, 44, wav);
+        fclose(wav);
+        wav = NULL;
+    }
+}
+
+int plat_audio_enabled(void) { return wav != NULL || audio_flag; }
+
+void plat_audio(const int16_t *samples, int frames)
+{
+    int i;
+    if (!wav) return;
+    for (i = 0; i < frames * 2; i++) {  /* little-endian int16 */
+        fputc(samples[i] & 0xFF, wav);
+        fputc((samples[i] >> 8) & 0xFF, wav);
+    }
+    wav_frames += (uint32_t)frames;
+}
 
 const char *plat_rom_path(void) { return rom_path; }
 

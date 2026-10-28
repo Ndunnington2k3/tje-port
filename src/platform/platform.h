@@ -21,6 +21,11 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch);
 /* Read input into pad[0..1] (PAD_* bits from core/genesis.h). Returns 0 when the user quits. */
 int plat_poll(uint16_t pad[2]);
 
+/* Audio: return nonzero if this platform wants sound (emulating it costs CPU). */
+int plat_audio_enabled(void);
+/* Queue one frame's worth of audio: interleaved stereo int16 at 48 kHz. */
+void plat_audio(const int16_t *samples, int frames);
+
 /* Show an error/info message to the user. */
 void plat_message(const char *title, const char *text);
 

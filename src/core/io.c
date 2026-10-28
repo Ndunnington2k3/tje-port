@@ -2,14 +2,13 @@
  * Genesis I/O space: VDP ports, controller ports, Z80 area (RAM, YM2612),
  * PSG and system registers.
  *
- * Sound is a stub for now: register writes are accepted and dropped. The audio
- * interface (emulated FM or a native sound routine) plugs in here later.
+ * Sound hardware (Z80, YM2612, PSG) is handled in sound.c.
  */
 #include "m68k_rt.h"
 #include "genesis.h"
 #include "vdp.h"
+#include "sound.h"
 
-static uint8_t z80_ram[0x2000];
 static uint8_t pad_ctrl[3];     /* controller port control registers */
 static uint8_t pad_data[3];     /* last value written to data ports (TH output) */
 
@@ -43,11 +42,7 @@ static uint32_t read_pad(int port)
 
 uint32_t io_rd8(uint32_t a)
 {
-    if (a >= 0xA00000u && a < 0xA10000u) {
-        if (a < 0xA04000u) return z80_ram[a & 0x1FFF];
-        if (a < 0xA06000u) return 0x00;           /* YM2612 status: never busy */
-        return 0xFF;
-    }
+    if (a >= 0xA00000u && a < 0xA10000u) return snd_z80_area_read(a);
     if (a >= 0xA10000u && a < 0xA10020u) {
         switch (a & 0x1F) {
         case 0x01: return 0xA0;                   /* version: overseas, NTSC, no expansion */
@@ -60,7 +55,7 @@ uint32_t io_rd8(uint32_t a)
         default: return 0;
         }
     }
-    if (a >= 0xA11100u && a < 0xA11200u) return (a & 1) ? 0x00 : 0x00;  /* Z80 bus always granted */
+    if (a >= 0xA11100u && a < 0xA11200u) return (a & 1) ? 0x00 : snd_busreq_read();
     if (a >= 0xC00000u && a < 0xC00020u) {
         uint32_t w = io_rd16(a & ~1u);
         return (a & 1) ? (w & 0xFF) : (w >> 8);
@@ -78,7 +73,7 @@ uint32_t io_rd16(uint32_t a)
         default: return 0xFFFF;
         }
     }
-    if (a >= 0xA11100u && a < 0xA11200u) return 0x0000;  /* bus granted (bit 8 clear) */
+    if (a >= 0xA11100u && a < 0xA11200u) return snd_busreq_read() << 8;
     if (a >= 0xA00000u && a < 0xA10000u) {
         uint32_t b = io_rd8(a);
         return (b << 8) | b;
@@ -88,11 +83,9 @@ uint32_t io_rd16(uint32_t a)
 
 void io_wr8(uint32_t a, uint32_t v)
 {
-    if (a >= 0xA00000u && a < 0xA10000u) {
-        if (a < 0xA04000u) z80_ram[a & 0x1FFF] = (uint8_t)v;
-        /* YM2612 ports A04000-A04003: sound stub */
-        return;
-    }
+    if (a >= 0xA00000u && a < 0xA10000u) { snd_z80_area_write(a, v); return; }
+    if (a >= 0xA11100u && a < 0xA11200u) { if (!(a & 1)) snd_busreq_write(v << 8); return; }
+    if (a >= 0xA11200u && a < 0xA11300u) { if (!(a & 1)) snd_reset_write(v << 8); return; }
     if (a >= 0xA10000u && a < 0xA10020u) {
         switch (a & 0x1F) {
         case 0x03: pad_data[0] = (uint8_t)v; break;
@@ -106,11 +99,11 @@ void io_wr8(uint32_t a, uint32_t v)
         return;
     }
     if (a >= 0xC00000u && a < 0xC00020u) {
-        if ((a & 0x1E) == 0x10) return;        /* PSG: sound stub */
+        if ((a & 0x1E) == 0x10 || (a & 0x1E) == 0x12) { if (a & 1) snd_psg_write(v); return; }
         io_wr16(a & ~1u, (v << 8) | v);
         return;
     }
-    /* Z80 bus/reset, TMSS and anything else: ignored */
+    /* TMSS and anything else: ignored */
 }
 
 void io_wr16(uint32_t a, uint32_t v)
@@ -119,14 +112,16 @@ void io_wr16(uint32_t a, uint32_t v)
         switch (a & 0x1E) {
         case 0x00: case 0x02: vdp_write_data(v); return;
         case 0x04: case 0x06: vdp_write_control(v); return;
-        case 0x10: case 0x12: return;          /* PSG */
+        case 0x10: case 0x12: snd_psg_write(v & 0xFF); return;  /* PSG (word write: low byte) */
         default: return;
         }
     }
     if (a >= 0xA00000u && a < 0xA10000u) {
-        io_wr8(a, v >> 8);
+        snd_z80_area_write(a, v >> 8);
         return;
     }
+    if (a >= 0xA11100u && a < 0xA11200u) { snd_busreq_write(v); return; }
+    if (a >= 0xA11200u && a < 0xA11300u) { snd_reset_write(v); return; }
     if (a >= 0xA10000u && a < 0xA10020u) {
         io_wr8(a | 1, v & 0xFF);
         return;

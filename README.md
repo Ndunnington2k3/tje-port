@@ -13,8 +13,10 @@ Windows is the first (prototype) target. PSP and Nintendo 3DS are planned.
 - The whole game is translated to C (721 routines, ~54,000 68000 instructions) and runs natively:
   SEGA logo, intro, menus, Jam Out, one- and two-player games, split screen, presents, map.
 - Video: software renderer of the Genesis VDP (planes, window, sprites, scrolling, DMA).
-- **Sound: not yet** (the sound chip writes are accepted and ignored).
-- Tested with hours of automated random play without errors.
+- Sound: emulated - the game's Z80 sound driver runs on a Z80 core and drives an emulated
+  YM2612 FM chip (Nuked-OPN2) and PSG. A native sound routine can replace this later.
+- Tested from boot and from save states on all 26 levels with automated random play
+  (`tools/stress_test.py`), with no errors.
 
 ## How it works
 
@@ -39,6 +41,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 | `src/platform` | Platform backends: `sdl2` (desktop), `null` (headless testing) |
 | `src/game` | Hand-ported game code that replaces translated routines (coming) |
 | `src/generated` | Translator output (local only) |
+| `third_party` | Nuked-OPN2 (YM2612, LGPL-2.1) and superzazu/z80 (MIT) |
 
 ## Building on Windows
 
@@ -67,6 +70,12 @@ build\Release\tje.exe "..\..\Toejam & Earl (U) (REV 00) [!].bin"
 
 With MinGW the executable is `build\tje.exe` instead of `build\Release\tje.exe`.
 
+Options:
+
+- `--state "<path>\Level 12.gsx"` - start from a Gens save state (the disassembly ships one for every
+  level in `Resources\Save States`), handy as a level select while developing.
+- `--mute` - no sound (saves CPU).
+
 ## Controls
 
 | | Player 1 | Player 2 |
@@ -87,7 +96,21 @@ tje_headless <rom> --frames 3000 --press 600:5:S --shot 1200:frame.ppm
 tje_headless <rom> --frames 40000 --random 7       # mash random buttons for ~11 minutes
 ```
 
-Any untranslated call, bad jump or stack imbalance is reported on stderr.
+Any untranslated call, bad jump or stack imbalance is reported on stderr. More options:
+`--state file.gsx`, `--wav out.wav` (record the sound), `--audio`, `--dumpram F:file`.
+
+`tools/stress_test.py` runs many of these in parallel - from boot and from every save state - and
+reports failures. Build with `-DCMAKE_C_FLAGS=-DTJE_COVERAGE` to also get a report of which
+translated routines ran:
+
+```
+python tools/stress_test.py --exe build/tje_headless --rom tje.bin --states "<disassembly>\Resources\Save States" --frames 20000 --seeds 2
+```
+
+## Third-party code
+
+- `third_party/nuked-opn2` - Nuked-OPN2 by nukeykt, YM2612 emulator, LGPL-2.1
+- `third_party/z80` - z80 by Nicolas Allemand (superzazu), MIT
 
 ## Legal
 

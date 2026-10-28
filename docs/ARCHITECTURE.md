@@ -80,11 +80,37 @@ sprites with link list, per-line limits and masking, priorities). Not yet: shado
 Later, level and sprite drawing move to a native renderer that can show a wider view and use the GPU on
 PSP and 3DS; the software VDP stays as the reference.
 
-## Audio
+## Audio (src/core/sound.c)
 
-Not implemented yet. The game writes the YM2612 directly from the 68000 and also uploads a small Z80
-program (likely for speech samples). Planned: an audio interface with an emulated YM2612 + PSG + Z80
-backend, and a native sound routine.
+The game uploads a Z80 sound driver (`Z80SetupData`, ~1.3 KB) that plays the music; the 68000 also
+writes FM registers directly and talks to the driver through Z80 RAM ($A00040...).
+
+- Z80: superzazu/z80, with the Genesis Z80 memory map (RAM, YM2612 at $4000, bank register at $6000,
+  PSG at $7F11, 68000 window at $8000). Bus request / reset lines are modelled; VBlank raises its INT.
+- YM2612: Nuked-OPN2 in YM2612 mode, clocked at its internal rate (68k clock / 6, 24 cycles per sample
+  = 53,267 Hz). The YM busy flag reads as clear so polling loops don't stall between scanlines.
+- PSG: small SN76489 model (only used at boot to silence it).
+- Timing: the Z80 and FM chip catch up to the 68000's cycle count whenever either side touches them and
+  once per scanline, so register writes keep their order and timing.
+- Output: resampled to 48 kHz with a DC-blocking filter, passed to `plat_audio()` once per frame.
+
+The music deliberately sounds rough in places: several instruments use operator feedback 6-7, which is
+noisy on the real chip too.
+
+Planned: a native sound routine behind the same `snd_*` calls, and a lighter FM core for PSP/3DS.
+
+## Save states
+
+`--state` loads a Gens save state (RAM, VRAM, CRAM, VSRAM, VDP registers, Z80 RAM, FM registers) and
+calls `InGameLoop` with the stack pointer the main loop uses ($FF7FE4). The translator exports
+`InGameLoop` as an entry point for this.
+
+## Testing
+
+`tools/stress_test.py` runs the headless build from boot and from every level's save state with random
+input (and optionally forced elevator rides and sound emulation), in parallel, and fails on any fatal
+error, bad jump table target or stack imbalance. Coverage builds (`-DTJE_COVERAGE`) record which
+translated routines ran.
 
 ## Verifying rewrites (planned)
 

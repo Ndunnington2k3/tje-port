@@ -21,8 +21,12 @@ add_library(tje_core STATIC
     src/core/genesis.c
     src/core/vdp.c
     src/core/io.c
+    src/core/sound.c
+    third_party/nuked-opn2/ym3438.c
+    third_party/z80/z80.c
     ${TJE_GENERATED_SOURCES})
 target_include_directories(tje_core PUBLIC src src/generated)
+target_include_directories(tje_core PRIVATE third_party/nuked-opn2 third_party/z80)
 
 if(MSVC)
     # The generated functions are large and goto-heavy; keep MSVC happy.

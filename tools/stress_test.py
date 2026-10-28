@@ -20,7 +20,7 @@ import sys
 import tempfile
 
 
-def run_one(exe, rom, state, seed, frames, elevator, workdir):
+def run_one(exe, rom, state, seed, frames, elevator, workdir, audio):
     tag = (os.path.splitext(os.path.basename(state))[0] if state else 'boot') + f' seed{seed}'
     cov = os.path.join(workdir, re.sub(r'[^A-Za-z0-9]+', '_', tag) + '.cov')
     cmd = [exe, rom, '--frames', str(frames), '--random', str(seed)]
@@ -30,6 +30,8 @@ def run_one(exe, rom, state, seed, frames, elevator, workdir):
         cmd += ['--press', '600:5:S', '--press', '700:5:S', '--press', '800:5:S', '--press', '900:5:S']
     if elevator:
         cmd += ['--elevator', str(elevator)]
+    if audio:
+        cmd += ['--audio']
     env = dict(os.environ, TJE_COVERAGE_OUT=cov)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
@@ -50,6 +52,7 @@ def main():
     ap.add_argument('--frames', type=int, default=20000)
     ap.add_argument('--seeds', type=int, default=2)
     ap.add_argument('--elevator', type=int, default=1500, help='force an elevator ride every N frames (0 = off)')
+    ap.add_argument('--audio', action='store_true', help='emulate sound too (Z80 + FM + PSG)')
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 2)
     ap.add_argument('--coverage-out', help='write merged coverage here')
     args = ap.parse_args()
@@ -59,7 +62,7 @@ def main():
         states += sorted(glob.glob(os.path.join(args.states, '*.gs*')),
                          key=lambda p: [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', p)])
     work = tempfile.mkdtemp(prefix='tje_stress_')
-    jobs = [(args.exe, args.rom, st, seed, args.frames, args.elevator, work)
+    jobs = [(args.exe, args.rom, st, seed, args.frames, args.elevator, work, args.audio)
             for st in states for seed in range(1, args.seeds + 1)]
     failures = 0
     merged = {}
