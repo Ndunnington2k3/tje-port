@@ -114,6 +114,18 @@ calls `InGameLoop` with the stack pointer the main loop uses ($FF7FE4). The tran
 
 ## Testing
 
+**Per-instruction check against a reference 68000** (`tools/isa_test`, CMake option
+`TJE_BUILD_ISA_TEST`): `generate.py` also writes `src/generated/isa_cases.c`, one C function per distinct
+instruction in the game (~13,300) containing exactly the code the translator emits for it. `isa_test`
+runs each from many random register/flag/RAM states, both as that C and on Musashi (fetched by CMake),
+and compares registers, condition codes, memory and branch decisions. Result so far: 13.3 million
+trials, 0 mismatches. Not compared: flags the 68000 leaves undefined, and C after a DIVU/DIVS overflow
+(the manual says cleared, which we do; Musashi leaves it). Odd-address word/long accesses (address
+errors on hardware) are skipped.
+
+The decoder also enforces the 68000's addressing-mode rules, so data that only *looks* like code
+(e.g. offset tables decoding as `ORI.b #x,D3`, or `ORI` to an address register) is rejected.
+
 `tools/stress_test.py` runs the headless build from boot and from every level's save state with random
 input (and optionally forced elevator rides and sound emulation), in parallel, and fails on any fatal
 error, bad jump table target or stack imbalance. Coverage builds (`-DTJE_COVERAGE`) record which

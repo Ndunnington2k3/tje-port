@@ -75,8 +75,8 @@ static inline uint32_t rd16(uint32_t a)
 {
     a &= 0xFFFFFFu;
     if (a >= 0xE00000u) {
-        const uint8_t *p = g_ram + (a & 0xFFFFu);
-        return ((uint32_t)p[0] << 8) | p[1];
+        /* second byte index wraps so an (invalid) odd access at $FFFFFF stays in bounds */
+        return ((uint32_t)g_ram[a & 0xFFFFu] << 8) | g_ram[(a + 1) & 0xFFFFu];
     }
     if (a < 0x400000u) {
         if (a + 1 < g_rom_size) return ((uint32_t)g_rom[a] << 8) | g_rom[a + 1];
@@ -107,9 +107,8 @@ static inline void wr16(uint32_t a, uint32_t v)
 {
     a &= 0xFFFFFFu;
     if (a >= 0xE00000u) {
-        uint8_t *p = g_ram + (a & 0xFFFFu);
-        p[0] = (uint8_t)(v >> 8);
-        p[1] = (uint8_t)v;
+        g_ram[a & 0xFFFFu] = (uint8_t)(v >> 8);
+        g_ram[(a + 1) & 0xFFFFu] = (uint8_t)v;
         return;
     }
     if (a < 0x400000u) return;

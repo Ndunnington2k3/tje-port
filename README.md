@@ -110,10 +110,20 @@ translated routines ran:
 python tools/stress_test.py --exe build/tje_headless --rom tje.bin --states "<disassembly>\Resources\Save States" --frames 20000 --seeds 2
 ```
 
+To check the translator itself, instruction by instruction, against a reference 68000 (Musashi,
+downloaded by CMake):
+
+```
+cmake -S . -B build_isa -DTJE_BUILD_ISA_TEST=ON
+cmake --build build_isa --target isa_test --config Release
+build_isa\Release\isa_test.exe tje.bin 256
+```
+
 ## Third-party code
 
 - `third_party/nuked-opn2` - Nuked-OPN2 by nukeykt, YM2612 emulator, LGPL-2.1
 - `third_party/z80` - z80 by Nicolas Allemand (superzazu), MIT
+- Musashi (68000 emulator, MIT) - downloaded only for the optional `isa_test` checker
 
 ## Legal
 

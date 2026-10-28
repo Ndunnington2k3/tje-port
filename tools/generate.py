@@ -71,10 +71,11 @@ def main():
         verify_with_vasm(entire, src_dir, args.rom, find_vasm(args.vasm), args.keep)
 
     for f in os.listdir(args.out) if os.path.isdir(args.out) else []:
-        if f.startswith('gen_') and (f.endswith('.c') or f.endswith('.h')):
+        if (f.startswith('gen_') and (f.endswith('.c') or f.endswith('.h'))) or f == 'isa_cases.c':
             os.remove(os.path.join(args.out, f))
     rc = subprocess.call([sys.executable, os.path.join(HERE, 'm68k2c', 'm68k2c.py'),
-                          '--source', entire, '--rom', args.rom, '--out', args.out])
+                          '--source', entire, '--rom', args.rom, '--out', args.out,
+                          '--isa-test', os.path.join(args.out, 'isa_cases.c')])
     if rc != 0:
         sys.exit(rc)
     print('done: translated code is in', args.out)

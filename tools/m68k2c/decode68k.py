@@ -156,6 +156,7 @@ class Decoder:
         ins.addr = addr
         ins.raw = op
         ins.length = self.p - addr
+        validate(ins)
         return ins
 
     def _decode(self, a, op):
@@ -355,3 +356,95 @@ class Decoder:
         if opmode < 4:
             return Instr(a, 0, name, size, [self.ea(mode, reg, size), EA('dn', reg9)])
         return Instr(a, 0, name, size, [EA('dn', reg9), self.ea(mode, reg, size)])
+
+
+# ---------------------------------------------------------------------------
+# Addressing-mode legality (68000). Real code always obeys these; rejecting
+# illegal combinations stops data from being mistaken for code.
+# ---------------------------------------------------------------------------
+MEM = {'ind', 'postinc', 'predec', 'disp', 'idx', 'absw', 'absl'}
+PCREL = {'pcdisp', 'pcidx'}
+DATA_ALT = {'dn'} | MEM
+ALTERABLE = DATA_ALT | {'an'}
+MEM_ALT = MEM
+CONTROL = {'ind', 'disp', 'idx', 'absw', 'absl'} | PCREL
+DATA = {'dn', 'imm'} | MEM | PCREL
+ANY = DATA | {'an'}
+
+
+def _need(ins, ea, allowed):
+    if ea.mode not in allowed:
+        raise DecodeError(f'illegal addressing mode {ea.mode} for {ins.op} at {ins.addr:06X}')
+
+
+def validate(ins):
+    op, o, sz = ins.op, ins.ops, ins.size
+    if op in ('ori', 'andi', 'eori'):
+        if o[1].mode in ('ccr', 'sr'):
+            return
+        _need(ins, o[1], DATA_ALT)
+    elif op in ('addi', 'subi', 'cmpi'):
+        _need(ins, o[1], DATA_ALT)
+    elif op in ('addq', 'subq'):
+        _need(ins, o[1], ALTERABLE)
+        if sz == 'b' and o[1].mode == 'an':
+            raise DecodeError('byte operation on address register')
+    elif op == 'move':
+        if o[0].mode in ('sr', 'ccr', 'usp') or o[1].mode in ('sr', 'ccr', 'usp'):
+            src = o[0]
+            if o[1].mode in ('sr', 'ccr'):
+                _need(ins, src, DATA)
+            elif o[0].mode == 'sr':
+                _need(ins, o[1], DATA_ALT)
+            return
+        _need(ins, o[0], ANY)
+        _need(ins, o[1], DATA_ALT)
+        if sz == 'b' and o[0].mode == 'an':
+            raise DecodeError('byte move from address register')
+    elif op == 'movea':
+        _need(ins, o[0], ANY)
+        if sz == 'b':
+            raise DecodeError('movea.b')
+    elif op in ('lea', 'pea', 'jmp', 'jsr'):
+        _need(ins, o[0], CONTROL)
+    elif op == 'movem':
+        if o[0].mode == 'reglist':
+            _need(ins, o[1], (CONTROL - PCREL) | {'predec'})
+        else:
+            _need(ins, o[0], CONTROL | {'postinc'})
+    elif op in ('clr', 'neg', 'negx', 'not', 'scc', 'nbcd', 'tas'):
+        _need(ins, o[0], DATA_ALT)
+    elif op == 'tst':
+        _need(ins, o[0], DATA_ALT)
+    elif op in ('add', 'sub'):
+        if o[1].mode == 'dn':
+            _need(ins, o[0], ANY)
+            if sz == 'b' and o[0].mode == 'an':
+                raise DecodeError('byte op from address register')
+        else:
+            _need(ins, o[1], MEM_ALT)
+    elif op in ('and', 'or'):
+        if o[1].mode == 'dn':
+            _need(ins, o[0], DATA)
+        else:
+            _need(ins, o[1], MEM_ALT)
+    elif op == 'cmp':
+        _need(ins, o[0], ANY)
+        if sz == 'b' and o[0].mode == 'an':
+            raise DecodeError('cmp.b from address register')
+    elif op in ('adda', 'suba', 'cmpa'):
+        _need(ins, o[0], ANY)
+    elif op == 'eor':
+        _need(ins, o[1], DATA_ALT)
+    elif op in ('mulu', 'muls', 'divu', 'divs', 'chk'):
+        _need(ins, o[0], DATA)
+    elif op in ('asl', 'asr', 'lsl', 'lsr', 'rol', 'ror', 'roxl', 'roxr'):
+        if o[1].mode != 'dn':
+            _need(ins, o[1], MEM_ALT)
+    elif op == 'btst':
+        if o[0].mode == 'imm':
+            _need(ins, o[1], DATA_ALT | PCREL)
+        else:
+            _need(ins, o[1], DATA)
+    elif op in ('bchg', 'bclr', 'bset'):
+        _need(ins, o[1], DATA_ALT)

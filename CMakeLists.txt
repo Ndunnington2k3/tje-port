@@ -7,8 +7,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 option(TJE_BUILD_SDL2 "Build the SDL2 desktop executable (tje)" ON)
 option(TJE_BUILD_HEADLESS "Build the headless test executable (tje_headless)" ON)
 option(TJE_FETCH_SDL2 "Download and build SDL2 if it is not installed" ON)
+option(TJE_BUILD_ISA_TEST "Build isa_test: every translated instruction vs a reference 68000 (downloads Musashi)" OFF)
 
-file(GLOB TJE_GENERATED_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/generated/*.c)
+file(GLOB TJE_GENERATED_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/generated/gen_*.c)
 if(NOT TJE_GENERATED_SOURCES)
     message(FATAL_ERROR
         "src/generated is empty. Run tools/generate.py first to translate the game code:\n"
@@ -58,5 +59,33 @@ if(TJE_BUILD_SDL2)
         target_link_libraries(tje PRIVATE tje_core SDL2::SDL2-static)
     else()
         target_link_libraries(tje PRIVATE tje_core SDL2::SDL2)
+    endif()
+endif()
+
+if(TJE_BUILD_ISA_TEST)
+    # Musashi (MIT) as the reference 68000. It generates its opcode table with a small tool.
+    include(FetchContent)
+    FetchContent_Declare(musashi
+        GIT_REPOSITORY https://github.com/kstenerud/Musashi.git
+        GIT_TAG 313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd)
+    FetchContent_MakeAvailable(musashi)
+    set(MUSASHI_GEN ${CMAKE_BINARY_DIR}/musashi_gen)
+    add_executable(m68kmake ${musashi_SOURCE_DIR}/m68kmake.c)
+    add_custom_command(
+        OUTPUT ${MUSASHI_GEN}/m68kops.c ${MUSASHI_GEN}/m68kops.h
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${MUSASHI_GEN}
+        COMMAND m68kmake ${MUSASHI_GEN} ${musashi_SOURCE_DIR}/m68k_in.c
+        DEPENDS m68kmake ${musashi_SOURCE_DIR}/m68k_in.c)
+    add_executable(isa_test
+        tools/isa_test/isa_test.c
+        ${CMAKE_SOURCE_DIR}/src/generated/isa_cases.c
+        ${musashi_SOURCE_DIR}/m68kcpu.c
+        ${musashi_SOURCE_DIR}/m68kdasm.c
+        ${musashi_SOURCE_DIR}/softfloat/softfloat.c
+        ${MUSASHI_GEN}/m68kops.c)
+    target_include_directories(isa_test PRIVATE src tools/isa_test ${musashi_SOURCE_DIR} ${MUSASHI_GEN})
+    if(NOT MSVC)
+        target_compile_options(isa_test PRIVATE -w)
+        target_link_libraries(isa_test PRIVATE m)
     endif()
 endif()
