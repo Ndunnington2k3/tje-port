@@ -21,13 +21,16 @@ Game code never calls SDL or any platform API directly.
 
 ## Producing the translation
 
-`tools/generate.py`:
+`tools/generate.py` runs `tools/m68k2c/m68k2c.py --source Source/EntireSource.X68 --rom <ROM>`.
 
-1. Takes `Source/EntireSource.X68` from the disassembly, makes `INCBIN` paths absolute and rewrites two
-   `JSR (-$xxx,PC)` lines that newer vasm releases reject (to the identical bytes as `DC.w`).
-2. Assembles it with vasm to get a listing: the address of every line, its label and source text.
-3. Refuses to continue unless the assembled binary is byte-identical to the user's ROM.
-4. Runs `tools/m68k2c/m68k2c.py`.
+`srcmap.py` finds the address of every source line without an assembler, by walking the source and the
+ROM together (the disassembly is byte-identical to the ROM): instructions take the length the decoder
+finds, `DC.B/W/L` their item sizes, `INCBIN` the file size. It stops with an error if any instruction's
+mnemonic differs from the ROM, any literal data differs, or the total isn't the ROM size. This gives the
+same layout as a vasm listing (checked), with untruncated comments.
+
+Optionally (`--vasm`) the source is also assembled and compared byte for byte with the ROM; two
+`JSR (-$xxx,PC)` lines that newer vasm releases reject are rewritten to identical bytes for that.
 
 ## Translator (tools/m68k2c)
 
@@ -59,8 +62,12 @@ Game code never calls SDL or any platform API directly.
 
 ## Timing and interrupts
 
-- Each basic block adds an estimate of its 68000 cycle cost (`CY(n)`). Loop heads and function entries
-  check whether a scanline's worth of cycles (488) has passed (`RT_POLL`).
+- Each basic block adds its 68000 cycle cost (`CY(n)`), from the Motorola timing tables
+  (`tools/m68k2c/timing68k.py`; branches costed as taken, data-dependent ops at typical values).
+- 68000→VDP DMA stalls the CPU for as long as the real transfer takes (205 bytes per line in blanking,
+  18 during active display, in H40 mode), so frames with big transfers take as long as on hardware.
+- Loop heads and function entries check whether a scanline's worth of cycles (488) has passed
+  (`RT_POLL`).
 - Each scanline the VDP renders one line; the horizontal interrupt counter runs; at line 224 the frame
   is presented, input is read, and the vertical interrupt is raised. Interrupts are delivered by calling
   the handler's C function directly when the SR mask allows it.

@@ -3,15 +3,19 @@
 
     python tools/generate.py --disasm <disassembly 'master' folder> --rom <ROM .bin> [--vasm <vasmm68k_mot>]
 
-Steps:
- 1. Copy Source/EntireSource.X68 to a work folder, normalising INCBIN paths and
-    two PC-relative JSRs that newer vasm versions reject (bytes are unchanged).
- 2. Assemble it with vasm to get a listing (addresses of every line).
- 3. Check the assembled binary is byte-identical to your ROM.
- 4. Run tools/m68k2c to write the C translation into src/generated/.
+By default no assembler is needed: tools/m68k2c/srcmap.py walks
+Source/EntireSource.X68 and the ROM side by side to find each line's address,
+checking every instruction and literal data byte against the ROM.
+
+With --vasm, the source is also assembled and the result must be byte-identical
+to the ROM (an extra check; the translation itself still uses the source map):
+ 1. Copy EntireSource.X68 to a work folder, making INCBIN paths absolute and
+    rewriting two PC-relative JSRs that newer vasm versions reject (same bytes).
+ 2. Assemble with vasm and compare with the ROM.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -21,6 +25,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+
+# SHA-1 of "Toejam & Earl (U) (REV 00) [!].bin", the ROM the disassembly reproduces
+KNOWN_ROM_SHA1 = '7f82d8b57fff88bdca5d8aff85b01e231dc1239a'
 
 VASM_CANDIDATES = [
     'vasmm68k_mot', 'vasmm68k_mot.exe', 'vasmm68k_mot_win32.exe',
@@ -47,17 +54,33 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--disasm', required=True, help="the disassembly folder that contains 'Source'")
     ap.add_argument('--rom', required=True, help='ToeJam & Earl (U) (REV 00) ROM (.bin)')
-    ap.add_argument('--vasm', help='path to vasmm68k_mot')
+    ap.add_argument('--vasm', help='also assemble with vasm and check the result matches the ROM')
     ap.add_argument('--out', default=os.path.join(REPO, 'src', 'generated'))
-    ap.add_argument('--keep', action='store_true', help='keep the work folder')
+    ap.add_argument('--keep', action='store_true', help='keep the vasm work folder')
     args = ap.parse_args()
 
     src_dir = os.path.join(args.disasm, 'Source')
     entire = os.path.join(src_dir, 'EntireSource.X68')
     if not os.path.isfile(entire):
         sys.exit(f'{entire} not found')
-    vasm = find_vasm(args.vasm)
+    sha1 = hashlib.sha1(open(args.rom, 'rb').read()).hexdigest()
+    if sha1 != KNOWN_ROM_SHA1:
+        print(f'warning: ROM SHA-1 is {sha1}, expected {KNOWN_ROM_SHA1} (US REV 00). '
+              'Continuing; the source map will stop if the disassembly does not fit it.')
+    if args.vasm:
+        verify_with_vasm(entire, src_dir, args.rom, find_vasm(args.vasm), args.keep)
 
+    for f in os.listdir(args.out) if os.path.isdir(args.out) else []:
+        if f.startswith('gen_') and (f.endswith('.c') or f.endswith('.h')):
+            os.remove(os.path.join(args.out, f))
+    rc = subprocess.call([sys.executable, os.path.join(HERE, 'm68k2c', 'm68k2c.py'),
+                          '--source', entire, '--rom', args.rom, '--out', args.out])
+    if rc != 0:
+        sys.exit(rc)
+    print('done: translated code is in', args.out)
+
+
+def verify_with_vasm(entire, src_dir, rom_path, vasm, keep):
     work = tempfile.mkdtemp(prefix='tje_gen_')
     try:
         text = open(entire, encoding='latin-1').read().replace('\r\n', '\n')
@@ -84,23 +107,14 @@ def main():
             sys.exit('assembly failed')
 
         built = open(binp, 'rb').read()
-        rom = open(args.rom, 'rb').read()
+        rom = open(rom_path, 'rb').read()
         if built != rom:
             diff = next((i for i in range(min(len(built), len(rom))) if built[i] != rom[i]), min(len(built), len(rom)))
             sys.exit(f'assembled disassembly does not match the ROM (first difference at {diff:06X}). '
                      'Check you have the (U) (REV 00) ROM and an unmodified disassembly.')
-        print('disassembly matches ROM')
-
-        for f in os.listdir(args.out) if os.path.isdir(args.out) else []:
-            if f.startswith('gen_') and (f.endswith('.c') or f.endswith('.h')):
-                os.remove(os.path.join(args.out, f))
-        rc = subprocess.call([sys.executable, os.path.join(HERE, 'm68k2c', 'm68k2c.py'),
-                              '--listing', lst, '--rom', args.rom, '--out', args.out])
-        if rc != 0:
-            sys.exit(rc)
-        print('done: translated code is in', args.out)
+        print('vasm: disassembly assembles to a copy identical to the ROM')
     finally:
-        if args.keep:
+        if keep:
             print('work folder:', work)
         else:
             shutil.rmtree(work, ignore_errors=True)

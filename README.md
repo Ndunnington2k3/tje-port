@@ -48,7 +48,6 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 You need:
 
 - **Python 3** (python.org; tick "Add to PATH")
-- **vasm** for 68000, Motorola syntax (`vasmm68k_mot_win32.exe`, the one the disassembly uses)
 - **CMake 3.20+** and either **Visual Studio 2022** (Desktop C++ workload) or **MinGW-w64**
 - Git
 
@@ -58,7 +57,7 @@ SDL2 is downloaded and built automatically by CMake if it isn't installed.
 cd C:\Users\NJD\Desktop\Stuff\TJEDisassembly\PC\tje-port
 
 REM 1. Translate the game (re-run whenever the disassembly or translator changes)
-python tools\generate.py --disasm ..\..\master --rom "..\..\Toejam & Earl (U) (REV 00) [!].bin" --vasm D:\VASM\vasmm68k_mot_win32.exe
+python tools\generate.py --disasm ..\..\master --rom "..\..\Toejam & Earl (U) (REV 00) [!].bin"
 
 REM 2. Build
 cmake -S . -B build
@@ -69,6 +68,10 @@ build\Release\tje.exe "..\..\Toejam & Earl (U) (REV 00) [!].bin"
 ```
 
 With MinGW the executable is `build\tje.exe` instead of `build\Release\tje.exe`.
+
+No assembler is needed: `generate.py` lines the disassembly source up against the ROM itself and checks
+every instruction and data byte as it goes. If you also want the classic check that the source
+assembles to an identical ROM, add `--vasm D:\VASM\vasmm68k_mot_win32.exe`.
 
 Options:
 

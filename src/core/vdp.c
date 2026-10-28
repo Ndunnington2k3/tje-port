@@ -100,6 +100,14 @@ static uint32_t dma_length(void)
 static void dma_68k(void)
 {
     uint32_t len = dma_length();
+    /* The 68000 is frozen while the VDP copies from its memory. Bytes per scanline:
+     * blanking (or display off) 205 in H40 / 167 in H32; active display 18 / 16. */
+    {
+        int blank = vblank_flag || !(vdp_reg[1] & 0x40);
+        int h40 = (vdp_reg[12] & 0x01) != 0;
+        uint32_t per_line = blank ? (h40 ? 205u : 167u) : (h40 ? 18u : 16u);
+        R.cycles += len * 2u * GEN_CYCLES_PER_LINE / per_line;
+    }
     uint32_t src = ((uint32_t)vdp_reg[21] << 1) | ((uint32_t)vdp_reg[22] << 9) | ((uint32_t)(vdp_reg[23] & 0x7F) << 17);
     while (len--) {
         port_write(rd16(src));
