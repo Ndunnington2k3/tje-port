@@ -13,6 +13,10 @@
  *   PSG:     M/15/16 = 223,722 Hz         -> ~4.2 ticks per FM sample */
 #define YM_SAMPLE_CYCLES 24
 
+/* The Z80 always runs: the game reads its status bytes (speech playing etc.), so
+ * gameplay must not depend on whether sound is on. Only FM/PSG synthesis and
+ * output are optional (they are the expensive part). The driver never reads the
+ * FM chip's status, so skipping FM synthesis does not change what the Z80 does. */
 static int enabled;
 
 static z80 cpu;
@@ -177,7 +181,7 @@ static uint8_t z80_read(void *ud, uint16_t a)
 {
     (void)ud;
     if (a < 0x4000) return z80_ram[a & 0x1FFF];
-    if (a < 0x6000) { ym_sync(z80_now68()); return ym_read(a); }
+    if (a < 0x6000) { if (!enabled) return 0; ym_sync(z80_now68()); return ym_read(a); }
     if (a >= 0x8000) return (uint8_t)rd8(z80_bank | (a & 0x7FFF));
     return 0xFF;
 }
@@ -186,7 +190,7 @@ static void z80_write(void *ud, uint16_t a, uint8_t v)
 {
     (void)ud;
     if (a < 0x4000) { z80_ram[a & 0x1FFF] = v; return; }
-    if (a < 0x6000) { ym_write(a, v, z80_now68()); return; }
+    if (a < 0x6000) { if (enabled) ym_write(a, v, z80_now68()); return; }
     if (a < 0x6100) { z80_bank = ((z80_bank >> 1) | ((uint32_t)(v & 1) << 23)) & 0xFF8000u; return; }
     if (a == 0x7F11 || a == 0x7F13 || a == 0x7F15 || a == 0x7F17) { snd_psg_write(v); return; }
     if (a >= 0x8000) wr8(z80_bank | (a & 0x7FFF), v);
@@ -226,10 +230,12 @@ static void z80_sync(uint32_t to)
 uint32_t snd_z80_area_read(uint32_t a)
 {
     a &= 0xFFFF;
-    if (a < 0x4000) return z80_ram[a & 0x1FFF];
+    if (a < 0x4000) { z80_sync(R.cycles); return z80_ram[a & 0x1FFF]; }
     if (a < 0x6000) {
-        if (enabled) { z80_sync(R.cycles); ym_sync(R.cycles); return ym_read(a); }
-        return 0;
+        z80_sync(R.cycles);
+        if (!enabled) return 0;
+        ym_sync(R.cycles);
+        return ym_read(a);
     }
     return 0xFF;
 }
@@ -237,9 +243,10 @@ uint32_t snd_z80_area_read(uint32_t a)
 void snd_z80_area_write(uint32_t a, uint32_t v)
 {
     a &= 0xFFFF;
-    if (a < 0x4000) { z80_ram[a & 0x1FFF] = (uint8_t)v; return; }
+    if (a < 0x4000) { z80_sync(R.cycles); z80_ram[a & 0x1FFF] = (uint8_t)v; return; }
     if (a < 0x6000) {
-        if (enabled) { z80_sync(R.cycles); ym_write(a, v, R.cycles); }
+        z80_sync(R.cycles);
+        if (enabled) ym_write(a, v, R.cycles);
         return;
     }
     if (a < 0x6100) { z80_bank = ((z80_bank >> 1) | ((uint32_t)(v & 1) << 23)) & 0xFF8000u; return; }
@@ -248,7 +255,7 @@ void snd_z80_area_write(uint32_t a, uint32_t v)
 
 void snd_busreq_write(uint32_t v)
 {
-    if (enabled) z80_sync(R.cycles);
+    z80_sync(R.cycles);
     z80_busreq = (v & 0x100) != 0;
 }
 
@@ -262,7 +269,7 @@ uint32_t snd_busreq_read(void)
 void snd_reset_write(uint32_t v)
 {
     int assert_reset = (v & 0x100) == 0;
-    if (enabled) z80_sync(R.cycles);
+    z80_sync(R.cycles);
     if (assert_reset && !z80_reset_line) {
         z80_init(&cpu);
         cpu.read_byte = z80_read;
@@ -276,16 +283,13 @@ void snd_reset_write(uint32_t v)
 
 void snd_line(int line)
 {
-    (void)line;
-    if (!enabled) return;
     z80_sync(R.cycles);
-    ym_sync(R.cycles);
+    if (enabled) ym_sync(R.cycles);
     if (line == 225) cpu.int_pending = 0;   /* INT line is only held for about one line */
 }
 
 void snd_vint(void)
 {
-    if (!enabled) return;
     z80_sync(R.cycles);
     if (z80_running()) z80_gen_int(&cpu, 0xFF);
 }

@@ -13,7 +13,9 @@
 
 #define SND_OUTPUT_RATE 48000
 
-void snd_init(int enabled);
+/* output: nonzero to synthesise FM/PSG audio. The Z80 sound driver runs either way,
+ * so the game behaves identically with sound on or off. */
+void snd_init(int output);
 void snd_reset(void);
 int snd_enabled(void);
 
