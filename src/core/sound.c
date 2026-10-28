@@ -152,8 +152,18 @@ static uint8_t ym_read(uint32_t port)
     return (uint8_t)(OPN2_Read(&ym, port & 3) & 0x7F);
 }
 
+#ifdef TJE_SND_STATS
+unsigned long snd_stat_dac_writes, snd_stat_dac_enable;
+static uint8_t stat_addr0;
+#endif
+
 static void ym_write(uint32_t port, uint32_t v, uint32_t when)
 {
+#ifdef TJE_SND_STATS
+    if ((port & 3) == 0) stat_addr0 = (uint8_t)v;
+    if ((port & 3) == 1 && stat_addr0 == 0x2A) snd_stat_dac_writes++;
+    if ((port & 3) == 1 && stat_addr0 == 0x2B && (v & 0x80)) snd_stat_dac_enable++;
+#endif
     ym_sync(when);
     OPN2_Write(&ym, port & 3, (Bit8u)v);
     /* give the chip a few cycles to latch it before any following write */
@@ -182,7 +192,12 @@ static uint8_t z80_read(void *ud, uint16_t a)
     (void)ud;
     if (a < 0x4000) return z80_ram[a & 0x1FFF];
     if (a < 0x6000) { if (!enabled) return 0; ym_sync(z80_now68()); return ym_read(a); }
-    if (a >= 0x8000) return (uint8_t)rd8(z80_bank | (a & 0x7FFF));
+    if (a >= 0x8000) {
+        /* Z80 reads through the 68000 bus wait for it: ~3 extra Z80 cycles on average.
+         * Without this, sample (speech) playback runs a few percent fast. */
+        cpu.cyc += 3;
+        return (uint8_t)rd8(z80_bank | (a & 0x7FFF));
+    }
     return 0xFF;
 }
 
