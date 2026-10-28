@@ -9,6 +9,7 @@
 #define VDP_FB_PITCH  VDP_MAX_WIDTH   /* in pixels */
 
 void vdp_reset(void);
+void vdp_refresh_palette(void);  /* after writing vdp_cram directly */
 
 uint32_t vdp_read_data(void);
 void vdp_write_data(uint32_t v);

@@ -20,6 +20,10 @@ enum {
 /* Load the original ROM image; returns 0 on success. */
 int genesis_load_rom(const char *path);
 
+/* Load a Gens save state (.gsx/.gs0) taken during gameplay. genesis_run() will then
+ * restore it and enter the game's main loop instead of booting. Returns 0 on success. */
+int genesis_load_state(const char *path);
+
 /* Reset the machine and run the game. Returns when the platform asks to quit
  * or after a fatal error. Return value: 0 = quit, nonzero = error. */
 int genesis_run(void);

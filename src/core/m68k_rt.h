@@ -43,6 +43,7 @@ extern uint32_t g_rom_size;
 extern const RtFunc rt_func_table[];
 extern const unsigned rt_func_count;
 extern const uint32_t rt_reset_pc, rt_reset_sp, rt_vector_hint, rt_vector_vint;
+extern const uint32_t rt_entry_ingameloop;
 
 /* I/O space (everything that is not ROM or RAM) - src/core/io.c */
 uint32_t io_rd8(uint32_t a);
@@ -142,6 +143,15 @@ static inline uint32_t pop16(void) { uint32_t v = rd16(R.a[7]); R.a[7] += 2; ret
 #else
 #define RT_SPCHECK(sp0, at) do { (void)(sp0); } while (0)
 #endif
+
+/* Coverage tracing (build with -DTJE_COVERAGE): records which translated functions ran. */
+#ifdef TJE_COVERAGE
+void rt_trace(uint32_t addr);
+#define RT_TRACE(addr) rt_trace(addr)
+#else
+#define RT_TRACE(addr) ((void)0)
+#endif
+void rt_coverage_write(const char *path);
 
 /* ---- flags & ALU -------------------------------------------------------- */
 static inline uint32_t sz_mask(int sz) { return sz == 1 ? 0xFFu : sz == 2 ? 0xFFFFu : 0xFFFFFFFFu; }

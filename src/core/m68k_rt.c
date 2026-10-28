@@ -80,3 +80,33 @@ void rt_service(void)
 {
     genesis_run_events();
 }
+
+#ifdef TJE_COVERAGE
+static uint32_t *coverage_counts;
+
+void rt_trace(uint32_t addr)
+{
+    int i;
+    if (!coverage_counts) coverage_counts = (uint32_t *)calloc(rt_func_count, sizeof *coverage_counts);
+    i = find_func(addr);
+    if (i >= 0 && coverage_counts) coverage_counts[i]++;
+}
+#endif
+
+/* Write "address name count" for every translated function (count 0 = never ran).
+ * Only meaningful in TJE_COVERAGE builds; otherwise writes nothing. */
+void rt_coverage_write(const char *path)
+{
+#ifdef TJE_COVERAGE
+    FILE *f;
+    unsigned i;
+    if (!path || !coverage_counts) return;
+    f = fopen(path, "w");
+    if (!f) return;
+    for (i = 0; i < rt_func_count; i++)
+        fprintf(f, "%06X %s %u\n", rt_func_table[i].addr, rt_func_table[i].name, coverage_counts[i]);
+    fclose(f);
+#else
+    (void)path;
+#endif
+}

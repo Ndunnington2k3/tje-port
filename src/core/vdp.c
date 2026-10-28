@@ -45,6 +45,12 @@ void vdp_reset(void)
     cur_line = 0;
 }
 
+void vdp_refresh_palette(void)
+{
+    int i;
+    for (i = 0; i < 64; i++) update_palette(i);
+}
+
 int vdp_width(void) { return (vdp_reg[12] & 0x01) ? 320 : 256; }
 const uint32_t *vdp_framebuffer(void) { return framebuffer; }
 int vdp_vint_enabled(void) { return (vdp_reg[1] & 0x20) != 0; }

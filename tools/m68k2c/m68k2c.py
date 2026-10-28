@@ -31,6 +31,10 @@ import decode68k as d68  # noqa: E402
 import listing as lst    # noqa: E402
 
 ROM_END = 0x100000
+
+# Labels inside larger routines that the runtime needs to call directly
+# (InGameLoop: the main game loop, entered after loading a save state).
+EXTRA_ENTRY_LABELS = ['InGameLoop']
 MASK = {'b': 0xFF, 'w': 0xFFFF, 'l': 0xFFFFFFFF}
 NBYTES = {'b': 1, 'w': 2, 'l': 4}
 
@@ -90,22 +94,54 @@ class Program:
         return f'f_{a:06X}_{n}' if n else f'f_{a:06X}'
 
     # ---- entry discovery -------------------------------------------------
+    def label_addr(self, name):
+        for a, names in self.L.labels.items():
+            if name in names:
+                return a
+        return None
+
     def seed_entries(self):
+        for name in EXTRA_ENTRY_LABELS:
+            a = self.label_addr(name)
+            if a is not None:
+                self.entries.setdefault(a, f'runtime entry point {name}')
         vec = [int.from_bytes(self.rom[i * 4:i * 4 + 4], 'big') for i in range(64)]
         for i, v in enumerate(vec[1:], 1):
             if v < ROM_END and v in self.L.code:
                 self.entries.setdefault(v, f'vector {i}')
         # 32-bit values in data that equal the address of a labelled code line
+        # (or of a labelled spot inside a data block - code the disassembly hasn't
+        # separated out yet; those are tried as code and dropped if they don't decode)
         labelled_code = {a for a in self.L.labels if a in self.L.code}
-        for a in sorted(self.L.data):
-            pass
+        labelled_data = {a for a in self.L.labels if a not in self.L.code}
         rom = self.rom
         for a in range(0, ROM_END - 3, 2):
             if a in self.L.code:
                 continue
             v = (rom[a] << 24) | (rom[a + 1] << 16) | (rom[a + 2] << 8) | rom[a + 3]
-            if v in labelled_code and v >= 0x200:
+            if v < 0x200 or v >= ROM_END or v & 1:
+                continue
+            if v in labelled_code:
                 self.entries.setdefault(v, f'pointer in data at {a:06X}')
+            elif v in labelled_data and v not in self.entries:
+                self.entries[v] = f'pointer in data at {a:06X} (code hidden in data?)'
+                self.speculative.add(v)
+            elif v not in self.entries and v < 0x80000 and self.looks_like_function(v):
+                # unlabelled pointer to what starts like a compiled C function
+                self.entries[v] = f'pointer in data at {a:06X} (function prologue)'
+                self.speculative.add(v)
+
+    def looks_like_function(self, v):
+        try:
+            i = self.ins(v)
+        except d68.DecodeError:
+            return False
+        if i.op == 'link':
+            return True
+        if i.op == 'movem' and i.ops[1].mode == 'predec' and i.ops[1].reg == 7:
+            return True
+        return (i.op == 'move' and i.size == 'l' and i.ops[0].mode == 'dn'
+                and i.ops[1].mode == 'predec' and i.ops[1].reg == 7)
 
     def walk(self, entry):
         """Return (instrs dict, jump tables) reachable from entry via branches."""
@@ -749,6 +785,7 @@ class FuncEmitter:
         o.append(f'void {name}(void)')
         o.append('{')
         o.append('    Flags F = {0, 0, 0, 0, 0};')
+        o.append(f'    RT_TRACE(0x{self.entry:06X}u);')
         o.append(f'    goto L_{self.entry:06X};')
         prev_end = None
         for a in addrs:
@@ -899,6 +936,8 @@ def main():
         f.write(f'const uint32_t rt_reset_sp = 0x{vec[0]:06X}u;\n')
         f.write(f'const uint32_t rt_vector_hint = 0x{vec[28]:06X}u;\n')
         f.write(f'const uint32_t rt_vector_vint = 0x{vec[30]:06X}u;\n')
+        igl = P.label_addr('InGameLoop')
+        f.write(f'const uint32_t rt_entry_ingameloop = 0x{(igl or 0):06X}u;\n')
     uniq = set()
     for a in ok:
         uniq.update(ok[a][0])

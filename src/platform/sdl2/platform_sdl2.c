@@ -26,8 +26,10 @@ static int vsync_ok;
 int plat_init(int argc, char **argv)
 {
     int i;
-    for (i = 1; i < argc; i++)
-        if (argv[i][0] != '-') rom_path = argv[i];
+    for (i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--state")) i++;  /* handled in main.c */
+        else if (argv[i][0] != '-') rom_path = argv[i];
+    }
 
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {

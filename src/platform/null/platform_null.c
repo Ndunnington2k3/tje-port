@@ -7,9 +7,13 @@
  *     --press F:N:buttons  hold buttons from frame F for N frames, pad 1
  *                          (buttons: any of U D L R A B C S)
  *     --random SEED        after frame 500, mash random buttons (Start only rarely)
+ *     --dumpram F:path     save the 64 KB of work RAM at frame F (repeatable)
+ *     --elevator N         every N frames, put ToeJam in the elevator (ELEVATOR_FLAG = 1)
+ *                          (test hook: exercises level transitions)
  */
 #include "platform/platform.h"
 #include "core/genesis.h"
+#include "core/m68k_rt.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,11 +26,14 @@ static unsigned max_frames = 600;
 static unsigned frame;
 static struct { unsigned frame; char path[256]; } shots[MAX_EVENTS];
 static int nshots;
+static struct { unsigned frame; char path[256]; } dumps[MAX_EVENTS];
+static int ndumps;
 static struct { unsigned frame, len; uint16_t buttons; } presses[MAX_EVENTS];
 static int npresses;
 static unsigned random_seed;
 static uint16_t random_buttons;
 static unsigned random_left;
+static unsigned elevator_period;
 
 
 static uint16_t parse_buttons(const char *s)
@@ -68,6 +75,15 @@ int plat_init(int argc, char **argv)
                 presses[npresses].buttons = parse_buttons(btn);
                 npresses++;
             }
+        } else if (!strcmp(argv[i], "--dumpram") && i + 1 < argc && ndumps < MAX_EVENTS) {
+            const char *a = argv[++i];
+            const char *c = strchr(a, ':');
+            if (!c) continue;
+            dumps[ndumps].frame = (unsigned)atoi(a);
+            snprintf(dumps[ndumps].path, sizeof dumps[ndumps].path, "%s", c + 1);
+            ndumps++;
+        } else if (!strcmp(argv[i], "--elevator") && i + 1 < argc) {
+            elevator_period = (unsigned)atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--random") && i + 1 < argc) {
             random_seed = (unsigned)atoi(argv[++i]) * 2654435761u + 1;
         } else if (argv[i][0] != '-') rom_path = argv[i];
@@ -106,6 +122,11 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
     int i;
     for (i = 0; i < nshots; i++)
         if (shots[i].frame == frame) save_ppm(shots[i].path, pixels, width, height, pitch);
+    for (i = 0; i < ndumps; i++)
+        if (dumps[i].frame == frame) {
+            FILE *f = fopen(dumps[i].path, "wb");
+            if (f) { fwrite(g_ram, 1, sizeof g_ram, f); fclose(f); }
+        }
     frame++;
 }
 
@@ -121,17 +142,40 @@ int plat_poll(uint16_t pad[2])
 {
     int i;
     pad[0] = pad[1] = 0;
-    if (random_seed && frame >= 500) {
+    if (random_seed && frame >= (elevator_period ? 1000u : 500u)) {
         if (random_left == 0) {
             static const uint16_t choices[] = {PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_A, PAD_B, PAD_C,
                                                PAD_UP | PAD_RIGHT, PAD_DOWN | PAD_LEFT, 0};
             random_buttons = choices[rnd() % 10];
             if (rnd() % 40 == 0) random_buttons = PAD_START;
+            /* in elevator mode stick to walking so no menus are left open */
+            if (elevator_period && frame > 1000) random_buttons &= PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT;
             random_left = 5 + rnd() % 120;
         }
         random_left--;
         pad[0] = random_buttons;
         pad[1] = (uint16_t)(rnd() % 8 == 0 ? choices_p2() : 0);
+    }
+    {
+        /* report level changes ($FF912C = ToeJam's current level) */
+        static uint32_t last_level;
+        uint32_t lv = rd8(0xFF912C);
+        if (lv != last_level) {
+            fprintf(stderr, "frame %u: ToeJam on level %u\n", frame, lv);
+            last_level = lv;
+        }
+    }
+    if (elevator_period && frame > 1000 && frame % elevator_period == 0) {
+        /* ELEVATOR_FLAG ($FFDA6A, from the disassembly): 1 = ToeJam is in the elevator going up */
+        if (rd8(0xFF912C) && rd8(0xFFDA6A) == 0) {
+            wr8(0xFFDA6A, 1);
+            if (getenv("TJE_DEBUG_ELEV")) fprintf(stderr, "frame %u: elevator flag set\n", frame);
+        }
+    }
+    if (elevator_period && frame > 1000) {
+        unsigned t = frame % elevator_period;
+        pad[1] = 0;
+        if (t < 150) pad[0] = 0;  /* hands off while the elevator rides */
     }
     for (i = 0; i < npresses; i++)
         if (frame >= presses[i].frame && frame < presses[i].frame + presses[i].len) pad[0] |= presses[i].buttons;

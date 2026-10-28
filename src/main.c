@@ -1,7 +1,10 @@
 #include "core/genesis.h"
 #include "platform/platform.h"
+#include "core/m68k_rt.h"
 
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 
 int main(int argc, char **argv)
 {
@@ -21,7 +24,20 @@ int main(int argc, char **argv)
         plat_shutdown();
         return 1;
     }
+    {
+        /* --state <file.gsx>: start from a Gens save state (testing / level select) */
+        int i;
+        for (i = 1; i + 1 < argc; i++)
+            if (!strcmp(argv[i], "--state")) {
+                if (genesis_load_state(argv[i + 1]) != 0) {
+                    plat_message("ToeJam & Earl", "Could not load the save state given with --state.");
+                    plat_shutdown();
+                    return 1;
+                }
+            }
+    }
     rc = genesis_run();
+    rt_coverage_write(getenv("TJE_COVERAGE_OUT"));
     plat_shutdown();
     return rc;
 }
