@@ -1,0 +1,30 @@
+# Copyrighted game material - never commit
+*.bin
+*.md.bin
+*.gen
+*.smd
+*.md_rom
+roms/
+disasm/
+
+# Generated C translated from the original game code (rebuilt locally from the disassembly)
+src/generated/*
+!src/generated/README.md
+
+# Build output
+build/
+out/
+cmake-build-*/
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
