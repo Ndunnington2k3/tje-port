@@ -9,6 +9,7 @@
 #include "platform/platform.h"
 #include "core/genesis.h"
 
+#define SDL_MAIN_HANDLED
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +29,7 @@ int plat_init(int argc, char **argv)
     for (i = 1; i < argc; i++)
         if (argv[i][0] != '-') rom_path = argv[i];
 
+    SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;

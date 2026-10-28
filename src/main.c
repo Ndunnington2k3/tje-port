@@ -25,3 +25,15 @@ int main(int argc, char **argv)
     plat_shutdown();
     return rc;
 }
+
+#ifdef _WIN32
+/* Windows GUI-subsystem entry point (no console window). */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <stdlib.h>
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int show)
+{
+    (void)hInst; (void)hPrev; (void)cmdLine; (void)show;
+    return main(__argc, __argv);
+}
+#endif
