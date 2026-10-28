@@ -10,7 +10,7 @@ Windows is the first (prototype) target. PSP and Nintendo 3DS are planned.
 
 ## Status
 
-- The whole game is translated to C (721 routines, ~54,000 68000 instructions) and runs natively:
+- The whole game is translated to C (~770 routines, ~57,000 68000 instructions) and runs natively:
   SEGA logo, intro, menus, Jam Out, one- and two-player games, split screen, presents, map.
 - Video: software renderer of the Genesis VDP (planes, window, sprites, scrolling, DMA).
 - Sound: emulated - the game's Z80 sound driver runs on a Z80 core and drives an emulated
