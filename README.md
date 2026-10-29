@@ -87,7 +87,7 @@ Port changes so far (on by default):
   Left/Right (or Up/Down) choose, Start selects, B backs out. Start, Start still just pauses and
   unpauses, and the original pause-screen button code still works.
 - **Saved games** (3 files, both players): saving remembers your presents, identified presents, stats
-  and rocketship pieces; loading puts you back at the start of that floor, stepping out of the
+  and rocketship pieces; presents you picked up stay gone; loading puts you back at the start of that floor, stepping out of the
   elevator. A collected ship piece stays collected. Random World keeps its world. Load from
   **Load Game** on the Who screen. Files are `tje_save1.sav`-`tje_save3.sav` next to the program
   (or in the folder named by the `TJE_SAVE_DIR` environment variable).

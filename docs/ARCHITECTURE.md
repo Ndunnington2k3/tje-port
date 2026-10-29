@@ -166,7 +166,10 @@ when an elevator last brought a player there. With two players, the most recent 
 
 Saving copies that floor's snapshot and writes the current progress into its RAM image: lives, bucks,
 points, rank and health ($FFA248-$FFA259), highest floor, present identities and both inventories
-($FFDA8A-$FFDAE1) and the ship piece table ($FFE212, 10 floors, 0 = collected). The file holds a
+($FFDA8A-$FFDAE1), the ship piece table ($FFE212, 10 floors, 0 = collected), dropped presents and
+the per-floor masks of items picked up ($FFDCE6-$FFDE4F). Items on the restarted floor that were
+picked up since arriving are emptied, as `PlaceStuffInLevel` does on a return visit, so picked-up
+presents do not come back (the original game keeps them gone too). The file holds a
 summary for the file list, then the blob with a checksum; it is written to a temporary file and
 renamed. Loading restarts from the blob, then on the loop's first pass removes ship-piece earthlings
 (type 0 in the 18-byte entries at $FFDE72) whose floor is no longer in the ship table, the way
@@ -175,7 +178,7 @@ collecting one does, and redraws the HUD.
 The pause menu draws in the window plane (the status bar) with the HUD's font (tiles $5B5 a-z, $5D8
 0-9) and restores the bar afterwards. HUD sprites over the bar are moved off screen while it is up;
 one of their sprite-table entries shows ToeJam's pointing hand, whose tiles are copied from VRAM when
-a menu screen shows it and placed over the rank-text tiles ($59F) for the duration.
+a menu screen shows it (the pause version drops the cuff and draws the black line in dark grey) and placed over the rank-text tiles ($59F) for the duration.
 
 The Who screen uses the game's own menu routine (LOC_00023784) with item tables built at run time in
 a *port ROM* area after the ROM (`genesis_port_rom`), so the game's code can be handed pointers to

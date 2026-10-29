@@ -196,7 +196,14 @@ static void sprites_save(void)
     hand_on = 0;
     if (have_hand) {
         memcpy(hand_vram_saved, &vdp_vram[HAND_TILE * 32], HAND_BYTES);
-        memcpy(&vdp_vram[HAND_TILE * 32], g_menu_hand, HAND_BYTES);
+        /* the pause menu's version of the hand: no cuff, and the knuckle line in
+         * dark grey instead of black (colours 1-7 dropped, 8 -> 9) */
+        for (i = 0; i < HAND_BYTES; i++) {
+            uint8_t b = g_menu_hand[i], hi = b >> 4, lo = b & 15;
+            if (hi < 8) hi = 0; else if (hi == 8) hi = 9;
+            if (lo < 8) lo = 0; else if (lo == 8) lo = 9;
+            vdp_vram[HAND_TILE * 32 + (uint32_t)i] = (uint8_t)(hi << 4 | lo);
+        }
     }
 }
 

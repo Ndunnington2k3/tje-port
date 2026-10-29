@@ -20,6 +20,12 @@
 #define ELEVATOR_FLAG         0xFFDA6Au   /* per player: elevator they are in */
 #define PRESENT_IDENTITIES    0xFFDA8Au   /* followed by both inventories */
 #define INVENTORIES_END       0xFFDAE2u
+#define LEVEL_ITEMS           0xFFDAE2u   /* 2 slots x 32 items x 8 bytes, $FF = empty */
+#define LEVEL_PLAYERS_FLAG    0xFFDCE2u   /* per slot: players on that floor */
+#define LEVEL_LOADED          0xFFDCE4u   /* per slot: floor whose items are loaded */
+#define DROPPED_PRESENTS      0xFFDCE6u
+#define ITEMS_TAKEN           0xFFDDE8u   /* per floor: 32-bit mask of items picked up */
+#define ITEMS_TAKEN_END       (ITEMS_TAKEN + 26u * 4u)
 #define EARTHLINGS_IN_LEVEL   0xFFDE72u   /* 2 x 20 entries of 18 bytes */
 #define EARTHLING_LOAD_FLAG   0xFFE1AAu
 #define EARTHLING_LEVEL       0xFFE1ACu
@@ -372,10 +378,25 @@ static void patch_progress(uint8_t *ram)
         {HIGHEST_LEVEL, HIGHEST_LEVEL + 1},
         {PRESENT_IDENTITIES, INVENTORIES_END},     /* which presents are known; both inventories */
         {SHIP_PIECE_LEVELS, SHIP_PIECE_LEVELS + 10},
+        {DROPPED_PRESENTS, ITEMS_TAKEN_END},       /* presents dropped, items taken on every floor */
     };
     unsigned i;
+    int slot, item;
     for (i = 0; i < sizeof keep / sizeof keep[0]; i++)
         memcpy(ram + (keep[i].from & 0xFFFFu), g_ram + (keep[i].from & 0xFFFFu), keep[i].to - keep[i].from);
+    /* The floor's items were laid out when the players arrived; empty the ones
+     * taken since, as PlaceStuffInLevel does for items taken on an earlier visit. */
+    for (slot = 0; slot < 2; slot++) {
+        int floor = ram[(LEVEL_LOADED + (uint32_t)slot) & 0xFFFFu];
+        const uint8_t *m;
+        uint32_t mask;
+        if (!ram[(LEVEL_PLAYERS_FLAG + (uint32_t)slot) & 0xFFFFu] || floor >= FINAL_LEVEL) continue;
+        m = ram + ((ITEMS_TAKEN + (uint32_t)floor * 4) & 0xFFFFu);
+        mask = (uint32_t)m[0] << 24 | (uint32_t)m[1] << 16 | (uint32_t)m[2] << 8 | m[3];
+        for (item = 0; item < 32; item++)
+            if (mask & (0x80000000u >> item))
+                ram[(LEVEL_ITEMS + (uint32_t)slot * 256 + (uint32_t)item * 8) & 0xFFFFu] = 0xFF;
+    }
 }
 
 int save_write(int slot)
