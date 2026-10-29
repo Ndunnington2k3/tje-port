@@ -111,9 +111,10 @@ Port changes so far (on by default):
 | A / B / C | Z / X / C | J / K / L |
 | Start | Enter | Right Shift |
 
+Escape (or a controller's Back button) goes back on the menus and pauses during play.
 These are the defaults; change them under Options on the What screen. Game controllers work too
 (X = A, A = B, B = C on an Xbox layout; the left stick also works as the d-pad). F11 or Alt+Enter toggles
-fullscreen; Escape quits.
+fullscreen. To quit, use Exit Game under Options (or close the window).
 
 ## Testing
 

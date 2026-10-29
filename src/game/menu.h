@@ -19,6 +19,9 @@
 #define MENU_TITLE_WHO   0
 #define MENU_TITLE_WHAT  1
 #define MENU_NO_TITLE   -1     /* the port draws its own (an overlay) */
+#define MENU_TITLE_JAM_OUT    2
+#define MENU_TITLE_CONTROLLER 3
+#define MENU_ESCAPE    -2      /* a usual escape_value */
 
 typedef struct Menu Menu;
 
@@ -43,6 +46,8 @@ struct Menu {
     int sel;                   /* item the hand starts on; the one chosen on return */
     int hand_col;              /* hand position (window column), 2 by default */
     int b_is_back;             /* B leaves the menu (returns -1) instead of choosing */
+    int escape_value;          /* if not 0: Escape leaves the menu and menu_run returns this
+                                  (with b_is_back, Escape does what B does) */
     /* Optional. Called for Left/Right (dir -1/+1) and for A, C and Start (dir 0) on
      * item `sel`. Return 1 to close the menu (it then returns the item's value), 0
      * to stay. It may change texts with menu_set_text(). */
@@ -67,6 +72,14 @@ int menu_run(Menu *m, int title);
 
 /* Wait for a frame on a menu screen (for use inside an action callback). */
 void menu_frame(void);
+
+/* Nonzero while a port menu (or the pause menu) is reading input itself:
+ * Escape is "back" there, and Start (pause) during play. */
+extern int g_port_menu_active;
+void game_input_hook(uint16_t pad[2]);
+
+/* Copy a menu item table from ROM (8 bytes per item: column, row, string, value). */
+void menu_add_rom_items(Menu *m, uint32_t table, int count, int row_shift);
 
 /* ToeJam's pointing hand: its 4x2 tiles (palette line 3), copied from VRAM the
  * first time a menu screen shows it; reused by the pause menu. */

@@ -83,6 +83,7 @@ Replaced so far:
 | `SEGAVideo` ($03A476) | `intro.c` | Start ends the SEGA screen cleanly (logo or ship phase); skipped after Quit to Menu |
 | `InGameLoop` ($0014E6) | `save.c` | records an arrival snapshot when a player reaches a floor |
 | `GamePaused` ($01DBD8) | `pause.c` | pause menu (resume / save / quit) in the status bar |
+| `MenuRoutine` ($0233B2) | `menus.c` | Who then What as before; Escape goes back (What -> Who, Jam Out/controller -> What); Jam Out and controller screens use menu.c |
 | `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" (saved-games list) and "Options" (`options_menu.c`) |
 | `GameSelectMenu` ($023654) | `world.c` | What screen gets "Custom World" and the world code screen |
 | `GenerateLevelsForGame` ($004658) | `world.c` | uses a Custom World's seed; remembers every world's seed |
@@ -215,6 +216,13 @@ Bindings belong to the platform layer (`plat_binding`, `plat_set_binding`, `plat
 platform.h): SDL stores a scancode and a controller button/axis token per Genesis button; the
 headless build stores tokens and answers captures from `--capture key:Q`/`--capture pad:y`.
 `plat_data_dir()` is where settings and saved games go (next to the program on desktop).
+
+## Escape / Back
+
+`PAD_BACK` (bit 8 of `g_pad`) is a port-only button: Escape, or a controller's Back button. The
+Genesis pad model ignores it. `game_input_hook` (registered with `genesis_set_input_hook`) turns it
+into Start during play, so it pauses; while a port menu or the pause menu is up
+(`g_port_menu_active`) it is left alone and the menu reads it as "back".
 
 ## Clean scene transitions (src/core/vdp.c, src/game/transitions.c)
 

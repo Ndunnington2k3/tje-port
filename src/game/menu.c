@@ -113,6 +113,29 @@ void menu_frame(void)
     POP_ARGS(4);
 }
 
+int g_port_menu_active;
+
+void game_input_hook(uint16_t pad[2])
+{
+    int p;
+    if (g_port_menu_active) return;              /* the menu handles Escape itself */
+    for (p = 0; p < 2; p++)
+        if (pad[p] & PAD_BACK) pad[p] |= PAD_START;  /* Escape pauses (and works as Start) */
+}
+
+void menu_add_rom_items(Menu *m, uint32_t table, int count, int row_shift)
+{
+    int i;
+    for (i = 0; i < count && m->count < MENU_MAX; i++) {
+        uint32_t e = table + (uint32_t)i * 8, s = rd32(e + 2);
+        char text[MENU_TEXT];
+        int k;
+        for (k = 0; k < MENU_TEXT - 1 && rd8(s + (uint32_t)k); k++) text[k] = (char)rd8(s + (uint32_t)k);
+        text[k] = 0;
+        menu_add(m, (int)rd8(e), (int)rd8(e + 1) + row_shift, text, (int16_t)rd16(e + 6));
+    }
+}
+
 uint8_t g_menu_hand[8 * 32];
 int g_menu_hand_ok;
 
@@ -143,11 +166,13 @@ static int selectable(const Menu *m, int i)
 
 int menu_run(Menu *m, int title)
 {
-    int i, result = -1;
-    uint32_t prev = 0;
+    int i, result = -1, was_active = g_port_menu_active;
+    uint32_t prev = 0, prev_back;
     unsigned t;
 
     CY(60);
+    g_port_menu_active = 1;
+    prev_back = (g_pad[0] | g_pad[1]) & PAD_BACK;
     if (m->sel < 0 || !selectable(m, m->sel)) m->sel = 0;
     if (title >= 0) {
         push32((uint32_t)title);         /* stays on the stack for f_023BDA, as in the game */
@@ -205,6 +230,21 @@ int menu_run(Menu *m, int title)
         menu_frame();
         if (t == 2) grab_hand();
         if (m->frame) m->frame(m, t);
+        {
+            /* Escape (port-only button, read straight from the controllers) */
+            uint32_t back = (g_pad[0] | g_pad[1]) & PAD_BACK;
+            int pressed_back = back && !prev_back;
+            prev_back = back;
+            if (pressed_back && m->b_is_back && m->item[m->sel].edit && m->action) {
+                if (m->action(m, MENU_BACK)) { result = -1; break; }
+            } else if (pressed_back && m->b_is_back) {
+                result = -1;
+                break;
+            } else if (pressed_back && m->escape_value) {
+                result = m->escape_value;
+                break;
+            }
+        }
         p = pads_now();
         if (p != prev) {
             uint32_t pressed = p & ~prev;
@@ -253,6 +293,7 @@ int menu_run(Menu *m, int title)
 
     /* take the screen down */
     m->running = 0;
+    g_port_menu_active = was_active;
     CALL(f_008BBC_ClearVHBlankFlag2);
     display(0);
     CALL(f_023AF8);                      /* remove the hand */

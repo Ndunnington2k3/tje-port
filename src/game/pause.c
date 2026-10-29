@@ -323,6 +323,7 @@ static uint32_t menu_input(void)
     p1 = pad(1);
     cheat(p0, p1);
     now = (menu_player ? p1 : p0) | ((p0 | p1) & PAD_START);
+    if ((g_pad[0] | g_pad[1]) & PAD_BACK) now |= PAD_B;     /* Escape backs out like B */
     pressed = now & ~prev_buttons;
     prev_buttons = now;
     return pressed;
@@ -397,7 +398,8 @@ static void save_menu(void)
  *      quit to menu                  */
 static void pause_menu(void)
 {
-    int sel = 0;
+    int sel = 0, was_active = g_port_menu_active;
+    g_port_menu_active = 1;            /* Escape is "back" here, not Start */
     bar_save();
     sprites_save();
     sprites_update();
@@ -417,6 +419,7 @@ static void pause_menu(void)
     }
     bar_restore();
     sprites_restore();
+    g_port_menu_active = was_active;
 }
 
 /* ---- GamePaused --------------------------------------------------------------- */
@@ -500,7 +503,7 @@ void f_01DBD8_GamePaused(void)
 
     cheat_step = 0;
     menu_player = player;
-    prev_buttons = PAD_START;
+    prev_buttons = PAD_START | PAD_B;  /* Escape may still be held: it paused the game */
     pause_menu();
 
     /* take the sign away and carry on */

@@ -3,6 +3,7 @@
 #include "core/m68k_rt.h"
 #include "game/options.h"
 #include "game/settings.h"
+#include "game/menu.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +18,7 @@ int main(int argc, char **argv)
         return 1;
     settings_load();                 /* tje.cfg: options and controls */
     options_from_args(argc, argv);   /* the command line wins (e.g. --vanilla) */
+    genesis_set_input_hook(game_input_hook);   /* Escape: back in menus, pause in play */
     rom = plat_rom_path();
     if (genesis_load_rom(rom) != 0) {
         char msg[600];

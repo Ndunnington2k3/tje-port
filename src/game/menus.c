@@ -131,3 +131,102 @@ void f_0235E2_PlayerSelectMenu(void)
     R.d[0] = (uint32_t)(int32_t)choice;
     RETURN();
 }
+
+/* ---- MenuRoutine: Who, then What (Source/Menus in the disassembly) ------------
+ * As the original, plus Escape: on the What screen it goes back to Who, and on
+ * the Jam Out and controller screens back to What. */
+
+#define TOEJAMS_LIVES       0xFFA248u    /* Earl's are the next byte */
+#define TOEJAMS_PROMOTION   0xFFA250u
+#define TOEJAMS_LEVEL       0xFFA2A6u    /* $4C(TOEJAMS_XPOS); Earl's is $80 further */
+#define PLAYER_INDICATOR    0xFF802Eu
+#define PAD2_AS_PLAYER1     0xFF801Cu    /* LOC_00FF801C: the one player uses pad 2 */
+#define CONTROLLER_LAYOUT   0xFF8030u
+#define FIXED_WORLD_FLAG_M  0xFF9134u
+
+#define JAM_OUT_ITEMS_ROM   0x02414Au
+#define JAM_OUT_COUNT_ROM   0x024244u
+#define CONTROLLER_ITEMS_ROM 0x024342u
+#define CONTROLLER_COUNT_ROM 0x0243C6u
+
+/* who plays: 0 both, 1 ToeJam, 2 Earl (an absent player gets lives $FF, rank 9, floor $63) */
+static void set_players(int who)
+{
+    int p;
+    for (p = 0; p < 2; p++) {
+        int absent = (who == 1 && p == 1) || (who == 2 && p == 0);
+        wr8(TOEJAMS_LIVES + (uint32_t)p, absent ? 0xFF : 0);
+        wr8(TOEJAMS_PROMOTION + (uint32_t)p, absent ? 9 : 0);
+        wr8(TOEJAMS_LEVEL + 0x80u * (uint32_t)p, absent ? 0x63 : 0);
+    }
+    wr8(PLAYER_INDICATOR, who == 0 ? 2 : who == 1 ? 0 : 1);
+    wr8(PAD2_AS_PLAYER1, 0);
+    if (who == 1) {
+        /* one player on pad 2? (pressing something on it) */
+        CALL(f_02706C_ReadPad2Input);
+        if (R.d[0]) wr8(PAD2_AS_PLAYER1, 1);
+    } else if (who == 2) {
+        CALL(f_027006_ReadPad1Input);
+        if (R.d[0]) wr8(PAD2_AS_PLAYER1, 1);
+    }
+}
+
+static int jam_out_menu(void)
+{
+    Menu m;
+    menu_init(&m);
+    menu_add_rom_items(&m, JAM_OUT_ITEMS_ROM, (int16_t)rd16(JAM_OUT_COUNT_ROM), 0);
+    m.escape_value = MENU_ESCAPE;
+    return menu_run(&m, MENU_TITLE_JAM_OUT);
+}
+
+static int controller_menu(void)
+{
+    Menu m;
+    int v;
+    menu_init(&m);
+    menu_add_rom_items(&m, CONTROLLER_ITEMS_ROM, (int16_t)rd16(CONTROLLER_COUNT_ROM), 0);
+    m.escape_value = MENU_ESCAPE;
+    v = menu_run(&m, MENU_TITLE_CONTROLLER);
+    return v == MENU_ESCAPE ? (int)rd8(CONTROLLER_LAYOUT) : v;   /* Escape keeps the layout */
+}
+
+TJE_OVERRIDE(0x0233B2)
+void f_0233B2_MenuRoutine(void)
+{
+    int who, what;
+    CY(60);
+who:
+    CALL(f_0235E2_PlayerSelectMenu);
+    who = (int16_t)(R.d[0] & 0xFFFF);
+    wr8(PAD2_AS_PLAYER1, 0);
+    if (who >= 0 && who <= 2) set_players(who);
+    for (;;) {
+        CALL(f_023654_GameSelectMenu);
+        what = (int16_t)(R.d[0] & 0xFFFF);
+        if (what == MENU_ESCAPE) goto who;
+        switch (what) {
+        case 0:                                   /* Random World */
+            RETURN();
+        case 4:                                   /* Fixed World */
+            wr8(FIXED_WORLD_FLAG_M, 1);
+            RETURN();
+        case 1: {                                 /* Jam Out */
+            int song = jam_out_menu();
+            if (song == MENU_ESCAPE) continue;
+            push32((uint32_t)(int32_t)song);
+            CALL(f_03A734_JamOut);
+            POP_ARGS(1);
+            goto who;
+        }
+        case 2:                                   /* show the intro again */
+            CALL(f_029A16_IntroVideo);
+            goto who;
+        case 3:                                   /* controller options */
+            wr8(CONTROLLER_LAYOUT, (uint32_t)controller_menu());
+            continue;
+        default:
+            continue;
+        }
+    }
+}

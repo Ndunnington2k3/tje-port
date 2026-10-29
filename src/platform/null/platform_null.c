@@ -5,7 +5,7 @@
  *     --frames N           stop after N frames (default 600)
  *     --shot F:path.ppm    save frame F as a PPM image (repeatable)
  *     --press F:N:buttons  hold buttons from frame F for N frames, pad 1
- *                          (buttons: any of U D L R A B C S)
+ *                          (buttons: any of U D L R A B C S, E = Escape)
  *     --random SEED        after frame 500, mash random buttons (Start only rarely)
  *     --dumpram F:path     save the 64 KB of work RAM at frame F (repeatable)
  *     --dumpvram F:path    save VRAM, CRAM and the VDP registers at frame F
@@ -48,7 +48,7 @@ static unsigned elevator_period;
 static struct { unsigned frame; int slot, load; } saves[MAX_EVENTS];
 static int nsaves;
 static char captures[16][32];
-static int ncaptures, next_capture, capturing;
+static int ncaptures, next_capture, capturing, capture_ready;
 static char bindings[2][8][2][32];
 static struct { unsigned frame, addr, val; } pokes[MAX_EVENTS];
 static int npokes;
@@ -70,6 +70,7 @@ static uint16_t parse_buttons(const char *s)
         case 'B': b |= PAD_B; break;
         case 'C': b |= PAD_C; break;
         case 'S': b |= PAD_START; break;
+        case 'E': b |= PAD_BACK; break;     /* Escape */
         }
     }
     return b;
@@ -208,12 +209,14 @@ void plat_binding_label(int slot, const char *token, char *out, int size)
     if (!*token) snprintf(out, (size_t)size, "--");
     else snprintf(out, (size_t)size, "%s%s", slot == 1 ? "Pad " : "", token);
 }
-void plat_capture_start(int player) { (void)player; capturing = 1; }
+void plat_capture_start(int player) { (void)player; capturing = 1; capture_ready = 0; }
 void plat_capture_cancel(void) { capturing = 0; }
+/* Like a real key press: the capture completes once a --press button is down
+ * while capturing (that button stands for the key being bound). */
 int plat_capture_poll(int *slot, char *token, int size)
 {
     const char *c;
-    if (!capturing) return 0;
+    if (!capturing || !capture_ready) return 0;
     capturing = 0;
     if (next_capture >= ncaptures) return -1;
     c = captures[next_capture++];
@@ -325,6 +328,15 @@ int plat_poll(uint16_t pad[2])
         unsigned t = frame % elevator_period;
         pad[1] = 0;
         if (t < 150) pad[0] = 0;  /* hands off while the elevator rides */
+    }
+    {
+        /* a capture completes on a newly pressed button, like a key-down event */
+        static uint16_t held_before;
+        uint16_t held = 0;
+        for (i = 0; i < npresses; i++)
+            if (frame >= presses[i].frame && frame < presses[i].frame + presses[i].len) held |= presses[i].buttons;
+        if (capturing && (held & ~held_before)) capture_ready = 1;
+        held_before = held;
     }
     for (i = 0; i < npokes; i++)
         if (pokes[i].frame == frame) wr8(pokes[i].addr, pokes[i].val);

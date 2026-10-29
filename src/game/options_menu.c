@@ -61,6 +61,10 @@ static void capture_binding(Menu *m, int i)
         r = plat_capture_poll(&slot, token, sizeof token);
     }
     if (r == 0) plat_capture_cancel();
+    /* Wait until everything is let go: the key just pressed may now be bound to
+     * a button the menu reacts to (A would start another capture at once). */
+    for (frames = 0; frames < 60 * 5 && ((g_pad[0] | g_pad[1]) & 0x1FFu); frames++)
+        menu_frame();
     if (r == 1) {
         /* an input already used by another button of this player swaps over */
         char old[32];

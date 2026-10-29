@@ -5,7 +5,8 @@
  * Default controls (player 2):  W/A/S/D = d-pad, J = A, K = B, L = C, Right Shift = Start
  * Game controllers are assigned to players 1 and 2 in the order they are connected;
  * by default X/A/B = Genesis A/B/C. All of this can be rebound (plat_set_binding).
- * F11 / Alt+Enter toggles fullscreen, Escape quits. --mute disables sound.
+ * F11 / Alt+Enter toggles fullscreen. Escape (or a controller's Back button) is
+ * PAD_BACK: "back" on the port's menus, Start (pause) during play. --mute disables sound.
  */
 #include "platform/platform.h"
 #include "core/genesis.h"
@@ -318,6 +319,8 @@ static uint16_t read_player(int p, const Uint8 *k)
             down = 0;   /* Alt+Enter is the fullscreen toggle */
         if (down || pad_input_down(c, bind_pad[p][b])) bits |= (uint16_t)(1u << b);
     }
+    if (p == 0 && k[SDL_SCANCODE_ESCAPE]) bits |= PAD_BACK;
+    if (c && SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_BACK)) bits |= PAD_BACK;
     if (c) {
         /* the left stick always works as a d-pad too */
         Sint16 x = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX);
@@ -350,7 +353,6 @@ int plat_poll(uint16_t pad[2])
         if (e.type == SDL_QUIT) return 0;
         if (capturing) { capture_event(&e); if (e.type == SDL_KEYDOWN) continue; }
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-            if (e.key.keysym.sym == SDLK_ESCAPE) return 0;
             if (e.key.keysym.sym == SDLK_F11 ||
                 (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
                 Uint32 fs = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;

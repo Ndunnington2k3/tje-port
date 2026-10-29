@@ -185,6 +185,7 @@ void f_023654_GameSelectMenu(void)
                 menu_add(&m, 6, 12, "Play New Game -- Custom World", WHAT_CUSTOM);
         }
         m.sel = sel;
+        m.escape_value = MENU_ESCAPE;        /* back to the Who screen (MenuRoutine) */
         v = menu_run(&m, MENU_TITLE_WHAT);
         sel = m.sel;
         if (v != WHAT_CUSTOM) break;

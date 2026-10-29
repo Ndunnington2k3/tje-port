@@ -12,7 +12,8 @@ extern "C" {
 /* Controller buttons (bit set = pressed) */
 enum {
     PAD_UP = 1 << 0, PAD_DOWN = 1 << 1, PAD_LEFT = 1 << 2, PAD_RIGHT = 1 << 3,
-    PAD_B = 1 << 4, PAD_C = 1 << 5, PAD_A = 1 << 6, PAD_START = 1 << 7
+    PAD_B = 1 << 4, PAD_C = 1 << 5, PAD_A = 1 << 6, PAD_START = 1 << 7,
+    PAD_BACK = 1 << 8          /* port only (Escape / controller Back): not a Genesis button */
 };
 
 #define GEN_LINES_NTSC     262
@@ -62,6 +63,10 @@ void genesis_restart_snapshot(const uint8_t *blob, size_t len);
 void genesis_run_events(void);
 /* Deliver any pending interrupt that the current mask allows. */
 void genesis_check_interrupts(void);
+
+/* Called after the platform reads the controllers each frame, before the game
+ * sees them (e.g. to turn PAD_BACK into Start during play). NULL for none. */
+void genesis_set_input_hook(void (*fn)(uint16_t pad[2]));
 
 /* Controllers: current button state for pad 0/1 (PAD_* bits). */
 extern uint16_t g_pad[2];

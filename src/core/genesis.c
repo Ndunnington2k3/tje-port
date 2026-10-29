@@ -24,6 +24,9 @@ static int hint_counter;
 static int vint_pending, hint_pending;
 static int in_events;
 static void (*line0_hook)(void);
+static void (*input_hook)(uint16_t pad[2]);
+
+void genesis_set_input_hook(void (*fn)(uint16_t pad[2])) { input_hook = fn; }
 
 void genesis_set_frame_hook(void (*fn)(void)) { line0_hook = fn; }
 static uint8_t *pending_state;   /* Gens save state to start from, if any */
@@ -143,6 +146,7 @@ static void end_of_frame(void)
         quit_code = 0;
         longjmp(quit_jmp, 1);
     }
+    if (input_hook) input_hook(g_pad);
 }
 
 void genesis_run_events(void)
