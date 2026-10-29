@@ -9,6 +9,7 @@
 #include "game.h"
 #include "save.h"
 #include "core/vdp.h"
+#include "art.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -85,6 +86,58 @@ static int run_menu(int title, const ItemTable *t)
     return choice;
 }
 
+/* The saved-games list has its own title, "LOAD?" (art/load_title.png), drawn
+ * over the "WHO..." title sprites: same sprites (palette line 1), our tiles and
+ * colours, written each frame before the screen is drawn. Palette line 1 is
+ * only used by the title, and LoadMenu reloads it for the other menus. */
+static void load_title_frame(void)
+{
+    const ArtImage *art = &art_load_title;
+    uint32_t sat = (uint32_t)(vdp_reg[5] & 0x7F) << 9;
+    int i, n = 0, link = 0, base_x = 0, base_y = 0;
+    if (vdp_reg[0x0C] & 0x81) sat &= 0xFC00u;
+    for (i = 0; i < 80; i++) {
+        uint32_t a = (sat + (uint32_t)link * 8) & 0xFFFF;
+        uint32_t attr = (uint32_t)(vdp_vram[a + 4] << 8) | vdp_vram[a + 5];
+        if (((attr >> 13) & 3) == 1) {
+            uint32_t tile = attr & 0x7FFu;
+            int tx, ty, x, y;
+            if (n == 0) {
+                base_x = ((vdp_vram[a + 6] << 8) | vdp_vram[a + 7]) & 0x1FF;
+                base_y = ((vdp_vram[a] << 8) | vdp_vram[a + 1]) & 0x3FF;
+            }
+            if (n < 3 && vdp_vram[a + 2] == 0x0F) {
+                /* a 32x32 block: image rows 1-32 (row 0 is empty), columns 32n.. */
+                vdp_vram[a] = (uint8_t)((base_y + 1) >> 8); vdp_vram[a + 1] = (uint8_t)(base_y + 1);
+                vdp_vram[a + 6] = (uint8_t)((base_x + 32 * n) >> 8); vdp_vram[a + 7] = (uint8_t)(base_x + 32 * n);
+                for (tx = 0; tx < 4; tx++)
+                    for (ty = 0; ty < 4; ty++) {
+                        uint8_t *dst = &vdp_vram[((tile + (uint32_t)(tx * 4 + ty)) * 32) & 0xFFFF];
+                        for (y = 0; y < 8; y++)
+                            for (x = 0; x < 8; x += 2) {
+                                int ix = 32 * n + tx * 8 + x, iy = 1 + ty * 8 + y;
+                                int p0 = 0, p1 = 0;
+                                if (iy < art->height && ix < art->width) {
+                                    p0 = art->pixels[iy * art->width + ix];
+                                    if (ix + 1 < art->width) p1 = art->pixels[iy * art->width + ix + 1];
+                                }
+                                dst[y * 4 + x / 2] = (uint8_t)(p0 << 4 | p1);
+                            }
+                    }
+            } else {
+                /* the extra dot sprite: not needed */
+                vdp_vram[a] = 0; vdp_vram[a + 1] = 0;
+            }
+            n++;
+        }
+        link = vdp_vram[a + 3] & 0x7F;
+        if (!link) break;
+    }
+    for (i = 0; i < art->colors; i++)
+        vdp_cram[16 + art->palette[i].slot] = art->palette[i].color;
+    vdp_refresh_palette();
+}
+
 /* The saved-games list. Loading a file does not return. */
 static void load_game_menu(void)
 {
@@ -124,7 +177,9 @@ static void load_game_menu(void)
                 add_item(&t, 10, 11 + i * 4, rom_string(line), -1);
             }
         }
+        genesis_set_frame_hook(load_title_frame);
         choice = run_menu(MENU_WHO, &t);
+        genesis_set_frame_hook(NULL);
         if (choice == back) return;
         if (choice >= 0 && choice < SAVE_SLOTS && info[choice].used) {
             if (save_load(choice) != 0) {

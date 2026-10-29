@@ -184,6 +184,18 @@ The Who screen uses the game's own menu routine (LOC_00023784) with item tables 
 a *port ROM* area after the ROM (`genesis_port_rom`), so the game's code can be handed pointers to
 them. Quit to Menu restarts the machine with `g_boot_to_menu` set, which skips the SEGA screen.
 
+## Port artwork (art/, src/game/art_*.c)
+
+New graphics drawn for the port live in `art/` as PNGs and are converted to C by `tools/art2c.py`
+(re-run it after editing a PNG): colour slots per pixel plus the Genesis colour for each slot used.
+Colours must be Genesis colours (components on the 0, 36, 72 ... 255 scale). They are drawn by a
+*frame hook* (`genesis_set_frame_hook`), which runs just before line 0 of each frame, after the game's
+VBlank work, and writes VRAM/CRAM directly.
+
+- `load_title.png`: "LOAD?" on the saved-games list. It replaces the tiles and positions of the
+  "WHO..." title sprites (three 32x32 blocks on palette line 1) and sets line 1 colours 12-15, which
+  nothing else on the menu screens uses; `LoadMenu` reloads the line for the other menus.
+
 ## Save states
 
 `--state` loads a Gens save state (RAM, VRAM, CRAM, VSRAM, VDP registers, Z80 RAM, FM registers) and

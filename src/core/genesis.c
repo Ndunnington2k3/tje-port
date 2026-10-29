@@ -23,6 +23,9 @@ static int line;           /* current scanline 0..261 */
 static int hint_counter;
 static int vint_pending, hint_pending;
 static int in_events;
+static void (*line0_hook)(void);
+
+void genesis_set_frame_hook(void (*fn)(void)) { line0_hook = fn; }
 static uint8_t *pending_state;   /* Gens save state to start from, if any */
 
 /* Restarts requested from inside the running game (see genesis_restart_*). */
@@ -163,6 +166,7 @@ void genesis_run_events(void)
         } else if (line == GEN_LINES_NTSC) {
             line = 0;
             vdp_set_vblank(0);
+            if (line0_hook) line0_hook();
         }
         vdp_set_line(line);
         in_events = 0;
@@ -292,6 +296,7 @@ void genesis_restart_snapshot(const uint8_t *blob, size_t len)
 
 static void machine_reset(void)
 {
+    line0_hook = NULL;
     memset(&R, 0, sizeof R);
     memset(g_ram, 0, sizeof g_ram);
     vdp_reset();

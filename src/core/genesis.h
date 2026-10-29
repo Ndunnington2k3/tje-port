@@ -35,6 +35,11 @@ int genesis_run(void);
 uint32_t genesis_port_rom(const void *data, uint32_t size);
 void genesis_port_rom_reset(void);
 
+/* Port code to run at the start of every frame, just before line 0 is drawn
+ * (after the game's VBlank work), e.g. to put the port's own graphics in VRAM.
+ * NULL to stop. Cleared when the machine restarts. */
+void genesis_set_frame_hook(void (*fn)(void));
+
 /* Machine snapshots: the complete machine (CPU registers, RAM, VDP, sound) as a
  * portable byte blob. Taken by game code at a known point (the top of the main
  * game loop), restored by restarting from it.

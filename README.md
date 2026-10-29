@@ -5,7 +5,7 @@ A multiplatform C port of *ToeJam & Earl* (Sega Genesis, 1991), built from the
 
 Windows is the first (prototype) target. PSP and Nintendo 3DS are planned.
 
-> This repository contains **no game code or assets**. You need your own copy of the
+> This repository contains **no game code or assets** (the only artwork, in `art/`, is the port's own). You need your own copy of the
 > disassembly and the original ROM (`Toejam & Earl (U) (REV 00) [!].bin`) to build and run it.
 
 ## Status
@@ -89,7 +89,7 @@ Port changes so far (on by default):
 - **Saved games** (3 files, both players): saving remembers your presents, identified presents, stats
   and rocketship pieces; presents you picked up stay gone; loading puts you back at the start of that floor, stepping out of the
   elevator. A collected ship piece stays collected. Random World keeps its world. Load from
-  **Load Game** on the Who screen. Files are `tje_save1.sav`-`tje_save3.sav` next to the program
+  **Load Game** on the Who screen, which has its own "LOAD?" title. Files are `tje_save1.sav`-`tje_save3.sav` next to the program
   (or in the folder named by the `TJE_SAVE_DIR` environment variable).
 
 ## Controls
