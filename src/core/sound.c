@@ -5,6 +5,8 @@
 #include "z80.h"
 #include "ym3438.h"
 
+#include "ser.h"
+
 #include <string.h>
 
 /* Clocks (master M = 53.69 MHz; 68000 = M/7):
@@ -32,6 +34,10 @@ static uint32_t ym_frac;           /* remainder in 68k cycles (0..5) */
 static uint32_t ym_debt;           /* extra cycles already clocked between back-to-back writes */
 static int ym_slot;
 static int32_t ym_acc[2];
+/* Copy of every FM register written, kept even with synthesis off, so a snapshot
+ * can bring the chip back by replaying them. */
+static uint8_t ym_shadow[512];
+static uint8_t ym_latch[2];
 
 /* PSG */
 static uint16_t psg_tone[3], psg_count[3];
@@ -157,6 +163,13 @@ unsigned long snd_stat_dac_writes, snd_stat_dac_enable;
 static uint8_t stat_addr0;
 #endif
 
+static void ym_shadow_write(uint32_t port, uint32_t v)
+{
+    port &= 3;
+    if (!(port & 1)) ym_latch[port >> 1] = (uint8_t)v;
+    else ym_shadow[(port >> 1) * 256 + ym_latch[port >> 1]] = (uint8_t)v;
+}
+
 static void ym_write(uint32_t port, uint32_t v, uint32_t when)
 {
 #ifdef TJE_SND_STATS
@@ -205,7 +218,7 @@ static void z80_write(void *ud, uint16_t a, uint8_t v)
 {
     (void)ud;
     if (a < 0x4000) { z80_ram[a & 0x1FFF] = v; return; }
-    if (a < 0x6000) { if (enabled) ym_write(a, v, z80_now68()); return; }
+    if (a < 0x6000) { ym_shadow_write(a, v); if (enabled) ym_write(a, v, z80_now68()); return; }
     if (a < 0x6100) { z80_bank = ((z80_bank >> 1) | ((uint32_t)(v & 1) << 23)) & 0xFF8000u; return; }
     if (a == 0x7F11 || a == 0x7F13 || a == 0x7F15 || a == 0x7F17) { snd_psg_write(v); return; }
     if (a >= 0x8000) wr8(z80_bank | (a & 0x7FFF), v);
@@ -261,6 +274,7 @@ void snd_z80_area_write(uint32_t a, uint32_t v)
     if (a < 0x4000) { z80_sync(R.cycles); z80_ram[a & 0x1FFF] = (uint8_t)v; return; }
     if (a < 0x6000) {
         z80_sync(R.cycles);
+        ym_shadow_write(a, v);
         if (enabled) ym_write(a, v, R.cycles);
         return;
     }
@@ -292,6 +306,7 @@ void snd_reset_write(uint32_t v)
         cpu.port_in = z80_in;
         cpu.port_out = z80_out;
         if (enabled) { ym_sync(R.cycles); OPN2_Reset(&ym); }
+        memset(ym_shadow, 0, sizeof ym_shadow);
     }
     z80_reset_line = assert_reset;
 }
@@ -380,6 +395,8 @@ void snd_reset(void)
     ym_frac = 0;
     ym_debt = 0;
     OPN2_Reset(&ym);
+    memset(ym_shadow, 0, sizeof ym_shadow);
+    ym_latch[0] = ym_latch[1] = 0;
     ym_slot = 0;
     ym_acc[0] = ym_acc[1] = 0;
     memset(psg_tone, 0, sizeof psg_tone);
@@ -393,19 +410,12 @@ void snd_reset(void)
     dc_x[0] = dc_x[1] = dc_y[0] = dc_y[1] = 0;
 }
 
-void snd_load_state(const uint8_t *zram, const uint8_t *regs)
+/* Bring the FM chip to the given register values (no key-ons: notes restart
+ * when the driver next plays them). */
+static void ym_replay(const uint8_t *regs)
 {
     int port, r;
-    memcpy(z80_ram, zram, sizeof z80_ram);
-    z80_init(&cpu);
-    cpu.read_byte = z80_read;
-    cpu.write_byte = z80_write;
-    cpu.port_in = z80_in;
-    cpu.port_out = z80_out;
-    z80_busreq = 0;
-    z80_reset_line = 0;
-    z80_pos = ym_pos = R.cycles;
-    z80_budget = 0;
+    memcpy(ym_shadow, regs, sizeof ym_shadow);
     if (!enabled) return;
     OPN2_Reset(&ym);
     for (port = 0; port < 2; port++)
@@ -415,4 +425,93 @@ void snd_load_state(const uint8_t *zram, const uint8_t *regs)
             ym_write((uint32_t)port * 2, (uint32_t)r, R.cycles);
             ym_write((uint32_t)port * 2 + 1, regs[port * 256 + r], R.cycles);
         }
+}
+
+static void z80_attach(void)
+{
+    cpu.read_byte = z80_read;
+    cpu.write_byte = z80_write;
+    cpu.port_in = z80_in;
+    cpu.port_out = z80_out;
+    cpu.userdata = NULL;
+}
+
+void snd_load_state(const uint8_t *zram, const uint8_t *regs)
+{
+    memcpy(z80_ram, zram, sizeof z80_ram);
+    z80_init(&cpu);
+    z80_attach();
+    z80_busreq = 0;
+    z80_reset_line = 0;
+    z80_pos = ym_pos = R.cycles;
+    z80_budget = 0;
+    ym_replay(regs);
+}
+
+/* ---- snapshots ---------------------------------------------------------- */
+void snd_save(Ser *s)
+{
+    int i;
+    z80_sync(R.cycles);
+    ser_bytes(s, z80_ram, sizeof z80_ram);
+    ser_u32(s, z80_bank);
+    ser_u8(s, (uint32_t)z80_busreq);
+    ser_u8(s, (uint32_t)z80_reset_line);
+    ser_u32(s, (uint32_t)z80_budget);
+    ser_u32(s, (uint32_t)cpu.cyc);
+    ser_u16(s, cpu.pc); ser_u16(s, cpu.sp); ser_u16(s, cpu.ix); ser_u16(s, cpu.iy); ser_u16(s, cpu.mem_ptr);
+    ser_u8(s, cpu.a); ser_u8(s, cpu.b); ser_u8(s, cpu.c); ser_u8(s, cpu.d);
+    ser_u8(s, cpu.e); ser_u8(s, cpu.h); ser_u8(s, cpu.l);
+    ser_u8(s, cpu.a_); ser_u8(s, cpu.b_); ser_u8(s, cpu.c_); ser_u8(s, cpu.d_);
+    ser_u8(s, cpu.e_); ser_u8(s, cpu.h_); ser_u8(s, cpu.l_); ser_u8(s, cpu.f_);
+    ser_u8(s, cpu.i); ser_u8(s, cpu.r);
+    ser_u8(s, (uint32_t)(cpu.sf | cpu.zf << 1 | cpu.yf << 2 | cpu.hf << 3 |
+                         cpu.xf << 4 | cpu.pf << 5 | cpu.nf << 6 | cpu.cf << 7));
+    ser_u8(s, cpu.iff_delay); ser_u8(s, cpu.interrupt_mode); ser_u8(s, cpu.int_data);
+    ser_u8(s, (uint32_t)(cpu.iff1 | cpu.iff2 << 1 | cpu.halted << 2 | cpu.int_pending << 3 | cpu.nmi_pending << 4));
+    ser_bytes(s, ym_shadow, sizeof ym_shadow);
+    ser_bytes(s, ym_latch, sizeof ym_latch);
+    for (i = 0; i < 3; i++) { ser_u16(s, psg_tone[i]); ser_u16(s, psg_count[i]); ser_u8(s, psg_out[i]); }
+    for (i = 0; i < 4; i++) ser_u8(s, psg_vol[i]);
+    ser_u8(s, psg_latch); ser_u8(s, psg_noise_ctrl);
+    ser_u16(s, psg_noise_count); ser_u16(s, psg_lfsr);
+}
+
+void snd_load(Ser *s)
+{
+    int i;
+    uint32_t f;
+    uint8_t regs[512];
+    des_bytes(s, z80_ram, sizeof z80_ram);
+    z80_bank = des_u32(s);
+    z80_busreq = (int)des_u8(s);
+    z80_reset_line = (int)des_u8(s);
+    z80_budget = (int32_t)des_u32(s);
+    z80_init(&cpu);
+    z80_attach();
+    cpu.cyc = des_u32(s);
+    cpu.pc = (uint16_t)des_u16(s); cpu.sp = (uint16_t)des_u16(s); cpu.ix = (uint16_t)des_u16(s);
+    cpu.iy = (uint16_t)des_u16(s); cpu.mem_ptr = (uint16_t)des_u16(s);
+    cpu.a = (uint8_t)des_u8(s); cpu.b = (uint8_t)des_u8(s); cpu.c = (uint8_t)des_u8(s); cpu.d = (uint8_t)des_u8(s);
+    cpu.e = (uint8_t)des_u8(s); cpu.h = (uint8_t)des_u8(s); cpu.l = (uint8_t)des_u8(s);
+    cpu.a_ = (uint8_t)des_u8(s); cpu.b_ = (uint8_t)des_u8(s); cpu.c_ = (uint8_t)des_u8(s); cpu.d_ = (uint8_t)des_u8(s);
+    cpu.e_ = (uint8_t)des_u8(s); cpu.h_ = (uint8_t)des_u8(s); cpu.l_ = (uint8_t)des_u8(s); cpu.f_ = (uint8_t)des_u8(s);
+    cpu.i = (uint8_t)des_u8(s); cpu.r = (uint8_t)des_u8(s);
+    f = des_u8(s);
+    cpu.sf = f & 1; cpu.zf = (f >> 1) & 1; cpu.yf = (f >> 2) & 1; cpu.hf = (f >> 3) & 1;
+    cpu.xf = (f >> 4) & 1; cpu.pf = (f >> 5) & 1; cpu.nf = (f >> 6) & 1; cpu.cf = (f >> 7) & 1;
+    cpu.iff_delay = (uint8_t)des_u8(s); cpu.interrupt_mode = (uint8_t)des_u8(s); cpu.int_data = (uint8_t)des_u8(s);
+    f = des_u8(s);
+    cpu.iff1 = f & 1; cpu.iff2 = (f >> 1) & 1; cpu.halted = (f >> 2) & 1;
+    cpu.int_pending = (f >> 3) & 1; cpu.nmi_pending = (f >> 4) & 1;
+    des_bytes(s, regs, sizeof regs);
+    des_bytes(s, ym_latch, sizeof ym_latch);
+    for (i = 0; i < 3; i++) { psg_tone[i] = (uint16_t)des_u16(s); psg_count[i] = (uint16_t)des_u16(s); psg_out[i] = (uint8_t)des_u8(s); }
+    for (i = 0; i < 4; i++) psg_vol[i] = (uint8_t)des_u8(s);
+    psg_latch = (uint8_t)des_u8(s); psg_noise_ctrl = (uint8_t)des_u8(s);
+    psg_noise_count = (uint16_t)des_u16(s); psg_lfsr = (uint16_t)des_u16(s);
+    z80_pos = ym_pos = R.cycles;
+    ym_frac = 0;
+    ym_debt = 0;
+    ym_replay(regs);
 }

@@ -3,6 +3,7 @@
 #define TJE_VDP_H
 
 #include <stdint.h>
+#include "ser.h"
 
 #define VDP_MAX_WIDTH 320
 #define VDP_HEIGHT    224
@@ -24,6 +25,10 @@ void vdp_ack_vint(void);
 int vdp_vint_enabled(void);
 int vdp_hint_enabled(void);
 int vdp_hint_reload(void);
+
+/* Machine snapshots: all VDP memory and internal state. */
+void vdp_save(Ser *s);
+void vdp_load(Ser *s);
 
 const uint32_t *vdp_framebuffer(void);   /* 0x00RRGGBB, VDP_FB_PITCH pixels per row */
 int vdp_width(void);                     /* 256 or 320 */

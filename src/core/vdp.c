@@ -1,6 +1,7 @@
 #include "vdp.h"
 #include "m68k_rt.h"
 #include "genesis.h"
+#include "ser.h"
 
 #include <string.h>
 
@@ -403,4 +404,38 @@ void vdp_render_line(int line)
         fb[x] = have ? palette_rgb[c & 0x3F] : bg;
     }
     for (; x < VDP_MAX_WIDTH; x++) fb[x] = 0;
+}
+
+/* ---- snapshots ---------------------------------------------------------- */
+void vdp_save(Ser *s)
+{
+    int i;
+    ser_bytes(s, vdp_vram, sizeof vdp_vram);
+    for (i = 0; i < 64; i++) ser_u16(s, vdp_cram[i]);
+    for (i = 0; i < 40; i++) ser_u16(s, vdp_vsram[i]);
+    ser_bytes(s, vdp_reg, sizeof vdp_reg);
+    ser_u8(s, (uint32_t)write_pending);
+    ser_u32(s, code);
+    ser_u32(s, addr);
+    ser_u8(s, (uint32_t)fill_pending);
+    ser_u8(s, (uint32_t)vblank_flag);
+    ser_u8(s, (uint32_t)vint_flag);
+    ser_u16(s, (uint32_t)cur_line);
+}
+
+void vdp_load(Ser *s)
+{
+    int i;
+    des_bytes(s, vdp_vram, sizeof vdp_vram);
+    for (i = 0; i < 64; i++) vdp_cram[i] = (uint16_t)des_u16(s);
+    for (i = 0; i < 40; i++) vdp_vsram[i] = (uint16_t)des_u16(s);
+    des_bytes(s, vdp_reg, sizeof vdp_reg);
+    write_pending = (int)des_u8(s);
+    code = des_u32(s);
+    addr = des_u32(s);
+    fill_pending = (int)des_u8(s);
+    vblank_flag = (int)des_u8(s);
+    vint_flag = (int)des_u8(s);
+    cur_line = (int)des_u16(s);
+    vdp_refresh_palette();
 }

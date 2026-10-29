@@ -80,7 +80,15 @@ Replaced so far:
 | Routine | File | Change |
 |---|---|---|
 | `SEGAAndIntroVideoRoutine` ($027AD6) | `intro.c` | quick start: skip title/intro if the SEGA screen was skipped |
-| `SEGAVideo` ($03A476) | `intro.c` | Start ends the SEGA screen cleanly (logo or ship phase) |
+| `SEGAVideo` ($03A476) | `intro.c` | Start ends the SEGA screen cleanly (logo or ship phase); skipped after Quit to Menu |
+| `InGameLoop` ($0014E6) | `save.c` | records an arrival snapshot when a player reaches a floor |
+| `GamePaused` ($01DBD8) | `pause.c` | pause menu (resume / save / quit) in the status bar |
+| `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" and a saved-games list |
+
+`InGameLoop` is a *split point* in the translator (`SPLIT_LABELS`): code flowing into it becomes a call,
+so `StartGame` does not inline the loop and the loop can be replaced on its own. Without pausing, RAM
+outside the stack matches the previous build exactly (boot with random input, level states, elevator
+rides).
 
 Without Start pressed, RAM outside the stack matches the original translation exactly through the SEGA
 screen, ship, title and intro (checked at frames 100, 300, 800 and 2900).
@@ -142,6 +150,36 @@ The music deliberately sounds rough in places: several instruments use operator 
 noisy on the real chip too.
 
 Planned: a native sound routine behind the same `snd_*` calls, and a lighter FM core for PSP/3DS.
+
+## Saved games (src/game/save.c, pause.c, menus.c)
+
+Not save states: a save restarts the floor. The machine model can take a complete *snapshot* - CPU
+registers, work RAM, VDP memory and state, Z80 and its RAM, FM registers (replayed into the chip on
+load, so a snapshot loads the same with sound on or off), PSG - as a portable little-endian blob
+(`genesis_snapshot`, `src/core/ser.h`), and restart from one (`genesis_restart_snapshot`, which
+`longjmp`s back into `genesis_run`).
+
+The C `InGameLoop` takes a snapshot at the top of the loop whenever a player arrives on a floor (the
+first pass of a new game counts). At that moment an elevator arrival still has the player inside
+the elevator, so loading replays stepping out. A floor reached by falling keeps the snapshot from
+when an elevator last brought a player there. With two players, the most recent arrival is used.
+
+Saving copies that floor's snapshot and writes the current progress into its RAM image: lives, bucks,
+points, rank and health ($FFA248-$FFA259), highest floor, present identities and both inventories
+($FFDA8A-$FFDAE1) and the ship piece table ($FFE212, 10 floors, 0 = collected). The file holds a
+summary for the file list, then the blob with a checksum; it is written to a temporary file and
+renamed. Loading restarts from the blob, then on the loop's first pass removes ship-piece earthlings
+(type 0 in the 18-byte entries at $FFDE72) whose floor is no longer in the ship table, the way
+collecting one does, and redraws the HUD.
+
+The pause menu draws in the window plane (the status bar) with the HUD's font (tiles $5B5 a-z, $5D8
+0-9) and restores the bar afterwards. HUD sprites over the bar are moved off screen while it is up;
+one of their sprite-table entries shows ToeJam's pointing hand, whose tiles are copied from VRAM when
+a menu screen shows it and placed over the rank-text tiles ($59F) for the duration.
+
+The Who screen uses the game's own menu routine (LOC_00023784) with item tables built at run time in
+a *port ROM* area after the ROM (`genesis_port_rom`), so the game's code can be handed pointers to
+them. Quit to Menu restarts the machine with `g_boot_to_menu` set, which skips the SEGA screen.
 
 ## Save states
 

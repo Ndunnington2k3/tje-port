@@ -38,6 +38,11 @@ ROM_END = 0x100000
 # Labels inside larger routines that the runtime needs to call directly
 # (InGameLoop: the main game loop, entered after loading a save state).
 EXTRA_ENTRY_LABELS = ['InGameLoop']
+
+# Split points: code that flows (falls through or branches) into one of these
+# hands over to its own C function instead of carrying an inline copy, so a
+# replacement in src/game takes effect everywhere. StartGame falls into InGameLoop.
+SPLIT_LABELS = ['InGameLoop']
 MASK = {'b': 0xFF, 'w': 0xFFFF, 'l': 0xFFFFFFFF}
 NBYTES = {'b': 1, 'w': 2, 'l': 4}
 
@@ -64,6 +69,7 @@ class TranslateError(Exception):
 # --------------------------------------------------------------------------
 class Program:
     overrides = set()
+    split = set()
 
     def __init__(self, rom, listing):
         self.rom = rom
@@ -72,6 +78,7 @@ class Program:
         self.cache = {}
         self.entries = {}        # addr -> reason
         self.funcs = {}          # addr -> Function
+        self.split = set()       # split-point addresses (see SPLIT_LABELS)
         self.warnings = []
 
     def ins(self, a):
@@ -110,6 +117,10 @@ class Program:
             a = self.label_addr(name)
             if a is not None:
                 self.entries.setdefault(a, f'runtime entry point {name}')
+        for name in SPLIT_LABELS:
+            a = self.label_addr(name)
+            if a is not None:
+                self.split.add(a)
         vec = [int.from_bytes(self.rom[i * 4:i * 4 + 4], 'big') for i in range(64)]
         for i, v in enumerate(vec[1:], 1):
             if v < ROM_END and v in self.L.code:
@@ -156,6 +167,8 @@ class Program:
         while work:
             a = work.pop()
             while a not in seen:
+                if a in self.split and a != entry:
+                    break   # handed over to the split point's own function
                 if a >= ROM_END or a & 1:
                     raise TranslateError(f'flow to bad address {a:06X} in {entry:06X}')
                 try:
@@ -417,6 +430,9 @@ class FuncEmitter:
 
     # ---- control helpers --------------------------------------------------
     def goto(self, tgt):
+        if tgt not in self.instrs and tgt in self.P.split:
+            # control passes to a split point: continue in its own function (a jump, not a call)
+            return f'{{ {self.P.fname(tgt)}(); return; }}'
         return f'goto L_{tgt:06X};'
 
     def call(self, i, tgt_expr, direct):
@@ -818,10 +834,15 @@ class FuncEmitter:
             self.out.append('    /* ' + c.replace('*/', '* /') + ' */')
             self.out.append('    {')
             body_start = len(self.out)
+            falls_through = i.op in ('jsr', 'bsr', 'bcc', 'dbcc')
             if not self.emit_control(i):
                 self.emit_ins(i)
-                nxt = a + i.length
-                if nxt not in self.instrs:
+                falls_through = True
+            nxt = a + i.length
+            if falls_through and nxt not in self.instrs:
+                if nxt in P.split:
+                    self.line(f'{P.fname(nxt)}(); return; /* falls into a split point */')
+                else:
                     self.line(f'goto L_{nxt:06X}; /* unreachable fallthrough */')
             # indent body by one level
             self.out[body_start:] = ['    ' + s for s in self.out[body_start:]]

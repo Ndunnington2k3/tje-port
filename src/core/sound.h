@@ -10,6 +10,7 @@
 #define TJE_SOUND_H
 
 #include <stdint.h>
+#include "ser.h"
 
 #define SND_OUTPUT_RATE 48000
 
@@ -30,6 +31,11 @@ void snd_psg_write(uint32_t v);                  /* $C00011 */
 /* Restore from a save state: Z80 RAM (8 KB) and the FM registers (2 x 256).
  * The Z80 is restarted from address 0 with the bus released. */
 void snd_load_state(const uint8_t *z80ram, const uint8_t *ym_regs);
+
+/* Machine snapshots: Z80 and its RAM, FM registers, PSG. The FM chip is restored
+ * by replaying its registers, so a snapshot loads the same with sound on or off. */
+void snd_save(Ser *s);
+void snd_load(Ser *s);
 
 /* Called by the machine model */
 void snd_line(int line);      /* once per scanline */

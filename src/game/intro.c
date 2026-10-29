@@ -5,11 +5,14 @@
  * (Source/Cutscenes/Code/SEGALogo.X68 and TitleScreen.X68 in the disassembly).
  * They do exactly what the originals do, plus one port feature:
  *
+ *   After "Quit to menu" (g_boot_to_menu) the SEGA screen is skipped altogether.
+ *
  *   options.quick_start: pressing Start during the SEGA screen ends it cleanly and
  *   skips the title screen and intro, going straight to the Who menu. The original
  *   only reacts to Start once the title screen is up.
  */
 #include "game.h"
+#include "save.h"
 
 /* RAM used by the SEGA screen (names from GameConstants.X68 where it has them) */
 #define VBLANK_FLAG_6       0xFF801Au   /* byte, set while the boot videos run */
@@ -83,6 +86,15 @@ void f_03A476_SEGAVideo(void)
     CALL(f_026FDA_LoadPalette);
     CALL(f_00046A);
     POP_ARGS(2);
+
+    if (g_boot_to_menu) {
+        /* "Quit to menu" restarted the machine: no logo, straight to the menus */
+        g_boot_to_menu = 0;
+        wait_vblank();
+        wr32(VBLANK_OVERRIDE, 0);
+        sega_skipped = 1;
+        RETURN();
+    }
 
     /* logo graphics and tile map */
     wr32(0xC00004u, 0x40000000u);

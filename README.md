@@ -83,6 +83,14 @@ Options:
 Port changes so far (on by default):
 
 - **Quick start**: Start on the SEGA screen goes straight to the Who menu.
+- **Pause menu**: Resume, Save Game, Quit to Menu, in the status bar with ToeJam's pointing hand.
+  Left/Right (or Up/Down) choose, Start selects, B backs out. Start, Start still just pauses and
+  unpauses, and the original pause-screen button code still works.
+- **Saved games** (3 files, both players): saving remembers your presents, identified presents, stats
+  and rocketship pieces; loading puts you back at the start of that floor, stepping out of the
+  elevator. A collected ship piece stays collected. Random World keeps its world. Load from
+  **Load Game** on the Who screen. Files are `tje_save1.sav`-`tje_save3.sav` next to the program
+  (or in the folder named by the `TJE_SAVE_DIR` environment variable).
 
 ## Controls
 
@@ -105,7 +113,8 @@ tje_headless <rom> --frames 40000 --random 7       # mash random buttons for ~11
 ```
 
 Any untranslated call, bad jump or stack imbalance is reported on stderr. More options:
-`--state file.gsx`, `--wav out.wav` (record the sound), `--audio`, `--dumpram F:file`.
+`--state file.gsx`, `--wav out.wav` (record the sound), `--audio`, `--dumpram F:file`,
+`--dumpvram F:file`, `--poke F:addr:val`, `--save F:slot` / `--load F:slot` (saved games).
 
 `tools/stress_test.py` runs many of these in parallel - from boot and from every save state - and
 reports failures. Build with `-DCMAKE_C_FLAGS=-DTJE_COVERAGE` to also get a report of which

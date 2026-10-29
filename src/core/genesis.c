@@ -2,6 +2,7 @@
 #include "m68k_rt.h"
 #include "vdp.h"
 #include "sound.h"
+#include "ser.h"
 #include "platform/platform.h"
 
 #include <setjmp.h>
@@ -14,6 +15,8 @@ uint16_t g_pad[2];
 uint32_t g_frame;
 
 static uint8_t *rom_data;
+#define PORT_ROM_SIZE 0x10000u
+static uint32_t port_rom_base, port_rom_used;
 static jmp_buf quit_jmp;
 static int quit_code;
 static int line;           /* current scanline 0..261 */
@@ -21,6 +24,12 @@ static int hint_counter;
 static int vint_pending, hint_pending;
 static int in_events;
 static uint8_t *pending_state;   /* Gens save state to start from, if any */
+
+/* Restarts requested from inside the running game (see genesis_restart_*). */
+enum { RESTART_NONE, RESTART_BOOT, RESTART_SNAPSHOT };
+static int restart_kind;
+static uint8_t *restart_blob;
+static size_t restart_len;
 
 void genesis_log(const char *fmt, ...)
 {
@@ -58,13 +67,34 @@ int genesis_load_rom(const char *path)
     n = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (n <= 0x200 || n > 0x400000) { fclose(f); return -2; }
-    rom_data = (uint8_t *)malloc((size_t)n);
-    if (!rom_data || fread(rom_data, 1, (size_t)n, f) != (size_t)n) { fclose(f); return -3; }
+    /* room after the ROM for data the port adds (genesis_port_rom) */
+    port_rom_base = ((uint32_t)n + 0xFFFFu) & ~0xFFFFu;
+    port_rom_used = 0;
+    rom_data = (uint8_t *)malloc(port_rom_base + PORT_ROM_SIZE);
+    if (!rom_data) { fclose(f); return -3; }
+    memset(rom_data, 0xFF, port_rom_base + PORT_ROM_SIZE);
+    if (fread(rom_data, 1, (size_t)n, f) != (size_t)n) { fclose(f); return -3; }
     fclose(f);
     /* Accept interleaved .smd? Not needed for now: expect a plain .bin */
     g_rom = rom_data;
-    g_rom_size = (uint32_t)n;
+    g_rom_size = port_rom_base + PORT_ROM_SIZE;
     return 0;
+}
+
+uint32_t genesis_port_rom(const void *data, uint32_t size)
+{
+    uint32_t a;
+    port_rom_used = (port_rom_used + 1u) & ~1u;          /* keep words aligned */
+    if (port_rom_used + size > PORT_ROM_SIZE) return 0;
+    a = port_rom_base + port_rom_used;
+    memcpy(rom_data + a, data, size);
+    port_rom_used += size;
+    return a;
+}
+
+void genesis_port_rom_reset(void)
+{
+    port_rom_used = 0;
 }
 
 static void raise_interrupt(int level, uint32_t vector)
@@ -177,7 +207,90 @@ static void apply_state(const uint8_t *st)
     snd_load_state(st + 0x474, st + 0x1E4);
 }
 
-int genesis_run(void)
+/* ---- machine snapshots ---------------------------------------------------- */
+#define SNAP_MAGIC   0x50414E53u   /* "SNAP" */
+#define SNAP_VERSION 1u
+
+static void machine_save(Ser *s)
+{
+    int i;
+    ser_u32(s, SNAP_MAGIC);
+    ser_u32(s, SNAP_VERSION);
+    for (i = 0; i < 8; i++) ser_u32(s, R.d[i]);
+    for (i = 0; i < 8; i++) ser_u32(s, R.a[i]);
+    ser_u32(s, R.usp);
+    ser_u32(s, R.sr);
+    ser_u32(s, R.next_event - R.cycles);
+    ser_u16(s, (uint32_t)line);
+    ser_u16(s, (uint32_t)hint_counter);
+    ser_u8(s, (uint32_t)vint_pending);
+    ser_u8(s, (uint32_t)hint_pending);
+    ser_bytes(s, g_ram, sizeof g_ram);
+    vdp_save(s);
+    snd_save(s);
+}
+
+size_t genesis_snapshot(uint8_t *buf, size_t cap)
+{
+    Ser s = {NULL, 0, 0, 0};
+    machine_save(&s);
+    if (!buf) return s.pos;
+    if (cap < s.pos) return 0;
+    s.buf = buf; s.pos = 0; s.cap = cap; s.err = 0;
+    machine_save(&s);
+    return s.err ? 0 : s.pos;
+}
+
+static int machine_load(const uint8_t *blob, size_t len)
+{
+    Ser s = {(uint8_t *)blob, 0, len, 0};
+    int i;
+    if (des_u32(&s) != SNAP_MAGIC || des_u32(&s) != SNAP_VERSION) return -1;
+    for (i = 0; i < 8; i++) R.d[i] = des_u32(&s);
+    for (i = 0; i < 8; i++) R.a[i] = des_u32(&s);
+    R.usp = des_u32(&s);
+    R.sr = des_u32(&s);
+    R.next_event = R.cycles + des_u32(&s);
+    line = (int)des_u16(&s);
+    hint_counter = (int16_t)des_u16(&s);
+    vint_pending = (int)des_u8(&s);
+    hint_pending = (int)des_u8(&s);
+    des_bytes(&s, g_ram, sizeof g_ram);
+    vdp_load(&s);
+    snd_load(&s);
+    return s.err ? -1 : 0;
+}
+
+size_t genesis_snapshot_ram_offset(void)
+{
+    return 4 + 4 + 8 * 4 + 8 * 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1;
+}
+
+int genesis_snapshot_valid(const uint8_t *blob, size_t len)
+{
+    Ser s = {(uint8_t *)blob, 0, len, 0};
+    return des_u32(&s) == SNAP_MAGIC && des_u32(&s) == SNAP_VERSION && len == genesis_snapshot(NULL, 0);
+}
+
+void genesis_restart_boot(void)
+{
+    restart_kind = RESTART_BOOT;
+    longjmp(quit_jmp, 1);
+}
+
+void genesis_restart_snapshot(const uint8_t *blob, size_t len)
+{
+    uint8_t *copy = (uint8_t *)malloc(len);
+    if (!copy) return;
+    memcpy(copy, blob, len);
+    free(restart_blob);
+    restart_blob = copy;
+    restart_len = len;
+    restart_kind = RESTART_SNAPSHOT;
+    longjmp(quit_jmp, 1);
+}
+
+static void machine_reset(void)
 {
     memset(&R, 0, sizeof R);
     memset(g_ram, 0, sizeof g_ram);
@@ -191,20 +304,40 @@ int genesis_run(void)
     R.sr = 0x2700;
     R.cycles = 0;
     R.next_event = GEN_CYCLES_PER_LINE;
-    quit_code = 0;
-    if (setjmp(quit_jmp) == 0) {
-        if (pending_state && rt_entry_ingameloop) {
-            apply_state(pending_state);
-            /* Enter the main game loop at its own stack depth (see Misc/Code/InGameLoop.X68). */
-            R.a[7] = 0xFF7FE4;
-            R.sr = 0x2000;
-            rt_call(rt_entry_ingameloop);
-            genesis_log("main loop returned");
+}
+
+int genesis_run(void)
+{
+    for (;;) {
+        int kind;
+        machine_reset();
+        quit_code = 0;
+        kind = restart_kind;
+        restart_kind = RESTART_NONE;
+        if (setjmp(quit_jmp) == 0) {
+            if (kind == RESTART_SNAPSHOT && machine_load(restart_blob, restart_len) == 0) {
+                /* the snapshot was taken at the top of the main game loop */
+                rt_call(rt_entry_ingameloop);
+                genesis_log("main loop returned");
+                return 1;
+            }
+            if (kind == RESTART_NONE && pending_state && rt_entry_ingameloop) {
+                apply_state(pending_state);
+                free(pending_state);
+                pending_state = NULL;
+                /* Enter the main game loop at its own stack depth (see Misc/Code/InGameLoop.X68). */
+                R.a[7] = 0xFF7FE4;
+                R.sr = 0x2000;
+                rt_call(rt_entry_ingameloop);
+                genesis_log("main loop returned");
+                return 1;
+            }
+            rt_call(rt_reset_pc);
+            genesis_log("reset routine returned");
             return 1;
         }
-        rt_call(rt_reset_pc);
-        genesis_log("reset routine returned");
-        return 1;
+        if (restart_kind == RESTART_NONE)
+            return quit_code;
+        /* else: a restart was requested; go round again */
     }
-    return quit_code;
 }

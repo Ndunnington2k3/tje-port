@@ -8,14 +8,20 @@
  *                          (buttons: any of U D L R A B C S)
  *     --random SEED        after frame 500, mash random buttons (Start only rarely)
  *     --dumpram F:path     save the 64 KB of work RAM at frame F (repeatable)
+ *     --dumpvram F:path    save VRAM, CRAM and the VDP registers at frame F
  *     --wav path.wav       emulate sound and record it to a WAV file
  *     --audio              emulate sound (Z80, FM, PSG) without recording it
+ *     --save F:slot        at frame F, save the game to slot 0-2 (port save feature)
+ *     --load F:slot        at frame F, load slot 0-2
+ *     --poke F:addr:val    at frame F, write byte val to address addr (hex), e.g. 100:FFE212:0
  *     --elevator N         every N frames, put ToeJam in the elevator (ELEVATOR_FLAG = 1)
  *                          (test hook: exercises level transitions)
  */
 #include "platform/platform.h"
 #include "core/genesis.h"
 #include "core/m68k_rt.h"
+#include "core/vdp.h"
+#include "game/save.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,12 +36,18 @@ static struct { unsigned frame; char path[256]; } shots[MAX_EVENTS];
 static int nshots;
 static struct { unsigned frame; char path[256]; } dumps[MAX_EVENTS];
 static int ndumps;
+static struct { unsigned frame; char path[256]; } vdumps[MAX_EVENTS];
+static int nvdumps;
 static struct { unsigned frame, len; uint16_t buttons; } presses[MAX_EVENTS];
 static int npresses;
 static unsigned random_seed;
 static uint16_t random_buttons;
 static unsigned random_left;
 static unsigned elevator_period;
+static struct { unsigned frame; int slot, load; } saves[MAX_EVENTS];
+static int nsaves;
+static struct { unsigned frame, addr, val; } pokes[MAX_EVENTS];
+static int npokes;
 static FILE *wav;
 static int audio_flag;
 static uint32_t wav_frames;
@@ -87,6 +99,25 @@ int plat_init(int argc, char **argv)
             dumps[ndumps].frame = (unsigned)atoi(a);
             snprintf(dumps[ndumps].path, sizeof dumps[ndumps].path, "%s", c + 1);
             ndumps++;
+        } else if ((!strcmp(argv[i], "--save") || !strcmp(argv[i], "--load")) && i + 1 < argc && nsaves < MAX_EVENTS) {
+            unsigned f = 0;
+            int slot = 0;
+            saves[nsaves].load = argv[i][2] == 'l';
+            if (sscanf(argv[++i], "%u:%d", &f, &slot) == 2) {
+                saves[nsaves].frame = f;
+                saves[nsaves].slot = slot;
+                nsaves++;
+            }
+        } else if (!strcmp(argv[i], "--poke") && i + 1 < argc && npokes < MAX_EVENTS) {
+            if (sscanf(argv[++i], "%u:%x:%x", &pokes[npokes].frame, &pokes[npokes].addr, &pokes[npokes].val) == 3)
+                npokes++;
+        } else if (!strcmp(argv[i], "--dumpvram") && i + 1 < argc && nvdumps < MAX_EVENTS) {
+            const char *a = argv[++i];
+            const char *c = strchr(a, ':');
+            if (!c) continue;
+            vdumps[nvdumps].frame = (unsigned)atoi(a);
+            snprintf(vdumps[nvdumps].path, sizeof vdumps[nvdumps].path, "%s", c + 1);
+            nvdumps++;
         } else if (!strcmp(argv[i], "--audio")) {
             audio_flag = 1;
         } else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
@@ -170,6 +201,17 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             FILE *f = fopen(dumps[i].path, "wb");
             if (f) { fwrite(g_ram, 1, sizeof g_ram, f); fclose(f); }
         }
+    for (i = 0; i < nvdumps; i++)
+        if (vdumps[i].frame == frame) {
+            /* VRAM (64 KB), then CRAM (64 words) and the VDP registers */
+            FILE *f = fopen(vdumps[i].path, "wb");
+            if (f) {
+                fwrite(vdp_vram, 1, sizeof vdp_vram, f);
+                fwrite(vdp_cram, 2, 64, f);
+                fwrite(vdp_reg, 1, 32, f);
+                fclose(f);
+            }
+        }
     frame++;
 }
 
@@ -208,6 +250,12 @@ int plat_poll(uint16_t pad[2])
             last_level = lv;
         }
     }
+    if (getenv("TJE_TRACE_ELEV")) {
+        /* floor/elevator/fall state each frame, for working out arrival timing */
+        fprintf(stderr, "f%5u TJlv %2u Elv %2u cur %2u/%2u ELEVFLAG %u/%u fall %u/%u elev0 st %02X lv %u pl %u  elev1 st %02X\n",
+                frame, rd8(0xFFA2A6), rd8(0xFFA326), rd8(0xFF912C), rd8(0xFF912E), rd8(0xFFDA6A), rd8(0xFFDA6B),
+                rd8(0xFFDA22), rd8(0xFFDA23), rd8(0xFFDA4A + 5), rd8(0xFFDA4A + 4), rd8(0xFFDA4A + 6), rd8(0xFFDA4A + 0x15));
+    }
     if (elevator_period && frame > 1000 && frame % elevator_period == 0) {
         /* ELEVATOR_FLAG ($FFDA6A, from the disassembly): 1 = ToeJam is in the elevator going up */
         if (rd8(0xFF912C) && rd8(0xFFDA6A) == 0) {
@@ -220,6 +268,18 @@ int plat_poll(uint16_t pad[2])
         pad[1] = 0;
         if (t < 150) pad[0] = 0;  /* hands off while the elevator rides */
     }
+    for (i = 0; i < npokes; i++)
+        if (pokes[i].frame == frame) wr8(pokes[i].addr, pokes[i].val);
+    for (i = 0; i < nsaves; i++)
+        if (saves[i].frame == frame) {
+            if (saves[i].load) {
+                fprintf(stderr, "frame %u: loading slot %d\n", frame, saves[i].slot);
+                if (save_load(saves[i].slot) != 0) fprintf(stderr, "frame %u: load failed\n", frame);
+            } else {
+                int rc = save_write(saves[i].slot);
+                fprintf(stderr, "frame %u: save to slot %d -> %d\n", frame, saves[i].slot, rc);
+            }
+        }
     for (i = 0; i < npresses; i++)
         if (frame >= presses[i].frame && frame < presses[i].frame + presses[i].len) pad[0] |= presses[i].buttons;
     return frame < max_frames;

@@ -3,6 +3,7 @@
 #define TJE_GENESIS_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,26 @@ int genesis_load_state(const char *path);
 /* Reset the machine and run the game. Returns when the platform asks to quit
  * or after a fatal error. Return value: 0 = quit, nonzero = error. */
 int genesis_run(void);
+
+/* Port data in ROM space: copies data (strings, menu tables...) into an area just
+ * after the game's ROM, so game routines can be handed 68000 pointers to it.
+ * Returns its 68000 address (0 if full). genesis_port_rom_reset() frees it all. */
+uint32_t genesis_port_rom(const void *data, uint32_t size);
+void genesis_port_rom_reset(void);
+
+/* Machine snapshots: the complete machine (CPU registers, RAM, VDP, sound) as a
+ * portable byte blob. Taken by game code at a known point (the top of the main
+ * game loop), restored by restarting from it.
+ *   genesis_snapshot(NULL, 0) returns the size; otherwise it writes the blob and
+ *   returns its length (0 if cap is too small). */
+size_t genesis_snapshot(uint8_t *buf, size_t cap);
+/* Where the 64 KB of work RAM ($FF0000-$FFFFFF) sits inside a snapshot blob. */
+size_t genesis_snapshot_ram_offset(void);
+int genesis_snapshot_valid(const uint8_t *blob, size_t len);
+/* Abandon the running game and restart: from power-on, or from a snapshot taken at
+ * the top of the main game loop (it is copied; the call does not return). */
+void genesis_restart_boot(void);
+void genesis_restart_snapshot(const uint8_t *blob, size_t len);
 
 /* Called by the runtime when the cycle count reaches the next scanline. */
 void genesis_run_events(void);
