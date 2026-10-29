@@ -26,6 +26,29 @@ int plat_audio_enabled(void);
 /* Queue one frame's worth of audio: interleaved stereo int16 at 48 kHz. */
 void plat_audio(const int16_t *samples, int frames);
 
+/* ---- input bindings ------------------------------------------------------
+ * Each Genesis button of each player (button = bit number of its PAD_* flag:
+ * 0 Up, 1 Down, 2 Left, 3 Right, 4 B, 5 C, 6 A, 7 Start) can have one keyboard
+ * binding and one controller binding, stored as text tokens ("" = none) so the
+ * game can keep them in its settings file. */
+#define PLAT_BIND_KEY 0
+#define PLAT_BIND_PAD 1
+const char *plat_binding(int player, int button, int slot);
+int plat_set_binding(int player, int button, int slot, const char *token);   /* 0 = ok */
+void plat_default_bindings(int player);
+/* A short name to show for a token, e.g. "Z", "Pad A" ("--" for none). */
+void plat_binding_label(int slot, const char *token, char *out, int size);
+/* Capture the next key or controller input for player `player`'s bindings.
+ * While capturing, the game sees no input. plat_capture_poll() returns 1 once
+ * something was pressed (*slot = PLAT_BIND_KEY/PAD, token filled in), or -1 if
+ * the capture was cancelled (Escape), else 0. */
+void plat_capture_start(int player);
+int plat_capture_poll(int *slot, char *token, int size);
+void plat_capture_cancel(void);
+
+/* Folder for settings and saved games ("" = current folder), ending in a separator. */
+const char *plat_data_dir(void);
+
 /* Show an error/info message to the user. */
 void plat_message(const char *title, const char *text);
 

@@ -2,6 +2,7 @@
 #include "platform/platform.h"
 #include "core/m68k_rt.h"
 #include "game/options.h"
+#include "game/settings.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -14,7 +15,8 @@ int main(int argc, char **argv)
 
     if (plat_init(argc, argv) != 0)
         return 1;
-    options_from_args(argc, argv);
+    settings_load();                 /* tje.cfg: options and controls */
+    options_from_args(argc, argv);   /* the command line wins (e.g. --vanilla) */
     rom = plat_rom_path();
     if (genesis_load_rom(rom) != 0) {
         char msg[600];

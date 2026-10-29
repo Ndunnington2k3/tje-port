@@ -1,9 +1,10 @@
 /*
  * SDL2 platform backend (Windows, Linux, macOS).
  *
- * Controls (player 1):  arrows = d-pad, Z = A, X = B, C = C, Enter = Start
- * Controls (player 2):  W/A/S/D = d-pad, J = A, K = B, L = C, Right Shift = Start
- * Game controllers are assigned to players 1 and 2 in the order they are connected.
+ * Default controls (player 1):  arrows = d-pad, Z = A, X = B, C = C, Enter = Start
+ * Default controls (player 2):  W/A/S/D = d-pad, J = A, K = B, L = C, Right Shift = Start
+ * Game controllers are assigned to players 1 and 2 in the order they are connected;
+ * by default X/A/B = Genesis A/B/C. All of this can be rebound (plat_set_binding).
  * F11 / Alt+Enter toggles fullscreen, Escape quits. --mute disables sound.
  */
 #include "platform/platform.h"
@@ -34,6 +35,8 @@ int plat_init(int argc, char **argv)
         else if (argv[i][0] != '-') rom_path = argv[i];
     }
 
+    plat_default_bindings(0);
+    plat_default_bindings(1);
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -162,26 +165,181 @@ static void open_pads(void)
     }
 }
 
-static uint16_t read_controller(SDL_GameController *c)
+/* ---- input bindings ------------------------------------------------------- */
+
+#define NBUTTONS 8
+static SDL_Scancode bind_key[2][NBUTTONS];
+static char bind_pad[2][NBUTTONS][24];       /* "a", "dpup", "+lefttrigger", "-leftx"... */
+
+static const SDL_Scancode default_keys[2][NBUTTONS] = {
+    {SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
+     SDL_SCANCODE_X, SDL_SCANCODE_C, SDL_SCANCODE_Z, SDL_SCANCODE_RETURN},
+    {SDL_SCANCODE_W, SDL_SCANCODE_S, SDL_SCANCODE_A, SDL_SCANCODE_D,
+     SDL_SCANCODE_K, SDL_SCANCODE_L, SDL_SCANCODE_J, SDL_SCANCODE_RSHIFT},
+};
+/* Xbox layout: X = A, A = B, B = C (the Genesis pad's A B C row) */
+static const char *const default_pad[NBUTTONS] = {"dpup", "dpdown", "dpleft", "dpright", "a", "b", "x", "start"};
+
+void plat_default_bindings(int player)
 {
-    uint16_t b = 0;
-    Sint16 x, y;
-    if (!c) return 0;
-    if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_UP)) b |= PAD_UP;
-    if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_DOWN)) b |= PAD_DOWN;
-    if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_LEFT)) b |= PAD_LEFT;
-    if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) b |= PAD_RIGHT;
-    x = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX);
-    y = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTY);
-    if (x < -12000) b |= PAD_LEFT;
-    if (x > 12000) b |= PAD_RIGHT;
-    if (y < -12000) b |= PAD_UP;
-    if (y > 12000) b |= PAD_DOWN;
-    if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_X)) b |= PAD_A;
-    if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A)) b |= PAD_B;
-    if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_B)) b |= PAD_C;
-    if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_START)) b |= PAD_START;
-    return b;
+    int b;
+    for (b = 0; b < NBUTTONS; b++) {
+        bind_key[player][b] = default_keys[player][b];
+        snprintf(bind_pad[player][b], sizeof bind_pad[player][b], "%s", default_pad[b]);
+    }
+}
+
+const char *plat_binding(int player, int button, int slot)
+{
+    if (player < 0 || player > 1 || button < 0 || button >= NBUTTONS) return "";
+    if (slot == PLAT_BIND_KEY)
+        return bind_key[player][button] == SDL_SCANCODE_UNKNOWN ? "" : SDL_GetScancodeName(bind_key[player][button]);
+    return bind_pad[player][button];
+}
+
+static int pad_token_valid(const char *t)
+{
+    if (!*t) return 1;
+    if (t[0] == '+' || t[0] == '-') return SDL_GameControllerGetAxisFromString(t + 1) != SDL_CONTROLLER_AXIS_INVALID;
+    return SDL_GameControllerGetButtonFromString(t) != SDL_CONTROLLER_BUTTON_INVALID;
+}
+
+int plat_set_binding(int player, int button, int slot, const char *token)
+{
+    if (player < 0 || player > 1 || button < 0 || button >= NBUTTONS) return -1;
+    if (slot == PLAT_BIND_KEY) {
+        SDL_Scancode sc = *token ? SDL_GetScancodeFromName(token) : SDL_SCANCODE_UNKNOWN;
+        if (*token && sc == SDL_SCANCODE_UNKNOWN) return -1;
+        bind_key[player][button] = sc;
+        return 0;
+    }
+    if (!pad_token_valid(token) || strlen(token) >= sizeof bind_pad[0][0]) return -1;
+    snprintf(bind_pad[player][button], sizeof bind_pad[player][button], "%s", token);
+    return 0;
+}
+
+void plat_binding_label(int slot, const char *token, char *out, int size)
+{
+    static const struct { const char *tok, *label; } names[] = {
+        {"a", "A"}, {"b", "B"}, {"x", "X"}, {"y", "Y"}, {"back", "Back"}, {"guide", "Guide"},
+        {"start", "Start"}, {"leftstick", "L Stick"}, {"rightstick", "R Stick"},
+        {"leftshoulder", "LB"}, {"rightshoulder", "RB"}, {"dpup", "Up"}, {"dpdown", "Down"},
+        {"dpleft", "Left"}, {"dpright", "Right"}, {"+lefttrigger", "LT"}, {"+righttrigger", "RT"},
+        {"-leftx", "Stick Left"}, {"+leftx", "Stick Right"}, {"-lefty", "Stick Up"}, {"+lefty", "Stick Down"},
+        {"-rightx", "R Stick Left"}, {"+rightx", "R Stick Right"}, {"-righty", "R Stick Up"}, {"+righty", "R Stick Down"},
+    };
+    unsigned i;
+    if (!*token) { snprintf(out, (size_t)size, "--"); return; }
+    if (slot == PLAT_BIND_KEY) { snprintf(out, (size_t)size, "%s", token); return; }
+    for (i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (!strcmp(names[i].tok, token)) { snprintf(out, (size_t)size, "Pad %s", names[i].label); return; }
+    snprintf(out, (size_t)size, "Pad %s", token);
+}
+
+/* capture */
+static int capturing, capture_player, capture_done, capture_slot;
+static char capture_token[24];
+
+void plat_capture_start(int player)
+{
+    capturing = 1;
+    capture_player = player;
+    capture_done = 0;
+}
+
+void plat_capture_cancel(void) { capturing = 0; capture_done = 0; }
+
+int plat_capture_poll(int *slot, char *token, int size)
+{
+    if (!capture_done) return 0;
+    capture_done = 0;
+    capturing = 0;
+    if (capture_slot < 0) return -1;
+    *slot = capture_slot;
+    snprintf(token, (size_t)size, "%s", capture_token);
+    return 1;
+}
+
+static int pad_player(SDL_JoystickID id)
+{
+    int p;
+    for (p = 0; p < 2; p++)
+        if (pads[p] && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pads[p])) == id) return p;
+    return -1;
+}
+
+static void capture_event(const SDL_Event *e)
+{
+    if (capture_done) return;
+    if (e->type == SDL_KEYDOWN && !e->key.repeat) {
+        capture_done = 1;
+        if (e->key.keysym.scancode == SDL_SCANCODE_ESCAPE) { capture_slot = -1; return; }
+        capture_slot = PLAT_BIND_KEY;
+        snprintf(capture_token, sizeof capture_token, "%s", SDL_GetScancodeName(e->key.keysym.scancode));
+    } else if (e->type == SDL_CONTROLLERBUTTONDOWN && pad_player(e->cbutton.which) == capture_player) {
+        const char *t = SDL_GameControllerGetStringForButton((SDL_GameControllerButton)e->cbutton.button);
+        if (!t) return;
+        capture_done = 1;
+        capture_slot = PLAT_BIND_PAD;
+        snprintf(capture_token, sizeof capture_token, "%s", t);
+    } else if (e->type == SDL_CONTROLLERAXISMOTION && pad_player(e->caxis.which) == capture_player &&
+               (e->caxis.value > 24000 || e->caxis.value < -24000)) {
+        const char *t = SDL_GameControllerGetStringForAxis((SDL_GameControllerAxis)e->caxis.axis);
+        if (!t) return;
+        capture_done = 1;
+        capture_slot = PLAT_BIND_PAD;
+        snprintf(capture_token, sizeof capture_token, "%c%s", e->caxis.value > 0 ? '+' : '-', t);
+    }
+}
+
+static int pad_input_down(SDL_GameController *c, const char *t)
+{
+    if (!c || !*t) return 0;
+    if (t[0] == '+' || t[0] == '-') {
+        SDL_GameControllerAxis ax = SDL_GameControllerGetAxisFromString(t + 1);
+        Sint16 v;
+        if (ax == SDL_CONTROLLER_AXIS_INVALID) return 0;
+        v = SDL_GameControllerGetAxis(c, ax);
+        return t[0] == '+' ? v > 12000 : v < -12000;
+    } else {
+        SDL_GameControllerButton b = SDL_GameControllerGetButtonFromString(t);
+        return b != SDL_CONTROLLER_BUTTON_INVALID && SDL_GameControllerGetButton(c, b);
+    }
+}
+
+static uint16_t read_player(int p, const Uint8 *k)
+{
+    uint16_t bits = 0;
+    int b;
+    SDL_GameController *c = pads[p];
+    for (b = 0; b < NBUTTONS; b++) {
+        int down = bind_key[p][b] != SDL_SCANCODE_UNKNOWN && k[bind_key[p][b]];
+        if (b == 7 && down && bind_key[p][b] == SDL_SCANCODE_RETURN && (SDL_GetModState() & KMOD_ALT))
+            down = 0;   /* Alt+Enter is the fullscreen toggle */
+        if (down || pad_input_down(c, bind_pad[p][b])) bits |= (uint16_t)(1u << b);
+    }
+    if (c) {
+        /* the left stick always works as a d-pad too */
+        Sint16 x = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX);
+        Sint16 y = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTY);
+        if (x < -12000) bits |= PAD_LEFT;
+        if (x > 12000) bits |= PAD_RIGHT;
+        if (y < -12000) bits |= PAD_UP;
+        if (y > 12000) bits |= PAD_DOWN;
+    }
+    return bits;
+}
+
+const char *plat_data_dir(void)
+{
+    static char dir[1024];
+    static int done;
+    if (!done) {
+        char *base = SDL_GetBasePath();
+        done = 1;
+        if (base) { snprintf(dir, sizeof dir, "%s", base); SDL_free(base); }
+    }
+    return dir;
 }
 
 int plat_poll(uint16_t pad[2])
@@ -190,6 +348,7 @@ int plat_poll(uint16_t pad[2])
     const Uint8 *k;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return 0;
+        if (capturing) { capture_event(&e); if (e.type == SDL_KEYDOWN) continue; }
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             if (e.key.keysym.sym == SDLK_ESCAPE) return 0;
             if (e.key.keysym.sym == SDLK_F11 ||
@@ -200,24 +359,9 @@ int plat_poll(uint16_t pad[2])
         }
         if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_CONTROLLERDEVICEREMOVED) open_pads();
     }
+    if (capturing) { pad[0] = pad[1] = 0; return 1; }
     k = SDL_GetKeyboardState(NULL);
-    pad[0] = read_controller(pads[0]);
-    pad[1] = read_controller(pads[1]);
-    if (k[SDL_SCANCODE_UP]) pad[0] |= PAD_UP;
-    if (k[SDL_SCANCODE_DOWN]) pad[0] |= PAD_DOWN;
-    if (k[SDL_SCANCODE_LEFT]) pad[0] |= PAD_LEFT;
-    if (k[SDL_SCANCODE_RIGHT]) pad[0] |= PAD_RIGHT;
-    if (k[SDL_SCANCODE_Z]) pad[0] |= PAD_A;
-    if (k[SDL_SCANCODE_X]) pad[0] |= PAD_B;
-    if (k[SDL_SCANCODE_C]) pad[0] |= PAD_C;
-    if (k[SDL_SCANCODE_RETURN] && !(SDL_GetModState() & KMOD_ALT)) pad[0] |= PAD_START;
-    if (k[SDL_SCANCODE_W]) pad[1] |= PAD_UP;
-    if (k[SDL_SCANCODE_S]) pad[1] |= PAD_DOWN;
-    if (k[SDL_SCANCODE_A]) pad[1] |= PAD_LEFT;
-    if (k[SDL_SCANCODE_D]) pad[1] |= PAD_RIGHT;
-    if (k[SDL_SCANCODE_J]) pad[1] |= PAD_A;
-    if (k[SDL_SCANCODE_K]) pad[1] |= PAD_B;
-    if (k[SDL_SCANCODE_L]) pad[1] |= PAD_C;
-    if (k[SDL_SCANCODE_RSHIFT]) pad[1] |= PAD_START;
+    pad[0] = read_player(0, k);
+    pad[1] = read_player(1, k);
     return 1;
 }

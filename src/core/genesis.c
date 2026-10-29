@@ -95,6 +95,12 @@ uint32_t genesis_port_rom(const void *data, uint32_t size)
     return a;
 }
 
+uint8_t *genesis_port_rom_ptr(uint32_t addr)
+{
+    if (addr < port_rom_base || addr >= port_rom_base + PORT_ROM_SIZE) return NULL;
+    return rom_data + addr;
+}
+
 void genesis_port_rom_reset(void)
 {
     port_rom_used = 0;
@@ -274,6 +280,13 @@ int genesis_snapshot_valid(const uint8_t *blob, size_t len)
 {
     Ser s = {(uint8_t *)blob, 0, len, 0};
     return des_u32(&s) == SNAP_MAGIC && des_u32(&s) == SNAP_VERSION && len == genesis_snapshot(NULL, 0);
+}
+
+void genesis_quit(void)
+{
+    restart_kind = RESTART_NONE;
+    quit_code = 0;
+    longjmp(quit_jmp, 1);
 }
 
 void genesis_restart_boot(void)

@@ -34,6 +34,8 @@ int genesis_run(void);
  * Returns its 68000 address (0 if full). genesis_port_rom_reset() frees it all. */
 uint32_t genesis_port_rom(const void *data, uint32_t size);
 void genesis_port_rom_reset(void);
+/* Write access to port ROM data placed earlier (NULL if addr is not in it). */
+uint8_t *genesis_port_rom_ptr(uint32_t addr);
 
 /* Port code to run at the start of every frame, just before line 0 is drawn
  * (after the game's VBlank work), e.g. to put the port's own graphics in VRAM.
@@ -52,6 +54,8 @@ int genesis_snapshot_valid(const uint8_t *blob, size_t len);
 /* Abandon the running game and restart: from power-on, or from a snapshot taken at
  * the top of the main game loop (it is copied; the call does not return). */
 void genesis_restart_boot(void);
+/* Stop the game: genesis_run() returns 0 (does not return here). */
+void genesis_quit(void);
 void genesis_restart_snapshot(const uint8_t *blob, size_t len);
 
 /* Called by the runtime when the cycle count reaches the next scanline. */

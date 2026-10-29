@@ -14,6 +14,7 @@
  *     --save F:slot        at frame F, save the game to slot 0-2 (port save feature)
  *     --load F:slot        at frame F, load slot 0-2
  *     --poke F:addr:val    at frame F, write byte val to address addr (hex), e.g. 100:FFE212:0
+ *     --capture key:NAME|pad:NAME   answer the next input-binding capture with this (repeatable)
  *     --elevator N         every N frames, put ToeJam in the elevator (ELEVATOR_FLAG = 1)
  *                          (test hook: exercises level transitions)
  */
@@ -46,6 +47,9 @@ static unsigned random_left;
 static unsigned elevator_period;
 static struct { unsigned frame; int slot, load; } saves[MAX_EVENTS];
 static int nsaves;
+static char captures[16][32];
+static int ncaptures, next_capture, capturing;
+static char bindings[2][8][2][32];
 static struct { unsigned frame, addr, val; } pokes[MAX_EVENTS];
 static int npokes;
 static FILE *wav;
@@ -118,6 +122,8 @@ int plat_init(int argc, char **argv)
             vdumps[nvdumps].frame = (unsigned)atoi(a);
             snprintf(vdumps[nvdumps].path, sizeof vdumps[nvdumps].path, "%s", c + 1);
             nvdumps++;
+        } else if (!strcmp(argv[i], "--capture") && i + 1 < argc && ncaptures < 16) {
+            snprintf(captures[ncaptures++], sizeof captures[0], "%s", argv[++i]);
         } else if (!strcmp(argv[i], "--audio")) {
             audio_flag = 1;
         } else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
@@ -169,6 +175,53 @@ void plat_audio(const int16_t *samples, int frames)
 }
 
 const char *plat_rom_path(void) { return rom_path; }
+
+/* Bindings are only stored here (input comes from the command line). */
+static const char *const def_bind[2][8][2] = {
+    {{"Up", "dpup"}, {"Down", "dpdown"}, {"Left", "dpleft"}, {"Right", "dpright"},
+     {"X", "a"}, {"C", "b"}, {"Z", "x"}, {"Return", "start"}},
+    {{"W", "dpup"}, {"S", "dpdown"}, {"A", "dpleft"}, {"D", "dpright"},
+     {"K", "a"}, {"L", "b"}, {"J", "x"}, {"Right Shift", "start"}},
+};
+void plat_default_bindings(int player)
+{
+    int b, k;
+    for (b = 0; b < 8; b++)
+        for (k = 0; k < 2; k++) snprintf(bindings[player][b][k], sizeof bindings[0][0][0], "%s", def_bind[player][b][k]);
+}
+const char *plat_binding(int player, int button, int slot)
+{
+    static int init;
+    if (!init) { init = 1; plat_default_bindings(0); plat_default_bindings(1); }
+    if (player < 0 || player > 1 || button < 0 || button > 7 || slot < 0 || slot > 1) return "";
+    return bindings[player][button][slot];
+}
+int plat_set_binding(int player, int button, int slot, const char *token)
+{
+    plat_binding(0, 0, 0);
+    if (player < 0 || player > 1 || button < 0 || button > 7 || slot < 0 || slot > 1) return -1;
+    snprintf(bindings[player][button][slot], sizeof bindings[0][0][0], "%s", token);
+    return 0;
+}
+void plat_binding_label(int slot, const char *token, char *out, int size)
+{
+    if (!*token) snprintf(out, (size_t)size, "--");
+    else snprintf(out, (size_t)size, "%s%s", slot == 1 ? "Pad " : "", token);
+}
+void plat_capture_start(int player) { (void)player; capturing = 1; }
+void plat_capture_cancel(void) { capturing = 0; }
+int plat_capture_poll(int *slot, char *token, int size)
+{
+    const char *c;
+    if (!capturing) return 0;
+    capturing = 0;
+    if (next_capture >= ncaptures) return -1;
+    c = captures[next_capture++];
+    *slot = !strncmp(c, "pad:", 4);
+    snprintf(token, (size_t)size, "%s", strchr(c, ':') ? strchr(c, ':') + 1 : c);
+    return 1;
+}
+const char *plat_data_dir(void) { return ""; }
 
 void plat_message(const char *title, const char *text)
 {

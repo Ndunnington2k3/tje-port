@@ -84,6 +84,7 @@ Replaced so far:
 | `InGameLoop` ($0014E6) | `save.c` | records an arrival snapshot when a player reaches a floor |
 | `GamePaused` ($01DBD8) | `pause.c` | pause menu (resume / save / quit) in the status bar |
 | `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" and a saved-games list |
+| `GameSelectMenu` ($023654) | `options_menu.c` | What screen gets "Options"; Options, Controls and Exit Game screens |
 | LOC_00013540 | `transitions.c` | elevator ride screen built behind a frozen picture |
 
 `InGameLoop` is a *split point* in the translator (`SPLIT_LABELS`): code flowing into it becomes a call,
@@ -184,6 +185,23 @@ a menu screen shows it (the pause version drops the cuff and draws the black lin
 The Who screen uses the game's own menu routine (LOC_00023784) with item tables built at run time in
 a *port ROM* area after the ROM (`genesis_port_rom`), so the game's code can be handed pointers to
 them. Quit to Menu restarts the machine with `g_boot_to_menu` set, which skips the SEGA screen.
+
+## Menus (src/game/menu.c) and settings (src/game/settings.c)
+
+`menu.c` is the game's menu screen routine (LOC_00023784) in C: same calls in the same order each
+frame (so the RNG, and with it the Random World seed, is unchanged - RAM matches the original from
+the What screen into a game), plus a starting item, Left/Right and select callbacks, text that can
+change while the menu is up, and B as "back". Text goes through the game's own text routine
+(LOC_00009F6A) from strings in port ROM (`genesis_port_rom_ptr` gives write access). The game's font
+is proportional, so columns are separate items. Items that cannot be chosen (value < 0) must come
+after the choosable ones, since the hand stops at the first of them.
+
+Settings (`tje.cfg`, `key = value`): port options (`g_options`) and per-player bindings
+(`p1.start.key = Return`, `p1.start.pad = start`). Command-line options override the file.
+Bindings belong to the platform layer (`plat_binding`, `plat_set_binding`, `plat_capture_*` in
+platform.h): SDL stores a scancode and a controller button/axis token per Genesis button; the
+headless build stores tokens and answers captures from `--capture key:Q`/`--capture pad:y`.
+`plat_data_dir()` is where settings and saved games go (next to the program on desktop).
 
 ## Clean scene transitions (src/core/vdp.c, src/game/transitions.c)
 

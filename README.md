@@ -83,6 +83,10 @@ Options:
 Port changes so far (on by default):
 
 - **Quick start**: Start on the SEGA screen goes straight to the Who menu.
+- **Options** on the What screen: controls for both players (choose a Genesis button, then press the
+  key or controller button for it; each button has a keyboard and a controller binding), Quick
+  Start and Clean Transitions on/off, and Exit Game (at the bottom, asks first). Settings are kept
+  in `tje.cfg` next to the program.
 - **Clean screen transitions**: no flashes of half-built screens when the game changes scene
   (most visible in the original right after the elevator takes off).
 - **Pause menu**: Resume, Save Game, Quit to Menu, in the status bar with ToeJam's pointing hand.
@@ -102,7 +106,8 @@ Port changes so far (on by default):
 | A / B / C | Z / X / C | J / K / L |
 | Start | Enter | Right Shift |
 
-Game controllers work too (X = A, A = B, B = C on an Xbox layout). F11 or Alt+Enter toggles
+These are the defaults; change them under Options on the What screen. Game controllers work too
+(X = A, A = B, B = C on an Xbox layout; the left stick also works as the d-pad). F11 or Alt+Enter toggles
 fullscreen; Escape quits.
 
 ## Testing

@@ -4,6 +4,7 @@
  */
 #include "game.h"
 #include "save.h"
+#include "settings.h"
 #include "core/ser.h"
 
 #include <stdio.h>
@@ -273,8 +274,9 @@ void f_0014E6_InGameLoop(void)
 
 static void slot_path(int slot, char *out, size_t size)
 {
-    const char *dir = getenv("TJE_SAVE_DIR");
-    snprintf(out, size, "%s%stje_save%d.sav", dir ? dir : "", dir ? "/" : "", slot + 1);
+    char name[32];
+    snprintf(name, sizeof name, "tje_save%d.sav", slot + 1);
+    data_path(name, out, size);
 }
 
 static int count_ship_pieces(const uint8_t *ram)
