@@ -7,6 +7,7 @@
 #include "game.h"
 #include "menu.h"
 #include "core/vdp.h"
+#include "art.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -114,6 +115,20 @@ void menu_frame(void)
 }
 
 int g_port_menu_active;
+
+#define TITLE_OVERLAY 0
+#define TITLE_X 117          /* where the game's titles sit */
+#define TITLE_Y 24
+
+void menu_art_title(const void *p)
+{
+    const ArtImage *art = (const ArtImage *)p;
+    uint16_t colors[16] = {0};
+    int i;
+    if (!art) { vdp_overlay_off(TITLE_OVERLAY); return; }
+    for (i = 0; i < art->colors; i++) colors[art->palette[i].slot & 15] = art->palette[i].color;
+    vdp_overlay(TITLE_OVERLAY, TITLE_X, TITLE_Y, art->width, art->height, art->pixels, colors);
+}
 
 void game_input_hook(uint16_t pad[2])
 {

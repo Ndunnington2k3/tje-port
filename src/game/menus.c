@@ -25,19 +25,7 @@
 #define SND_BUZZ        0x1A
 
 /* The saved-games list is its own screen with its own title, "LOAD?"
- * (art/load_title.png), shown as a port overlay: drawn over the finished
- * picture with its own colours, using none of the game's video memory. */
-#define TITLE_OVERLAY 0
-#define TITLE_X 117          /* where the game's titles sit */
-#define TITLE_Y 24
-
-static void show_title(const ArtImage *art)
-{
-    uint16_t colors[16] = {0};
-    int i;
-    for (i = 0; i < art->colors; i++) colors[art->palette[i].slot & 15] = art->palette[i].color;
-    vdp_overlay(TITLE_OVERLAY, TITLE_X, TITLE_Y, art->width, art->height, art->pixels, colors);
-}
+ * (art/load_title.png), shown as a port overlay (menu_art_title). */
 
 /* The saved-games list. Loading a file does not return. */
 static void load_game_menu(void)
@@ -84,9 +72,9 @@ static void load_game_menu(void)
                 menu_add(&m, 10, 11 + i * 4, line, -1);
             }
         }
-        show_title(&art_load_title);
+        menu_art_title(&art_load_title);
         choice = menu_run(&m, MENU_NO_TITLE);
-        vdp_overlay_off(TITLE_OVERLAY);
+        menu_art_title(NULL);
         if (choice < 0 || choice == back) return;
         if (choice < SAVE_SLOTS && info[choice].used) {
             if (save_load(choice) != 0) {

@@ -252,7 +252,8 @@ the renderer over each finished line, so they use none of the game's tiles, spri
 lines and cannot race with the game's own video updates.
 
 - `load_title.png`: "LOAD?" on the saved-games list, which is its own screen (no game title is
-  loaded: `menu_run(..., MENU_NO_TITLE)`), placed where the game's titles sit.
+  loaded: `menu_run(..., MENU_NO_TITLE)`), placed where the game's titles sit (`menu_art_title`).
+- `options_title.png`: "OPTIONS..." on the Options, Controls and Exit Game screens (placeholder).
 
 An earlier version repainted the "WHO..." title sprites' tiles every frame from a frame hook
 (`genesis_set_frame_hook`, still available); it flickered whenever the game re-uploaded those

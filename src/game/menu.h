@@ -78,6 +78,10 @@ void menu_frame(void);
 extern int g_port_menu_active;
 void game_input_hook(uint16_t pad[2]);
 
+/* A port title (art/*.png) where the game's titles sit, for MENU_NO_TITLE screens;
+ * NULL takes it away. */
+void menu_art_title(const void *art);
+
 /* Copy a menu item table from ROM (8 bytes per item: column, row, string, value). */
 void menu_add_rom_items(Menu *m, uint32_t table, int count, int row_shift);
 

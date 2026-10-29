@@ -8,10 +8,21 @@
 #include "options_menu.h"
 #include "platform/platform.h"
 #include "core/vdp.h"
+#include "art.h"
 
 #include <stdio.h>
 #include <string.h>
 
+
+/* All Options screens run under the "OPTIONS..." title (art/options_title.png). */
+static int options_screen(Menu *m)
+{
+    int v;
+    menu_art_title(&art_options_title);
+    v = menu_run(m, MENU_NO_TITLE);
+    menu_art_title(NULL);
+    return v;
+}
 
 /* ---- Controls ---------------------------------------------------------------- */
 
@@ -110,7 +121,7 @@ static void controls_menu(int player)
     c.pad_item = m.count;
     for (i = 0; i < 8; i++) menu_add(&m, COL_PAD, CTRL_ROW + i, "", -1);
     refresh_controls(&m);
-    menu_run(&m, MENU_TITLE_WHO);
+    options_screen(&m);
 }
 
 /* ---- Options ------------------------------------------------------------------ */
@@ -154,7 +165,7 @@ static int confirm_exit(void)
     menu_add(&m, 16, 14, "No", 0);
     menu_add(&m, 16, 16, "Yes", 1);
     menu_add(&m, 11, 11, "Exit the game?", -1);
-    return menu_run(&m, MENU_TITLE_WHO) == 1;
+    return options_screen(&m) == 1;
 }
 
 void options_menu(void)
@@ -175,7 +186,7 @@ void options_menu(void)
         for (i = 0; i < NTOGGLES; i++)
             value_items[i] = menu_add(&m, COL_VALUE, toggles[i].row, *toggles[i].setting ? "On" : "Off", -1);
         m.sel = sel;
-        v = menu_run(&m, MENU_TITLE_WHO);
+        v = options_screen(&m);
         sel = m.sel;
         if (v == OPT_CONTROLS1 || v == OPT_CONTROLS2) {
             controls_menu(v == OPT_CONTROLS1 ? 0 : 1);
