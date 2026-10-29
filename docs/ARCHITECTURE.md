@@ -238,13 +238,17 @@ A way to ride an elevator in the headless build (Level 15 state):
 
 New graphics drawn for the port live in `art/` as PNGs and are converted to C by `tools/art2c.py`
 (re-run it after editing a PNG): colour slots per pixel plus the Genesis colour for each slot used.
-Colours must be Genesis colours (components on the 0, 36, 72 ... 255 scale). They are drawn by a
-*frame hook* (`genesis_set_frame_hook`), which runs just before line 0 of each frame, after the game's
-VBlank work, and writes VRAM/CRAM directly.
+Colours must be Genesis colours (components on the 0, 36, 72 ... 255 scale). They are shown as
+*port overlays* (`vdp_overlay`): pictures of colour numbers with their own 16 colours, drawn by
+the renderer over each finished line, so they use none of the game's tiles, sprites or palette
+lines and cannot race with the game's own video updates.
 
-- `load_title.png`: "LOAD?" on the saved-games list. It replaces the tiles and positions of the
-  "WHO..." title sprites (three 32x32 blocks on palette line 1) and sets line 1 colours 12-15, which
-  nothing else on the menu screens uses; `LoadMenu` reloads the line for the other menus.
+- `load_title.png`: "LOAD?" on the saved-games list, which is its own screen (no game title is
+  loaded: `menu_run(..., MENU_NO_TITLE)`), placed where the game's titles sit.
+
+An earlier version repainted the "WHO..." title sprites' tiles every frame from a frame hook
+(`genesis_set_frame_hook`, still available); it flickered whenever the game re-uploaded those
+tiles at a different moment, e.g. while a sound was being started.
 
 ## Save states
 
