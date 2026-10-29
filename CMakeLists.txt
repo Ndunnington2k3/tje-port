@@ -16,6 +16,37 @@ if(NOT TJE_GENERATED_SOURCES)
         "  python tools/generate.py --disasm <path to disassembly 'master' folder> --rom <ROM file>")
 endif()
 
+# Hand-written replacements for translated routines (src/game). The translator must know
+# which routines they replace (TJE_OVERRIDE markers); generate.py records that in
+# src/generated/overrides.txt - make sure it is up to date.
+file(GLOB TJE_GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/game/*.c)
+set(_tje_markers "")
+foreach(_f ${TJE_GAME_SOURCES})
+    file(STRINGS ${_f} _lines REGEX "^[ \t]*TJE_OVERRIDE\\(0x[0-9A-Fa-f]+\\)")
+    foreach(_l ${_lines})
+        string(REGEX REPLACE ".*0x([0-9A-Fa-f]+).*" "\\1" _a "${_l}")
+        string(TOUPPER "${_a}" _a)
+        string(LENGTH "${_a}" _n)
+        while(_n LESS 6)
+            set(_a "0${_a}")
+            math(EXPR _n "${_n} + 1")
+        endwhile()
+        list(APPEND _tje_markers ${_a})
+    endforeach()
+endforeach()
+list(SORT _tje_markers)
+set(_tje_generated "")
+if(EXISTS ${CMAKE_SOURCE_DIR}/src/generated/overrides.txt)
+    file(STRINGS ${CMAKE_SOURCE_DIR}/src/generated/overrides.txt _tje_generated)
+    list(SORT _tje_generated)
+endif()
+if(NOT "${_tje_markers}" STREQUAL "${_tje_generated}")
+    message(FATAL_ERROR
+        "src/game replaces routines [${_tje_markers}] but src/generated was made for [${_tje_generated}].\n"
+        "Re-run tools/generate.py after adding or removing TJE_OVERRIDE markers.")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/generated/overrides.txt)
+
 # Translated game code + Genesis model, shared by every executable.
 add_library(tje_core STATIC
     src/core/m68k_rt.c
@@ -25,6 +56,7 @@ add_library(tje_core STATIC
     src/core/sound.c
     third_party/nuked-opn2/ym3438.c
     third_party/z80/z80.c
+    ${TJE_GAME_SOURCES}
     ${TJE_GENERATED_SOURCES})
 target_include_directories(tje_core PUBLIC src src/generated)
 target_include_directories(tje_core PRIVATE third_party/nuked-opn2 third_party/z80)

@@ -39,7 +39,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 | `tools/m68k2c` | 68000 decoder and C emitter |
 | `src/core` | Runtime for translated code, Genesis model (memory, VDP, I/O, timing) |
 | `src/platform` | Platform backends: `sdl2` (desktop), `null` (headless testing) |
-| `src/game` | Hand-ported game code that replaces translated routines (coming) |
+| `src/game` | Hand-written C that replaces translated routines, and port options |
 | `src/generated` | Translator output (local only) |
 | `third_party` | Nuked-OPN2 (YM2612, LGPL-2.1) and superzazu/z80 (MIT) |
 
@@ -78,6 +78,11 @@ Options:
 - `--state "<path>\Level 12.gsx"` - start from a Gens save state (the disassembly ships one for every
   level in `Resources\Save States`), handy as a level select while developing.
 - `--mute` - no sound (saves CPU).
+- `--vanilla` - turn off the port's changes and behave exactly like the original.
+
+Port changes so far (on by default):
+
+- **Quick start**: Start on the SEGA screen goes straight to the Who menu.
 
 ## Controls
 

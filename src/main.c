@@ -1,6 +1,7 @@
 #include "core/genesis.h"
 #include "platform/platform.h"
 #include "core/m68k_rt.h"
+#include "game/options.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +14,7 @@ int main(int argc, char **argv)
 
     if (plat_init(argc, argv) != 0)
         return 1;
+    options_from_args(argc, argv);
     rom = plat_rom_path();
     if (genesis_load_rom(rom) != 0) {
         char msg[600];

@@ -71,14 +71,36 @@ def main():
         verify_with_vasm(entire, src_dir, args.rom, find_vasm(args.vasm), args.keep)
 
     for f in os.listdir(args.out) if os.path.isdir(args.out) else []:
-        if (f.startswith('gen_') and (f.endswith('.c') or f.endswith('.h'))) or f == 'isa_cases.c':
+        if (f.startswith('gen_') and (f.endswith('.c') or f.endswith('.h'))) or f in ('isa_cases.c', 'overrides.txt'):
             os.remove(os.path.join(args.out, f))
-    rc = subprocess.call([sys.executable, os.path.join(HERE, 'm68k2c', 'm68k2c.py'),
-                          '--source', entire, '--rom', args.rom, '--out', args.out,
-                          '--isa-test', os.path.join(args.out, 'isa_cases.c')])
+    overrides = find_overrides()
+    cmd = [sys.executable, os.path.join(HERE, 'm68k2c', 'm68k2c.py'),
+           '--source', entire, '--rom', args.rom, '--out', args.out,
+           '--isa-test', os.path.join(args.out, 'isa_cases.c')]
+    for a in overrides:
+        cmd += ['--override', f'{a:06X}']
+    rc = subprocess.call(cmd)
+    if rc == 0:
+        # CMake compares this with src/game to catch a forgotten re-run of generate.py
+        with open(os.path.join(args.out, 'overrides.txt'), 'w') as f:
+            f.write(''.join(f'{a:06X}\n' for a in overrides))
+        if overrides:
+            print('replaced by src/game:', ', '.join(f'{a:06X}' for a in overrides))
     if rc != 0:
         sys.exit(rc)
     print('done: translated code is in', args.out)
+
+
+def find_overrides():
+    """Addresses of routines replaced by hand-written C: TJE_OVERRIDE(0x......) markers in src/game."""
+    found = set()
+    game = os.path.join(REPO, 'src', 'game')
+    for name in sorted(os.listdir(game)) if os.path.isdir(game) else []:
+        if name.endswith('.c'):
+            text = open(os.path.join(game, name), encoding='utf-8').read()
+            for m in re.finditer(r'^\s*TJE_OVERRIDE\(\s*0x([0-9A-Fa-f]+)\s*\)', text, re.M):
+                found.add(int(m.group(1), 16))
+    return sorted(found)
 
 
 def verify_with_vasm(entire, src_dir, rom_path, vasm, keep):

@@ -48,6 +48,43 @@ Optionally (`--vasm`) the source is also assembled and compared byte for byte wi
   they don't decode.
 - Every translated statement carries the original source line (and comment) as a C comment.
 
+## Replacing routines with hand-written C (src/game)
+
+A routine is replaced by writing a C function with the translated function's name and a marker:
+
+```c
+TJE_OVERRIDE(0x03A476)
+void f_03A476_SEGAVideo(void) { ... RETURN(); }
+```
+
+`tools/generate.py` scans `src/game/*.c` for `TJE_OVERRIDE` markers and tells the translator, which then
+emits the original as `orig_f_03A476_SEGAVideo` (still callable, e.g. for comparisons). All direct
+calls and the indirect-call table reach the replacement. It records the list in
+`src/generated/overrides.txt`, and CMake stops with a clear message if `src/game` and that list
+disagree (generate.py not re-run). The translator warns if other routines *branch* into a replaced
+routine's code, since those paths keep running the original.
+
+Replacements follow the 68000 calling conventions (see `src/game/game.h`): the caller has pushed a
+return address (`RETURN()` pops it), arguments are on the emulated stack (`ARG_L(n)`), results go in
+`R.d[0]`, and D2-D7/A2-A6 must be preserved. To call game routines: `push32()` the arguments,
+`CALL(f_...)`, `POP_ARGS(n)`. Loops that wait for the next frame use `wait_vblank()`, which charges the
+same 68000 time as the original wait loops.
+
+How a replacement is checked: run the old and new builds with the same input and compare game RAM
+(`--dumpram`), ignoring the stack area ($FF7000-$FF7FFF), whose leftover bytes legitimately differ.
+
+Port options live in `src/game/options.c` (`g_options`); `--vanilla` turns all of them off.
+
+Replaced so far:
+
+| Routine | File | Change |
+|---|---|---|
+| `SEGAAndIntroVideoRoutine` ($027AD6) | `intro.c` | quick start: skip title/intro if the SEGA screen was skipped |
+| `SEGAVideo` ($03A476) | `intro.c` | Start ends the SEGA screen cleanly (logo or ship phase) |
+
+Without Start pressed, RAM outside the stack matches the original translation exactly through the SEGA
+screen, ship, title and intro (checked at frames 100, 300, 800 and 2900).
+
 ## Runtime model (src/core/m68k_rt.h)
 
 - Registers are the global `R` (`R.d[8]`, `R.a[8]`, `R.sr`). Condition flags are a local `Flags F` in
