@@ -26,11 +26,55 @@ static int frames_on = 2;          /* clean transitions: frames in a row with th
 
 static const uint8_t level3[8] = {0, 52, 87, 116, 144, 172, 206, 255};
 
+/* Port overlays: pictures drawn over the finished line, outside the Genesis
+ * hardware (no tiles, sprites or palette lines of the game are used). */
+#define OVERLAYS 8
+static struct {
+    int on, x, y, w, h;
+    const uint8_t *px;        /* w*h colour numbers, 0 = clear */
+    uint32_t rgb[16];
+} overlay[OVERLAYS];
+
+static uint32_t genesis_rgb(uint16_t c);
+
+void vdp_overlay(int slot, int x, int y, int w, int h, const uint8_t *pixels, const uint16_t colors[16])
+{
+    int i;
+    if (slot < 0 || slot >= OVERLAYS) return;
+    overlay[slot].x = x; overlay[slot].y = y; overlay[slot].w = w; overlay[slot].h = h;
+    overlay[slot].px = pixels;
+    for (i = 0; i < 16; i++) overlay[slot].rgb[i] = genesis_rgb(colors[i]);
+    overlay[slot].on = pixels != NULL;
+}
+
+void vdp_overlay_off(int slot)
+{
+    if (slot >= 0 && slot < OVERLAYS) overlay[slot].on = 0;
+}
+
+static void draw_overlays(uint32_t *fb, int line, int width)
+{
+    int i, x;
+    for (i = 0; i < OVERLAYS; i++) {
+        const uint8_t *row;
+        if (!overlay[i].on || line < overlay[i].y || line >= overlay[i].y + overlay[i].h) continue;
+        row = overlay[i].px + (line - overlay[i].y) * overlay[i].w;
+        for (x = 0; x < overlay[i].w; x++) {
+            int sx = overlay[i].x + x;
+            if (sx >= 0 && sx < width && row[x]) fb[sx] = overlay[i].rgb[row[x] & 15];
+        }
+    }
+}
+
+static uint32_t genesis_rgb(uint16_t c)
+{
+    uint32_t r = level3[(c >> 1) & 7], g = level3[(c >> 5) & 7], b = level3[(c >> 9) & 7];
+    return (r << 16) | (g << 8) | b;
+}
+
 static void update_palette(int i)
 {
-    uint16_t c = vdp_cram[i];
-    uint32_t r = level3[(c >> 1) & 7], g = level3[(c >> 5) & 7], b = level3[(c >> 9) & 7];
-    palette_rgb[i] = (r << 16) | (g << 8) | b;
+    palette_rgb[i] = genesis_rgb(vdp_cram[i]);
 }
 
 void vdp_reset(void)
@@ -48,6 +92,7 @@ void vdp_reset(void)
     vblank_flag = vint_flag = 0;
     cur_line = 0;
     freeze_frames = 0;
+    memset(overlay, 0, sizeof overlay);
     frame_visible = 1;
     frames_on = 2;
 }
@@ -464,6 +509,7 @@ void vdp_render_line(int line)
         fb[x] = have ? palette_rgb[c & 0x3F] : bg;
     }
     for (; x < VDP_MAX_WIDTH; x++) fb[x] = 0;
+    draw_overlays(fb, line, width);
 }
 
 /* ---- snapshots ---------------------------------------------------------- */

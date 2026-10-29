@@ -36,6 +36,12 @@ void vdp_load(Ser *s);
 void vdp_set_clean_transitions(int on);
 void vdp_freeze(int frames);
 
+/* Port overlays: a picture of colour numbers (0 = clear) shown at x, y over
+ * everything the VDP draws, with its own 16 Genesis colours. Slots 0-7. The
+ * pixels are not copied: keep them alive while shown. Cleared on reset. */
+void vdp_overlay(int slot, int x, int y, int w, int h, const uint8_t *pixels, const uint16_t colors[16]);
+void vdp_overlay_off(int slot);
+
 /* Since the last call: VRAM words written to [other, plane A, plane B, sprite table],
  * and lines drawn with the display off. Resets the counters. */
 void vdp_frame_stats(uint32_t out[5]);

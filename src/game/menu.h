@@ -18,6 +18,7 @@
 /* LoadMenu titles */
 #define MENU_TITLE_WHO   0
 #define MENU_TITLE_WHAT  1
+#define MENU_NO_TITLE   -1     /* the port draws its own (an overlay) */
 
 typedef struct Menu Menu;
 
@@ -60,7 +61,7 @@ int menu_add(Menu *m, int col, int row, const char *text, int value);   /* retur
 /* Change an item's text (redrawn at once if the menu is on screen). */
 void menu_set_text(Menu *m, int i, const char *text);
 
-/* Show the menu under one of the game's titles until something is chosen.
+/* Show the menu under one of the game's titles (or MENU_NO_TITLE) until something is chosen.
  * Returns the chosen item's value, or -1 when B backs out (b_is_back). */
 int menu_run(Menu *m, int title);
 

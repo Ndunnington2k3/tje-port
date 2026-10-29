@@ -24,52 +24,19 @@
 #define SND_PRIORITY    0x32
 #define SND_BUZZ        0x1A
 
-/* The saved-games list has its own title, "LOAD?" (art/load_title.png), drawn
- * into the tiles of the "WHO..." title sprites (palette line 1) with our own
- * colours. Called by the frame hook just before each frame is drawn, because
- * the game re-uploads the title's tiles every few frames. Only tiles and
- * colours are written: the sprites stay where the game puts them, and each
- * block shows the part of the picture under it, so a block placed a pixel
- * lower (the third one is) simply shows the picture a row further on.
- * Palette line 1 is only used by the title; LoadMenu reloads it for the
- * other menus. */
-static void load_title_frame(void)
+/* The saved-games list is its own screen with its own title, "LOAD?"
+ * (art/load_title.png), shown as a port overlay: drawn over the finished
+ * picture with its own colours, using none of the game's video memory. */
+#define TITLE_OVERLAY 0
+#define TITLE_X 117          /* where the game's titles sit */
+#define TITLE_Y 24
+
+static void show_title(const ArtImage *art)
 {
-    const ArtImage *art = &art_load_title;
-    uint32_t sat = (uint32_t)(vdp_reg[5] & 0x7F) << 9;
-    int i, n = 0, link = 0, base_x = 0, base_y = 0;
-    if (vdp_reg[0x0C] & 0x81) sat &= 0xFC00u;
-    for (i = 0; i < 80; i++) {
-        const uint8_t *e = &vdp_vram[(sat + (uint32_t)link * 8) & 0xFFFF];
-        uint32_t attr = (uint32_t)(e[4] << 8) | e[5];
-        if (((attr >> 13) & 3) == 1) {                  /* a title sprite */
-            uint32_t tile = attr & 0x7FFu;
-            int x0 = ((e[6] << 8) | e[7]) & 0x1FF, y0 = ((e[0] << 8) | e[1]) & 0x3FF;
-            int w = ((e[2] >> 2) & 3) + 1, h = (e[2] & 3) + 1;   /* in tiles */
-            int tx, ty, x, y;
-            if (n++ == 0) { base_x = x0; base_y = y0 - 1; }   /* picture row 0 is empty */
-            for (tx = 0; tx < w; tx++)
-                for (ty = 0; ty < h; ty++) {
-                    /* sprite tiles go down each column first */
-                    uint8_t *dst = &vdp_vram[((tile + (uint32_t)(tx * h + ty)) * 32) & 0xFFFF];
-                    for (y = 0; y < 8; y++)
-                        for (x = 0; x < 8; x += 2) {
-                            int ix = x0 - base_x + tx * 8 + x, iy = y0 - base_y + ty * 8 + y;
-                            int p0 = 0, p1 = 0;
-                            if (iy >= 0 && iy < art->height && ix >= 0 && ix < art->width) {
-                                p0 = art->pixels[iy * art->width + ix];
-                                if (ix + 1 < art->width) p1 = art->pixels[iy * art->width + ix + 1];
-                            }
-                            dst[y * 4 + x / 2] = (uint8_t)(p0 << 4 | p1);
-                        }
-                }
-        }
-        link = e[3] & 0x7F;
-        if (!link) break;
-    }
-    for (i = 0; i < art->colors; i++)
-        vdp_cram[16 + art->palette[i].slot] = art->palette[i].color;
-    vdp_refresh_palette();
+    uint16_t colors[16] = {0};
+    int i;
+    for (i = 0; i < art->colors; i++) colors[art->palette[i].slot & 15] = art->palette[i].color;
+    vdp_overlay(TITLE_OVERLAY, TITLE_X, TITLE_Y, art->width, art->height, art->pixels, colors);
 }
 
 /* The saved-games list. Loading a file does not return. */
@@ -117,9 +84,9 @@ static void load_game_menu(void)
                 menu_add(&m, 10, 11 + i * 4, line, -1);
             }
         }
-        genesis_set_frame_hook(load_title_frame);
-        choice = menu_run(&m, MENU_TITLE_WHO);
-        genesis_set_frame_hook(NULL);
+        show_title(&art_load_title);
+        choice = menu_run(&m, MENU_NO_TITLE);
+        vdp_overlay_off(TITLE_OVERLAY);
         if (choice < 0 || choice == back) return;
         if (choice < SAVE_SLOTS && info[choice].used) {
             if (save_load(choice) != 0) {

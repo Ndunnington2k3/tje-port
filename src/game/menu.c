@@ -149,8 +149,10 @@ int menu_run(Menu *m, int title)
 
     CY(60);
     if (m->sel < 0 || !selectable(m, m->sel)) m->sel = 0;
-    push32((uint32_t)title);             /* stays on the stack for f_023BDA, as in the game */
-    CALL(f_023B4E_LoadMenu);
+    if (title >= 0) {
+        push32((uint32_t)title);         /* stays on the stack for f_023BDA, as in the game */
+        CALL(f_023B4E_LoadMenu);
+    }
 
     /* strings in ROM space for the game's text routine */
     genesis_port_rom_reset();
@@ -259,7 +261,9 @@ int menu_run(Menu *m, int title)
     POP_ARGS(1);
     wr16(VDP_CTRL, 0x9100);
     wr16(VDP_CTRL, 0x9200);
-    CALL(f_023BDA);                      /* removes the title (LoadMenu's argument) */
-    POP_ARGS(1);
+    if (title >= 0) {
+        CALL(f_023BDA);                  /* removes the title (LoadMenu's argument) */
+        POP_ARGS(1);
+    }
     return result;
 }
