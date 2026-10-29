@@ -1,4 +1,4 @@
-/* The port's own artwork, converted by tools/art2c.py from art/*.png. */
+/* The port's own artwork, converted by tools/art2c.py from the PNGs in art/. */
 #ifndef TJE_ART_H
 #define TJE_ART_H
 
