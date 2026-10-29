@@ -78,7 +78,7 @@ void menu_frame(void);
 extern int g_port_menu_active;
 void game_input_hook(uint16_t pad[2]);
 
-/* A port title (art/*.png) where the game's titles sit, for MENU_NO_TITLE screens;
+/* A port title (a PNG from art/) where the game's titles sit, for MENU_NO_TITLE screens;
  * NULL takes it away. */
 void menu_art_title(const void *art);
 
