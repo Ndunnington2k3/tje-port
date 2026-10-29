@@ -83,6 +83,8 @@ Options:
 Port changes so far (on by default):
 
 - **Quick start**: Start on the SEGA screen goes straight to the Who menu.
+- **Clean screen transitions**: no flashes of half-built screens when the game changes scene
+  (most visible in the original right after the elevator takes off).
 - **Pause menu**: Resume, Save Game, Quit to Menu, in the status bar with ToeJam's pointing hand.
   Left/Right (or Up/Down) choose, Start selects, B backs out. Start, Start still just pauses and
   unpauses, and the original pause-screen button code still works.
@@ -115,6 +117,8 @@ tje_headless <rom> --frames 40000 --random 7       # mash random buttons for ~11
 Any untranslated call, bad jump or stack imbalance is reported on stderr. More options:
 `--state file.gsx`, `--wav out.wav` (record the sound), `--audio`, `--dumpram F:file`,
 `--dumpvram F:file`, `--poke F:addr:val`, `--save F:slot` / `--load F:slot` (saved games).
+Environment variables `TJE_TRACE_ELEV=1` and `TJE_TRACE_VDP=1` print per-frame elevator state and
+VRAM write / display-off counts (handy for scene changes).
 
 `tools/stress_test.py` runs many of these in parallel - from boot and from every save state - and
 reports failures. Build with `-DCMAKE_C_FLAGS=-DTJE_COVERAGE` to also get a report of which

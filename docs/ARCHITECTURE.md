@@ -84,6 +84,7 @@ Replaced so far:
 | `InGameLoop` ($0014E6) | `save.c` | records an arrival snapshot when a player reaches a floor |
 | `GamePaused` ($01DBD8) | `pause.c` | pause menu (resume / save / quit) in the status bar |
 | `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" and a saved-games list |
+| LOC_00013540 | `transitions.c` | elevator ride screen built behind a frozen picture |
 
 `InGameLoop` is a *split point* in the translator (`SPLIT_LABELS`): code flowing into it becomes a call,
 so `StartGame` does not inline the loop and the loop can be replaced on its own. Without pausing, RAM
@@ -183,6 +184,24 @@ a menu screen shows it (the pause version drops the cuff and draws the black lin
 The Who screen uses the game's own menu routine (LOC_00023784) with item tables built at run time in
 a *port ROM* area after the ROM (`genesis_port_rom`), so the game's code can be handed pointers to
 them. Quit to Menu restarts the machine with `g_boot_to_menu` set, which skips the SEGA screen.
+
+## Clean scene transitions (src/core/vdp.c, src/game/transitions.c)
+
+The original shows a frame or two of garbage when it changes scene, and how depends on the scene:
+
+- Most changes switch the display off, rebuild, and switch it on again part way down a frame, so
+  one frame is torn (top blank, bottom new). The following frame can still show the previous
+  scene's sprites, because the sprite table is uploaded from a RAM buffer the game rebuilds a
+  frame later. With the option on, the renderer only shows a frame once the display was on at the
+  top of that frame and the one before; until then the frame stays blank.
+- The elevator ride screen (LOC_00013540) is built with the display on: planes, tiles, palette
+  and scroll are rewritten over two or three visible frames. `transitions.c` wraps that routine
+  in `vdp_freeze()`, which keeps the last good picture on screen until the ride screen is ready.
+
+This only changes what is drawn, never game state: RAM matches the previous build exactly. Found
+with `TJE_TRACE_VDP` (per-frame VRAM writes by area, lines with the display off, register 1).
+A way to ride an elevator in the headless build (Level 15 state):
+`--press 100:60:D --press 160:990:L --press 1155:200:U` (rides at about frame 1750).
 
 ## Port artwork (art/, src/game/art_*.c)
 

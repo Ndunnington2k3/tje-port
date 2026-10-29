@@ -30,6 +30,16 @@ int vdp_hint_reload(void);
 void vdp_save(Ser *s);
 void vdp_load(Ser *s);
 
+/* Clean scene transitions (port option, see vdp.c). vdp_freeze(-1) keeps showing
+ * the current picture while game code rebuilds the screen; vdp_freeze(n) then
+ * lets n more frames pass frozen before drawing resumes. */
+void vdp_set_clean_transitions(int on);
+void vdp_freeze(int frames);
+
+/* Since the last call: VRAM words written to [other, plane A, plane B, sprite table],
+ * and lines drawn with the display off. Resets the counters. */
+void vdp_frame_stats(uint32_t out[5]);
+
 const uint32_t *vdp_framebuffer(void);   /* 0x00RRGGBB, VDP_FB_PITCH pixels per row */
 int vdp_width(void);                     /* 256 or 320 */
 

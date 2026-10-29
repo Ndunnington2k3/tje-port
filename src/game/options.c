@@ -1,9 +1,11 @@
 #include "options.h"
+#include "core/vdp.h"
 
 #include <string.h>
 
 GameOptions g_options = {
     1,  /* quick_start */
+    1,  /* clean_transitions */
 };
 
 void options_from_args(int argc, char **argv)
@@ -13,6 +15,8 @@ void options_from_args(int argc, char **argv)
         /* --vanilla: behave exactly like the original game */
         if (!strcmp(argv[i], "--vanilla")) {
             g_options.quick_start = 0;
+            g_options.clean_transitions = 0;
         }
     }
+    vdp_set_clean_transitions(g_options.clean_transitions);
 }

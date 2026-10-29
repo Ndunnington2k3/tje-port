@@ -20,6 +20,9 @@ static int fill_pending;
 static int vblank_flag;
 static int vint_flag;
 static int cur_line;
+static int freeze_frames;          /* clean transitions: -1 frozen until released, n > 0: n more frames */
+static int frame_visible = 1;      /* clean transitions: this frame may be shown */
+static int frames_on = 2;          /* clean transitions: frames in a row with the display on at line 0 */
 
 static const uint8_t level3[8] = {0, 52, 87, 116, 144, 172, 206, 255};
 
@@ -44,6 +47,9 @@ void vdp_reset(void)
     fill_pending = 0;
     vblank_flag = vint_flag = 0;
     cur_line = 0;
+    freeze_frames = 0;
+    frame_visible = 1;
+    frames_on = 2;
 }
 
 void vdp_refresh_palette(void)
@@ -58,13 +64,57 @@ int vdp_vint_enabled(void) { return (vdp_reg[1] & 0x20) != 0; }
 int vdp_hint_enabled(void) { return (vdp_reg[0] & 0x10) != 0; }
 int vdp_hint_reload(void) { return vdp_reg[10]; }
 void vdp_set_line(int line) { cur_line = line; }
-void vdp_set_vblank(int on) { vblank_flag = on; if (on) vint_flag = 1; }
+void vdp_set_vblank(int on)
+{
+    vblank_flag = on;
+    if (on) {
+        vint_flag = 1;
+        if (freeze_frames > 0) freeze_frames--;    /* a frozen frame was shown */
+    }
+}
 void vdp_ack_vint(void) { vint_flag = 0; }
 
 static uint32_t increment(void) { return vdp_reg[15]; }
 
+/* per-frame statistics (debugging transitions) */
+static uint32_t st_writes[4], st_off_lines;
+
+/* Clean transitions (port option). The original game shows a frame or two of
+ * half-built screens when it changes scene:
+ *  - the display is switched on part way down a frame (a torn frame), and the
+ *    next frame can still show the old scene's sprites, because the sprite table
+ *    is uploaded from a buffer the game rebuilds a frame later. So after the
+ *    display has been off, a frame is only shown once the display was on at the
+ *    top of this frame and the one before; until then it stays blank;
+ *  - some scenes are rebuilt with the display on (the elevator ride): game code
+ *    freezes the picture around that with vdp_freeze(). */
+static int clean_transitions;
+
+void vdp_set_clean_transitions(int on) { clean_transitions = on; }
+void vdp_freeze(int frames) { freeze_frames = clean_transitions ? frames : 0; }
+
+static void stat_write(uint32_t a)
+{
+    uint32_t pa = (uint32_t)(vdp_reg[2] & 0x38) << 10, pb = (uint32_t)(vdp_reg[4] & 7) << 13;
+    uint32_t sat = (uint32_t)(vdp_reg[5] & 0x7F) << 9;
+    a &= 0xFFFF;
+    if (a >= sat && a < sat + 0x280) st_writes[3]++;
+    else if (a >= pa && a < pa + 0x2000) st_writes[1]++;
+    else if (a >= pb && a < pb + 0x2000) st_writes[2]++;
+    else st_writes[0]++;
+}
+
+void vdp_frame_stats(uint32_t out[5])
+{
+    int i;
+    for (i = 0; i < 4; i++) { out[i] = st_writes[i]; st_writes[i] = 0; }
+    out[4] = st_off_lines;
+    st_off_lines = 0;
+}
+
 static void vram_write16(uint32_t a, uint32_t v)
 {
+    stat_write(a);
     a &= 0xFFFF;
     if (a & 1) v = ((v & 0xFF) << 8) | (v >> 8);  /* odd address writes byte-swapped */
     a &= 0xFFFE;
@@ -125,6 +175,7 @@ static void dma_fill(uint32_t v)
     addr = (addr + increment()) & 0xFFFF;
     while (--len) {
         vdp_vram[addr ^ 1] = b;
+        stat_write(addr);
         addr = (addr + increment()) & 0xFFFF;
     }
     vdp_reg[19] = vdp_reg[20] = 0;
@@ -136,6 +187,7 @@ static void dma_copy(void)
     uint32_t src = vdp_reg[21] | ((uint32_t)vdp_reg[22] << 8);
     while (len--) {
         vdp_vram[addr ^ 1] = vdp_vram[src ^ 1];
+        stat_write(addr);
         src = (src + 1) & 0xFFFF;
         addr = (addr + increment()) & 0xFFFF;
     }
@@ -348,7 +400,15 @@ void vdp_render_line(int line)
     int hsa, hsb;
     int win_from = 0, win_to = 0;
 
-    if (!(vdp_reg[1] & 0x40)) {
+    if (line == 0) {
+        if (vdp_reg[1] & 0x40) { if (frames_on < 2) frames_on++; }
+        else frames_on = 0;
+        frame_visible = frames_on >= 2;
+    }
+    if (freeze_frames)
+        return;                                    /* keep showing the last picture */
+    if (!(vdp_reg[1] & 0x40) || (clean_transitions && !frame_visible)) {
+        st_off_lines++;
         for (x = 0; x < VDP_MAX_WIDTH; x++) fb[x] = bg;
         return;
     }

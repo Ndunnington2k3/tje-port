@@ -201,6 +201,11 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             FILE *f = fopen(dumps[i].path, "wb");
             if (f) { fwrite(g_ram, 1, sizeof g_ram, f); fclose(f); }
         }
+    if (getenv("TJE_TRACE_VDP")) {
+        uint32_t st[5];
+        vdp_frame_stats(st);
+        fprintf(stderr, "v%5u tiles %5u A %5u B %5u sat %4u off %3u reg1 %02X\n", frame, st[0], st[1], st[2], st[3], st[4], vdp_reg[1]);
+    }
     for (i = 0; i < nvdumps; i++)
         if (vdumps[i].frame == frame) {
             /* VRAM (64 KB), then CRAM (64 words) and the VDP registers */
@@ -252,9 +257,9 @@ int plat_poll(uint16_t pad[2])
     }
     if (getenv("TJE_TRACE_ELEV")) {
         /* floor/elevator/fall state each frame, for working out arrival timing */
-        fprintf(stderr, "f%5u TJlv %2u Elv %2u cur %2u/%2u ELEVFLAG %u/%u fall %u/%u elev0 st %02X lv %u pl %u  elev1 st %02X\n",
+        fprintf(stderr, "f%5u TJlv %2u Elv %2u cur %2u/%2u ELEVFLAG %u/%u fall %u/%u half0 st %02X lv %u pl %u  half1 st %02X\n",
                 frame, rd8(0xFFA2A6), rd8(0xFFA326), rd8(0xFF912C), rd8(0xFF912E), rd8(0xFFDA6A), rd8(0xFFDA6B),
-                rd8(0xFFDA22), rd8(0xFFDA23), rd8(0xFFDA4A + 5), rd8(0xFFDA4A + 4), rd8(0xFFDA4A + 6), rd8(0xFFDA4A + 0x15));
+                rd8(0xFFDA22), rd8(0xFFDA23), rd8(0xFFDA4A + 5), rd8(0xFFDA4A + 4), rd8(0xFFDA4A + 6), rd8(0xFFDA4A + 8 + 5));
     }
     if (elevator_period && frame > 1000 && frame % elevator_period == 0) {
         /* ELEVATOR_FLAG ($FFDA6A, from the disassembly): 1 = ToeJam is in the elevator going up */
