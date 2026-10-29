@@ -83,7 +83,8 @@ Options:
 Port changes so far (on by default):
 
 - **Quick start**: Start on the SEGA screen goes straight to the Who menu.
-- **Custom World** on the What screen: type a 6-character world code (A-Z, 0-9) and play that world.
+- **Custom World** on the What screen: type a 6-character world code (A-Z, 0-9) and play that world
+  (on the code screen, Start on the code to change it, Start again when done, then Play).
   The same code always gives the same world (floors, items, earthlings, ship pieces). The code
   screen starts on the last world played, so a good Random World can be shared; saved games show
   their world's code.

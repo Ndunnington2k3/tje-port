@@ -207,7 +207,12 @@ int menu_run(Menu *m, int title)
         if (p != prev) {
             uint32_t pressed = p & ~prev;
             prev = p;
-            if ((pressed & PAD_B) && m->b_is_back) {
+            if ((pressed & PAD_B) && m->b_is_back && m->item[m->sel].edit && m->action) {
+                if (m->action(m, MENU_BACK)) {
+                    result = -1;
+                    break;
+                }
+            } else if ((pressed & PAD_B) && m->b_is_back) {
                 result = -1;
                 break;
             }

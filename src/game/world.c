@@ -67,7 +67,7 @@ void f_004658_GenerateLevelsForGame(void)
 typedef struct {
     char code[WORLD_CODE_LEN + 1];
     int pos;                       /* character being changed */
-    int first_char_item;
+    int code_item, first_char_item, hint_item;
 } CodeCtx;
 
 #define CODE_COL   15
@@ -80,12 +80,22 @@ static void show_char(Menu *m, int i, int hidden)
     menu_set_text(m, c->first_char_item + i, s);
 }
 
-/* the character being changed blinks */
+/* While the code is being changed (the code line's .edit is set), Up/Down change
+ * the blinking letter; otherwise they move the hand as usual. */
+static void set_editing(Menu *m, int on)
+{
+    CodeCtx *c = (CodeCtx *)m->user;
+    m->item[c->code_item].edit = on;
+    show_char(m, c->pos, 0);
+    menu_set_text(m, c->hint_item, on ? "Up and Down -- Change Letter" : "Start -- Change the Code");
+    menu_set_text(m, c->hint_item + 1, on ? "Left and Right -- Move" : "");
+    menu_set_text(m, c->hint_item + 2, on ? "Start -- Done" : "");
+}
+
 static void code_frame(Menu *m, unsigned t)
 {
     CodeCtx *c = (CodeCtx *)m->user;
-    int on_code = m->item[m->sel].edit;
-    show_char(m, c->pos, on_code && (t % 32) >= 24);
+    if (m->item[c->code_item].edit) show_char(m, c->pos, (t % 32) >= 24);
 }
 
 static int code_action(Menu *m, int dir)
@@ -93,12 +103,17 @@ static int code_action(Menu *m, int dir)
     CodeCtx *c = (CodeCtx *)m->user;
     const char *p;
     int k;
-    if (!m->item[m->sel].edit) return dir == MENU_SELECT;   /* Play / Back */
+    if (m->sel != c->code_item) return dir == MENU_SELECT;   /* Play / Back */
     switch (dir) {
+    case MENU_SELECT:
+    case MENU_BACK:
+        set_editing(m, !m->item[c->code_item].edit && dir == MENU_SELECT);
+        return 0;
     case MENU_LEFT:
     case MENU_RIGHT:
         show_char(m, c->pos, 0);
         c->pos = (c->pos + (dir == MENU_RIGHT ? 1 : WORLD_CODE_LEN - 1)) % WORLD_CODE_LEN;
+        if (!m->item[c->code_item].edit) set_editing(m, 1);
         return 0;
     case MENU_UP:
     case MENU_DOWN:
@@ -108,9 +123,8 @@ static int code_action(Menu *m, int dir)
         c->code[c->pos] = digits[k];
         show_char(m, c->pos, 0);
         return 0;
-    default:
-        return 1;                  /* Start on the code: play it */
     }
+    return 0;
 }
 
 /* Returns the seed to play, or 0 to go back. */
@@ -130,20 +144,20 @@ static uint32_t code_screen(void)
     m.frame = code_frame;
     m.b_is_back = 1;
     m.hand_col = 9;
-    i = menu_add(&m, 13, CODE_ROW, "", CODE);
-    m.item[i].edit = 1;
+    c.code_item = menu_add(&m, 13, CODE_ROW, "", CODE);
     menu_add(&m, 13, 17, "Play", PLAY);
     menu_add(&m, 13, 19, "Back", BACK);
     menu_add(&m, 9, 10, "Enter a World Code", -1);
-    menu_add(&m, 9, 22, "Up and Down -- Change Letter", -1);   /* the font has no ':' or '/' */
-    menu_add(&m, 9, 24, "Left and Right -- Move", -1);
+    c.hint_item = menu_add(&m, 9, 21, "Start -- Change the Code", -1);   /* the font has no ':' or '/' */
+    menu_add(&m, 9, 23, "", -1);
+    menu_add(&m, 9, 25, "", -1);
     c.first_char_item = m.count;
     for (i = 0; i < WORLD_CODE_LEN; i++) {
         char s[2] = {c.code[i], 0};
         menu_add(&m, CODE_COL + i * 2, CODE_ROW, s, -1);
     }
     v = menu_run(&m, MENU_TITLE_WHAT);
-    if (v == CODE || v == PLAY) return world_seed_from_code(c.code);
+    if (v == PLAY) return world_seed_from_code(c.code);
     return 0;
 }
 

@@ -34,6 +34,7 @@ typedef struct {
 #define MENU_RIGHT  1
 #define MENU_UP    -2          /* only on items with .edit set */
 #define MENU_DOWN   2
+#define MENU_BACK   3          /* B on an item with .edit set (when b_is_back) */
 
 struct Menu {
     MenuItem item[MENU_MAX];
