@@ -83,8 +83,9 @@ Replaced so far:
 | `SEGAVideo` ($03A476) | `intro.c` | Start ends the SEGA screen cleanly (logo or ship phase); skipped after Quit to Menu |
 | `InGameLoop` ($0014E6) | `save.c` | records an arrival snapshot when a player reaches a floor |
 | `GamePaused` ($01DBD8) | `pause.c` | pause menu (resume / save / quit) in the status bar |
-| `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" and a saved-games list |
-| `GameSelectMenu` ($023654) | `options_menu.c` | What screen gets "Options"; Options, Controls and Exit Game screens |
+| `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" (saved-games list) and "Options" (`options_menu.c`) |
+| `GameSelectMenu` ($023654) | `world.c` | What screen gets "Custom World" and the world code screen |
+| `GenerateLevelsForGame` ($004658) | `world.c` | uses a Custom World's seed; remembers every world's seed |
 | LOC_00013540 | `transitions.c` | elevator ride screen built behind a frozen picture |
 
 `InGameLoop` is a *split point* in the translator (`SPLIT_LABELS`): code flowing into it becomes a call,
@@ -185,6 +186,18 @@ a menu screen shows it (the pause version drops the cuff and draws the black lin
 The Who screen uses the game's own menu routine (LOC_00023784) with item tables built at run time in
 a *port ROM* area after the ROM (`genesis_port_rom`), so the game's code can be handed pointers to
 them. Quit to Menu restarts the machine with `g_boot_to_menu` set, which skips the SEGA screen.
+
+## World codes (src/game/world.c)
+
+StartGame seeds the game's Park-Miller generator (CURRENT_RANDOM, 1..$7FFFFFFE) with
+`GenerateRandom | VBlank count << 16` and calls GenerateLevelsForGame, which draws the 26 floor
+seeds; the rest of StartGame (elevators, inventory, earthlings, ship pieces) follows on from the
+same generator. So the whole world is one number: the C GenerateLevelsForGame swaps in a Custom
+World's seed before calling the original, and records the seed of every world. A code is the seed
+minus 1 in base 36 (A-Z then 0-9), 6 characters; 36^6 is a little over 2^31, so codes past the last
+seed wrap around. Checked: the same code entered with different menu timing gives byte-identical
+floor seeds, ship pieces, present identities, items and earthlings. Save files (version 2) keep
+the world kind and seed in their header.
 
 ## Menus (src/game/menu.c) and settings (src/game/settings.c)
 

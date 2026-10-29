@@ -5,6 +5,7 @@
 #include "game.h"
 #include "save.h"
 #include "settings.h"
+#include "world.h"
 #include "core/ser.h"
 
 #include <stdio.h>
@@ -270,7 +271,7 @@ void f_0014E6_InGameLoop(void)
 /* ---- save files ------------------------------------------------------------- */
 
 #define SAVE_MAGIC   "TJESAVE"
-#define SAVE_VERSION 1u
+#define SAVE_VERSION 2u     /* 2: world kind and seed in the header */
 
 static void slot_path(int slot, char *out, size_t size)
 {
@@ -290,7 +291,8 @@ static int count_ship_pieces(const uint8_t *ram)
 static void info_from_ram(SaveInfo *info, const uint8_t *ram)
 {
     info->used = 1;
-    info->fixed_world = ram[FIXED_WORLD_FLAG & 0xFFFFu] != 0;
+    info->world = ram[FIXED_WORLD_FLAG & 0xFFFFu] ? WORLD_FIXED : g_world_kind == WORLD_CUSTOM ? WORLD_CUSTOM : WORLD_RANDOM;
+    info->seed = g_world_seed;
     info->players = ram[PLAYER_INDICATOR & 0xFFFFu];
     info->floor[0] = ram[TOEJAMS_CURRENT_LEVEL & 0xFFFFu];
     info->floor[1] = ram[(TOEJAMS_CURRENT_LEVEL + 2u) & 0xFFFFu];
@@ -305,7 +307,7 @@ static int read_slot(int slot, SaveInfo *info, uint8_t **blob, size_t *len)
     long n;
     uint8_t *data;
     Ser s;
-    uint32_t blen, sum, i, check = 0;
+    uint32_t blen, sum, i, check = 0, version;
     char magic[8];
 
     memset(info, 0, sizeof *info);
@@ -322,12 +324,19 @@ static int read_slot(int slot, SaveInfo *info, uint8_t **blob, size_t *len)
 
     s.buf = data; s.pos = 0; s.cap = (size_t)n; s.err = 0;
     des_bytes(&s, magic, 8);
-    if (memcmp(magic, SAVE_MAGIC, 8) != 0 || des_u32(&s) != SAVE_VERSION) { free(data); return -4; }
-    info->fixed_world = (int)des_u8(&s);
+    if (memcmp(magic, SAVE_MAGIC, 8) != 0) { free(data); return -4; }
+    version = des_u32(&s);
+    if (version < 1 || version > SAVE_VERSION) { free(data); return -4; }
+    info->world = des_u8(&s) ? WORLD_FIXED : WORLD_RANDOM;
     info->players = (int)des_u8(&s);
     info->floor[0] = (int)des_u8(&s);
     info->floor[1] = (int)des_u8(&s);
     info->ship_pieces = (int)des_u8(&s);
+    if (version >= 2) {
+        uint32_t kind = des_u8(&s);
+        info->seed = des_u32(&s);
+        if (kind == WORLD_CUSTOM) info->world = WORLD_CUSTOM;
+    }
     blen = des_u32(&s);
     sum = des_u32(&s);
     if (s.err || s.pos + blen > (size_t)n) { free(data); return -5; }
@@ -425,11 +434,13 @@ int save_write(int slot)
     s.buf = hdr; s.pos = 0; s.cap = sizeof hdr; s.err = 0;
     ser_bytes(&s, SAVE_MAGIC, 8);
     ser_u32(&s, SAVE_VERSION);
-    ser_u8(&s, (uint32_t)info.fixed_world);
+    ser_u8(&s, (uint32_t)(info.world == WORLD_FIXED));
     ser_u8(&s, (uint32_t)info.players);
     ser_u8(&s, (uint32_t)info.floor[0]);
     ser_u8(&s, (uint32_t)info.floor[1]);
     ser_u8(&s, (uint32_t)info.ship_pieces);
+    ser_u8(&s, (uint32_t)info.world);                     /* version 2: the world's seed */
+    ser_u32(&s, info.seed);
     ser_u32(&s, (uint32_t)src->len);
     ser_u32(&s, sum);
 
@@ -453,6 +464,8 @@ int save_load(int slot)
     uint8_t *blob;
     size_t len;
     if (read_slot(slot, &info, &blob, &len) != 0) return -1;
+    g_world_kind = info.world;
+    g_world_seed = info.seed;
     free(loaded_blob);
     loaded_blob = blob;
     loaded_len = len;

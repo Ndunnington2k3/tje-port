@@ -20,7 +20,8 @@
 
 typedef struct {
     int used;              /* 0: the slot is empty */
-    int fixed_world;       /* 1: Fixed World, 0: Random World */
+    int world;             /* WORLD_RANDOM, WORLD_FIXED or WORLD_CUSTOM (world.h) */
+    uint32_t seed;         /* world seed (0 if not known: files from before seeds were kept) */
     int players;           /* 0 = ToeJam, 1 = Earl, 2 = both */
     int floor[2];          /* floor of ToeJam / Earl */
     int ship_pieces;       /* collected so far (of 10) */

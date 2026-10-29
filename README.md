@@ -83,7 +83,11 @@ Options:
 Port changes so far (on by default):
 
 - **Quick start**: Start on the SEGA screen goes straight to the Who menu.
-- **Options** on the What screen: controls for both players (choose a Genesis button, then press the
+- **Custom World** on the What screen: type a 6-character world code (A-Z, 0-9) and play that world.
+  The same code always gives the same world (floors, items, earthlings, ship pieces). The code
+  screen starts on the last world played, so a good Random World can be shared; saved games show
+  their world's code.
+- **Options** on the Who screen: controls for both players (choose a Genesis button, then press the
   key or controller button for it; each button has a keyboard and a controller binding), Quick
   Start and Clean Transitions on/off, and Exit Game (at the bottom, asks first). Settings are kept
   in `tje.cfg` next to the program.

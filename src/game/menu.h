@@ -25,7 +25,15 @@ typedef struct {
     int col, row;              /* window cell of the text */
     char text[MENU_TEXT];
     int value;                 /* < 0: a line that cannot be chosen (put these last) */
+    int edit;                  /* Up/Down go to the action callback while the hand is here */
 } MenuItem;
+
+/* `dir` values for the action callback */
+#define MENU_SELECT 0          /* A, C or Start (and B unless b_is_back) */
+#define MENU_LEFT  -1
+#define MENU_RIGHT  1
+#define MENU_UP    -2          /* only on items with .edit set */
+#define MENU_DOWN   2
 
 struct Menu {
     MenuItem item[MENU_MAX];
@@ -37,6 +45,8 @@ struct Menu {
      * item `sel`. Return 1 to close the menu (it then returns the item's value), 0
      * to stay. It may change texts with menu_set_text(). */
     int (*action)(Menu *m, int dir);
+    /* Optional. Called once per frame while the menu is up (t counts frames). */
+    void (*frame)(Menu *m, unsigned t);
     void *user;
     /* internal */
     uint32_t text_addr[MENU_MAX];
@@ -55,5 +65,10 @@ int menu_run(Menu *m, int title);
 
 /* Wait for a frame on a menu screen (for use inside an action callback). */
 void menu_frame(void);
+
+/* ToeJam's pointing hand: its 4x2 tiles (palette line 3), copied from VRAM the
+ * first time a menu screen shows it; reused by the pause menu. */
+extern uint8_t g_menu_hand[8 * 32];
+extern int g_menu_hand_ok;
 
 #endif

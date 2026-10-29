@@ -13,6 +13,7 @@
  */
 #include "game.h"
 #include "save.h"
+#include "menu.h"
 #include "core/vdp.h"
 
 #include <stdio.h>

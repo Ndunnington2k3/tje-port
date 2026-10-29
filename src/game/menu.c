@@ -6,6 +6,7 @@
  */
 #include "game.h"
 #include "menu.h"
+#include "core/vdp.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -112,6 +113,29 @@ void menu_frame(void)
     POP_ARGS(4);
 }
 
+uint8_t g_menu_hand[8 * 32];
+int g_menu_hand_ok;
+
+/* Keep a copy of the hand's tiles: the 4x2-tile sprite on palette line 3. */
+static void grab_hand(void)
+{
+    uint32_t sat = (uint32_t)(vdp_reg[5] & 0x7F) << 9;
+    int i, link = 0;
+    if (g_menu_hand_ok) return;
+    if (vdp_reg[0x0C] & 0x81) sat &= 0xFC00u;
+    for (i = 0; i < 80; i++) {
+        const uint8_t *e = &vdp_vram[(sat + (uint32_t)link * 8) & 0xFFFF];
+        uint32_t attr = (uint32_t)(e[4] << 8) | e[5];
+        if (e[2] == 0x0D && ((attr >> 13) & 3) == 3) {
+            memcpy(g_menu_hand, &vdp_vram[((attr & 0x7FFu) * 32) & 0xFFFF], sizeof g_menu_hand);
+            g_menu_hand_ok = 1;
+            return;
+        }
+        link = e[3] & 0x7F;
+        if (!link) return;
+    }
+}
+
 static int selectable(const Menu *m, int i)
 {
     return i >= 0 && i < m->count && m->item[i].value >= 0;
@@ -121,6 +145,7 @@ int menu_run(Menu *m, int title)
 {
     int i, result = -1;
     uint32_t prev = 0;
+    unsigned t;
 
     CY(60);
     if (m->sel < 0 || !selectable(m, m->sel)) m->sel = 0;
@@ -173,9 +198,11 @@ int menu_run(Menu *m, int title)
     }
     CALL(f_023A90);                      /* ToeJam's hand */
 
-    for (;;) {
+    for (t = 0;; t++) {
         uint32_t p;
         menu_frame();
+        if (t == 2) grab_hand();
+        if (m->frame) m->frame(m, t);
         p = pads_now();
         if (p != prev) {
             uint32_t pressed = p & ~prev;
@@ -190,6 +217,11 @@ int menu_run(Menu *m, int title)
                     break;
                 }
                 prev = pads_now();       /* a binding may have been changed: start afresh */
+            } else if ((pressed & (PAD_UP | PAD_DOWN)) && m->item[m->sel].edit && m->action) {
+                if (m->action(m, (pressed & PAD_UP) ? MENU_UP : MENU_DOWN)) {
+                    result = m->item[m->sel].value;
+                    break;
+                }
             } else if (pressed & PAD_UP) {
                 push32(SND_PRIORITY);
                 push32(SND_CURSOR);

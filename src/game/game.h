@@ -55,9 +55,4 @@ static inline int start_held(void)
     return ((g_pad[0] | g_pad[1]) & PAD_START) != 0;
 }
 
-/* ToeJam's pointing hand from the menu screens: its 4x2 tiles (palette line 3),
- * picked up when a menu screen shows it (menus.c), reused by the pause menu. */
-extern uint8_t g_menu_hand[8 * 32];
-extern int g_menu_hand_ok;
-
 #endif

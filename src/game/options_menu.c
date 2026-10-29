@@ -1,19 +1,17 @@
 /*
- * The What screen (GameSelectMenu) with an Options item, and the Options
- * screens: port settings, control bindings and Exit Game.
+ * The Options screens (from the Who screen): port settings, control bindings
+ * and Exit Game.
  */
 #include "game.h"
 #include "menu.h"
 #include "settings.h"
+#include "options_menu.h"
 #include "platform/platform.h"
 #include "core/vdp.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define WHAT_ITEMS_ROM  0x0242B0u   /* the original five items */
-#define WHAT_COUNT_ROM  0x024340u
-#define WHAT_OPTIONS    5           /* value of the new item (MenuRoutine ignores it) */
 
 /* ---- Controls ---------------------------------------------------------------- */
 
@@ -108,7 +106,7 @@ static void controls_menu(int player)
     c.pad_item = m.count;
     for (i = 0; i < 8; i++) menu_add(&m, COL_PAD, CTRL_ROW + i, "", -1);
     refresh_controls(&m);
-    menu_run(&m, MENU_TITLE_WHAT);
+    menu_run(&m, MENU_TITLE_WHO);
 }
 
 /* ---- Options ------------------------------------------------------------------ */
@@ -152,10 +150,10 @@ static int confirm_exit(void)
     menu_add(&m, 16, 14, "No", 0);
     menu_add(&m, 16, 16, "Yes", 1);
     menu_add(&m, 11, 11, "Exit the game?", -1);
-    return menu_run(&m, MENU_TITLE_WHAT) == 1;
+    return menu_run(&m, MENU_TITLE_WHO) == 1;
 }
 
-static void options_menu(void)
+void options_menu(void)
 {
     int sel = 0;
     for (;;) {
@@ -173,7 +171,7 @@ static void options_menu(void)
         for (i = 0; i < NTOGGLES; i++)
             value_items[i] = menu_add(&m, COL_VALUE, toggles[i].row, *toggles[i].setting ? "On" : "Off", -1);
         m.sel = sel;
-        v = menu_run(&m, MENU_TITLE_WHAT);
+        v = menu_run(&m, MENU_TITLE_WHO);
         sel = m.sel;
         if (v == OPT_CONTROLS1 || v == OPT_CONTROLS2) {
             controls_menu(v == OPT_CONTROLS1 ? 0 : 1);
@@ -191,35 +189,3 @@ static void options_menu(void)
     settings_save();
 }
 
-/* ---- the What screen ---------------------------------------------------------- */
-
-TJE_OVERRIDE(0x023654)
-void f_023654_GameSelectMenu(void)
-{
-    /* Returns the choice in D0, as the original: 0 Random World, 1 Jam Out,
-     * 2 intro, 3 controller options, 4 Fixed World. */
-    int sel = 0, v;
-    CY(40);
-    for (;;) {
-        Menu m;
-        int i, n = (int16_t)rd16(WHAT_COUNT_ROM);
-        menu_init(&m);
-        for (i = 0; i < n && i < MENU_MAX - 1; i++) {
-            uint32_t e = WHAT_ITEMS_ROM + (uint32_t)i * 8;
-            char text[MENU_TEXT];
-            uint32_t s = rd32(e + 2);
-            int k;
-            for (k = 0; k < MENU_TEXT - 1 && rd8(s + (uint32_t)k); k++) text[k] = (char)rd8(s + (uint32_t)k);
-            text[k] = 0;
-            menu_add(&m, (int)rd8(e), (int)rd8(e + 1), text, (int16_t)rd16(e + 6));
-        }
-        menu_add(&m, 6, 23, "Options", WHAT_OPTIONS);
-        m.sel = sel;
-        v = menu_run(&m, MENU_TITLE_WHAT);
-        sel = m.sel;
-        if (v != WHAT_OPTIONS) break;
-        options_menu();
-    }
-    R.d[0] = (uint32_t)(int32_t)v;
-    RETURN();
-}
