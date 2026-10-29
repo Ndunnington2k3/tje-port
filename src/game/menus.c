@@ -25,9 +25,14 @@
 #define SND_BUZZ        0x1A
 
 /* The saved-games list has its own title, "LOAD?" (art/load_title.png), drawn
- * over the "WHO..." title sprites: same sprites (palette line 1), our tiles and
- * colours, written each frame before the screen is drawn. Palette line 1 is
- * only used by the title, and LoadMenu reloads it for the other menus. */
+ * into the tiles of the "WHO..." title sprites (palette line 1) with our own
+ * colours. Called by the frame hook just before each frame is drawn, because
+ * the game re-uploads the title's tiles every few frames. Only tiles and
+ * colours are written: the sprites stay where the game puts them, and each
+ * block shows the part of the picture under it, so a block placed a pixel
+ * lower (the third one is) simply shows the picture a row further on.
+ * Palette line 1 is only used by the title; LoadMenu reloads it for the
+ * other menus. */
 static void load_title_frame(void)
 {
     const ArtImage *art = &art_load_title;
@@ -35,40 +40,31 @@ static void load_title_frame(void)
     int i, n = 0, link = 0, base_x = 0, base_y = 0;
     if (vdp_reg[0x0C] & 0x81) sat &= 0xFC00u;
     for (i = 0; i < 80; i++) {
-        uint32_t a = (sat + (uint32_t)link * 8) & 0xFFFF;
-        uint32_t attr = (uint32_t)(vdp_vram[a + 4] << 8) | vdp_vram[a + 5];
-        if (((attr >> 13) & 3) == 1) {
+        const uint8_t *e = &vdp_vram[(sat + (uint32_t)link * 8) & 0xFFFF];
+        uint32_t attr = (uint32_t)(e[4] << 8) | e[5];
+        if (((attr >> 13) & 3) == 1) {                  /* a title sprite */
             uint32_t tile = attr & 0x7FFu;
+            int x0 = ((e[6] << 8) | e[7]) & 0x1FF, y0 = ((e[0] << 8) | e[1]) & 0x3FF;
+            int w = ((e[2] >> 2) & 3) + 1, h = (e[2] & 3) + 1;   /* in tiles */
             int tx, ty, x, y;
-            if (n == 0) {
-                base_x = ((vdp_vram[a + 6] << 8) | vdp_vram[a + 7]) & 0x1FF;
-                base_y = ((vdp_vram[a] << 8) | vdp_vram[a + 1]) & 0x3FF;
-            }
-            if (n < 3 && vdp_vram[a + 2] == 0x0F) {
-                /* a 32x32 block: image rows 1-32 (row 0 is empty), columns 32n.. */
-                vdp_vram[a] = (uint8_t)((base_y + 1) >> 8); vdp_vram[a + 1] = (uint8_t)(base_y + 1);
-                vdp_vram[a + 6] = (uint8_t)((base_x + 32 * n) >> 8); vdp_vram[a + 7] = (uint8_t)(base_x + 32 * n);
-                for (tx = 0; tx < 4; tx++)
-                    for (ty = 0; ty < 4; ty++) {
-                        uint8_t *dst = &vdp_vram[((tile + (uint32_t)(tx * 4 + ty)) * 32) & 0xFFFF];
-                        for (y = 0; y < 8; y++)
-                            for (x = 0; x < 8; x += 2) {
-                                int ix = 32 * n + tx * 8 + x, iy = 1 + ty * 8 + y;
-                                int p0 = 0, p1 = 0;
-                                if (iy < art->height && ix < art->width) {
-                                    p0 = art->pixels[iy * art->width + ix];
-                                    if (ix + 1 < art->width) p1 = art->pixels[iy * art->width + ix + 1];
-                                }
-                                dst[y * 4 + x / 2] = (uint8_t)(p0 << 4 | p1);
+            if (n++ == 0) { base_x = x0; base_y = y0 - 1; }   /* picture row 0 is empty */
+            for (tx = 0; tx < w; tx++)
+                for (ty = 0; ty < h; ty++) {
+                    /* sprite tiles go down each column first */
+                    uint8_t *dst = &vdp_vram[((tile + (uint32_t)(tx * h + ty)) * 32) & 0xFFFF];
+                    for (y = 0; y < 8; y++)
+                        for (x = 0; x < 8; x += 2) {
+                            int ix = x0 - base_x + tx * 8 + x, iy = y0 - base_y + ty * 8 + y;
+                            int p0 = 0, p1 = 0;
+                            if (iy >= 0 && iy < art->height && ix >= 0 && ix < art->width) {
+                                p0 = art->pixels[iy * art->width + ix];
+                                if (ix + 1 < art->width) p1 = art->pixels[iy * art->width + ix + 1];
                             }
-                    }
-            } else {
-                /* the extra dot sprite: not needed */
-                vdp_vram[a] = 0; vdp_vram[a + 1] = 0;
-            }
-            n++;
+                            dst[y * 4 + x / 2] = (uint8_t)(p0 << 4 | p1);
+                        }
+                }
         }
-        link = vdp_vram[a + 3] & 0x7F;
+        link = e[3] & 0x7F;
         if (!link) break;
     }
     for (i = 0; i < art->colors; i++)
