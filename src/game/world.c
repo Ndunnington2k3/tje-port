@@ -106,7 +106,7 @@ static int code_action(Menu *m, int dir)
     if (m->sel != c->code_item) return dir == MENU_SELECT;   /* Play / Back */
     switch (dir) {
     case MENU_SELECT:
-    case MENU_BACK:
+    case MENU_BACK_DIR:
         set_editing(m, !m->item[c->code_item].edit && dir == MENU_SELECT);
         return 0;
     case MENU_LEFT:

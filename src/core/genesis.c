@@ -12,6 +12,7 @@
 #include <string.h>
 
 uint16_t g_pad[2];
+uint16_t g_menu_pad;
 uint32_t g_frame;
 
 static uint8_t *rom_data;
@@ -146,6 +147,7 @@ static void end_of_frame(void)
         quit_code = 0;
         longjmp(quit_jmp, 1);
     }
+    g_menu_pad = plat_menu_input();
     if (input_hook) input_hook(g_pad);
 }
 

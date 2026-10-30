@@ -88,11 +88,15 @@ Port changes so far (on by default):
   The same code always gives the same world (floors, items, earthlings, ship pieces). The code
   screen starts on the last world played, so a good Random World can be shared; saved games show
   their world's code.
-- **Options** on the Who screen: controls for both players (choose a button and the screen asks for
-  each button in turn from there down to Start: press the key or controller button for each, Escape
-  stops; each button has a keyboard and a controller binding), Quick
-  Start and Clean Transitions on/off, and Exit Game (at the bottom, asks first). Settings are kept
-  in `tje.cfg` next to the program.
+- **Controller Options** on the What screen (replacing the game's two fixed layouts): for each player,
+  choose an action and the screen asks for each one in turn (Up, Down, Left, Right, Action, Present
+  List, Map, Pause): press a key or controller button for each. Each action has a keyboard and a
+  controller binding.
+- **Options** on the Who screen: Quick Start and Clean Transitions on/off, and Exit Game (at the
+  bottom, asks first). Settings are kept in `tje.cfg` next to the program.
+- **Menu controls are fixed** and separate from the game's: arrows / d-pad / stick to move, Enter,
+  Space or controller A / Start to choose, Escape, Backspace or controller B / Back to go back. So
+  a bad binding can never lock you out of the menus.
 - **Clean screen transitions**: no flashes of half-built screens when the game changes scene
   (most visible in the original right after the elevator takes off).
 - **Pause menu**: Resume, Save Game, Quit to Menu, in the status bar with ToeJam's pointing hand.

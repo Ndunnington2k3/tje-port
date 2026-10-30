@@ -37,13 +37,13 @@ static void display(int on)
     wr16(VDP_CTRL, (r1 | 0x8104u) & 0xFFFFu);
 }
 
+int g_binding_active;
+
+/* The menu controls (fixed, see plat_menu_input), not the game's bindings.
+ * Nothing while a control is being bound. */
 static uint32_t pads_now(void)
 {
-    uint32_t p;
-    CALL(f_02706C_ReadPad2Input);
-    p = R.d[0];
-    CALL(f_027006_ReadPad1Input);
-    return (p | R.d[0]) & 0xFFu;
+    return g_binding_active ? 0 : g_menu_pad;
 }
 
 void menu_init(Menu *m)
@@ -137,12 +137,15 @@ void menu_art_title(const void *p)
     vdp_overlay(TITLE_OVERLAY, TITLE_X, TITLE_Y, art->width, art->height, art->pixels, colors);
 }
 
+/* The bindings are actions that arrive on the Genesis buttons of the game's
+ * standard controller layout (Action = A, Present List = B, Map = C, Pause =
+ * Start); the game's own layout option is replaced by the controls screens. */
 void game_input_hook(uint16_t pad[2])
 {
     int p;
-    if (g_port_menu_active) return;              /* the menu handles Escape itself */
+    if (g_port_menu_active) return;
     for (p = 0; p < 2; p++)
-        if (pad[p] & PAD_BACK) pad[p] |= PAD_START;  /* Escape pauses (and works as Start) */
+        if (pad[p] & PAD_BACK) pad[p] |= PAD_START;   /* Escape / controller Back pauses */
 }
 
 void menu_add_rom_items(Menu *m, uint32_t table, int count, int row_shift)
@@ -189,12 +192,11 @@ static int selectable(const Menu *m, int i)
 int menu_run(Menu *m, int title)
 {
     int i, result = -1, was_active = g_port_menu_active;
-    uint32_t prev = 0, prev_back;
+    uint32_t prev = 0;
     unsigned t;
 
     CY(60);
     g_port_menu_active = 1;
-    prev_back = (g_pad[0] | g_pad[1]) & PAD_BACK;
     if (m->sel < 0 || !selectable(m, m->sel)) m->sel = 0;
     if (title >= 0) {
         push32((uint32_t)title);         /* stays on the stack for f_023BDA, as in the game */
@@ -238,8 +240,8 @@ int menu_run(Menu *m, int title)
     display(1);
     CALL(f_008BB2_SetVHBlankFlag2);
 
-    /* wait until A, B, C and Start are let go */
-    while (pads_now() & 0xF0u) {
+    /* wait until choose and back are let go */
+    while (pads_now() & (MENU_OK | MENU_BACK)) {
         wait_frames(1);
         push32(8);
         CALL(f_008BD4);
@@ -252,28 +254,21 @@ int menu_run(Menu *m, int title)
         menu_frame();
         if (t == 2) grab_hand();
         if (m->frame) m->frame(m, t);
-        {
-            /* Escape (port-only button, read straight from the controllers) */
-            uint32_t back = (g_pad[0] | g_pad[1]) & PAD_BACK;
-            int pressed_back = back && !prev_back;
-            prev_back = back;
-            if (pressed_back && m->b_is_back && m->item[m->sel].edit && m->action) {
-                if (m->action(m, MENU_BACK)) { result = -1; break; }
-            } else if (pressed_back && m->b_is_back) {
-                result = -1;
-                break;
-            } else if (pressed_back && m->escape_value) {
-                result = m->escape_value;
-                break;
-            }
-        }
         p = pads_now();
         if (p != prev) {
             uint32_t pressed = p & ~prev;
             prev = p;
-            /* A, B, C and Start all choose, as on the game's own menus (a controller's
-             * A button is the Genesis B by default); "back" is Escape / Back only */
-            if (pressed & (PAD_A | PAD_B | PAD_C | PAD_START)) {
+            if (pressed & MENU_BACK) {
+                if (m->b_is_back && m->item[m->sel].edit && m->action) {
+                    if (m->action(m, MENU_BACK_DIR)) { result = -1; break; }
+                } else if (m->b_is_back) {
+                    result = -1;
+                    break;
+                } else if (m->escape_value) {
+                    result = m->escape_value;
+                    break;
+                }
+            } else if (pressed & MENU_OK) {
                 if (!m->action || m->action(m, 0)) {
                     result = m->item[m->sel].value;
                     break;

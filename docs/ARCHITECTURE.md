@@ -83,7 +83,7 @@ Replaced so far:
 | `SEGAVideo` ($03A476) | `intro.c` | Start ends the SEGA screen cleanly (logo or ship phase); skipped after Quit to Menu |
 | `InGameLoop` ($0014E6) | `save.c` | records an arrival snapshot when a player reaches a floor |
 | `GamePaused` ($01DBD8) | `pause.c` | pause menu (resume / save / quit) in the status bar |
-| `MenuRoutine` ($0233B2) | `menus.c` | Who then What as before; Escape goes back (What -> Who, Jam Out/controller -> What); Jam Out and controller screens use menu.c |
+| `MenuRoutine` ($0233B2) | `menus.c` | Who then What as before; "back" returns (What -> Who, Jam Out -> What); Controller Options opens the port's controls screens |
 | `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" (saved-games list) and "Options" (`options_menu.c`) |
 | `GameSelectMenu` ($023654) | `world.c` | What screen gets "Custom World" and the world code screen |
 | `GenerateLevelsForGame` ($004658) | `world.c` | uses a Custom World's seed; remembers every world's seed |
@@ -216,6 +216,19 @@ Bindings belong to the platform layer (`plat_binding`, `plat_set_binding`, `plat
 platform.h): SDL stores a scancode and a controller button/axis token per Genesis button; the
 headless build stores tokens and answers captures from `--capture key:Q`/`--capture pad:y`.
 `plat_data_dir()` is where settings and saved games go (next to the program on desktop).
+
+## Controls
+
+Game controls are per-player bindings of actions (Up, Down, Left, Right, Action, Present List,
+Map, Pause), each to one key and one controller input (platform layer). They arrive on the Genesis
+A/B/C/Start bits of the game's standard layout (Action = A, Present List = B, Map = C). The game's
+own controller option is replaced by the controls screens (`options_menu.c`): choosing an action
+asks for it and each following one; `g_binding_active` makes menus ignore their controls while a
+binding is being captured, and after each capture the screen waits until everything is released
+(after storing the binding, so a key just bound to a choosing button cannot act).
+
+Menus never use the bindings: `plat_menu_input()` gives fixed menu controls (`g_menu_pad`:
+directions, `MENU_OK`, `MENU_BACK`).
 
 ## Escape / Back
 

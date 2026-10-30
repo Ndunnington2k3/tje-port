@@ -121,21 +121,19 @@ void f_0235E2_PlayerSelectMenu(void)
 }
 
 /* ---- MenuRoutine: Who, then What (Source/Menus in the disassembly) ------------
- * As the original, plus Escape: on the What screen it goes back to Who, and on
- * the Jam Out and controller screens back to What. */
+ * As the original, plus "back": on the What screen it goes back to Who, and on
+ * Jam Out back to What. "Controller Options" opens the port's controls screens
+ * (any input for each action) instead of the game's two fixed layouts. */
 
 #define TOEJAMS_LIVES       0xFFA248u    /* Earl's are the next byte */
 #define TOEJAMS_PROMOTION   0xFFA250u
 #define TOEJAMS_LEVEL       0xFFA2A6u    /* $4C(TOEJAMS_XPOS); Earl's is $80 further */
 #define PLAYER_INDICATOR    0xFF802Eu
 #define PAD2_AS_PLAYER1     0xFF801Cu    /* LOC_00FF801C: the one player uses pad 2 */
-#define CONTROLLER_LAYOUT   0xFF8030u
 #define FIXED_WORLD_FLAG_M  0xFF9134u
 
 #define JAM_OUT_ITEMS_ROM   0x02414Au
 #define JAM_OUT_COUNT_ROM   0x024244u
-#define CONTROLLER_ITEMS_ROM 0x024342u
-#define CONTROLLER_COUNT_ROM 0x0243C6u
 
 /* who plays: 0 both, 1 ToeJam, 2 Earl (an absent player gets lives $FF, rank 9, floor $63) */
 static void set_players(int who)
@@ -166,17 +164,6 @@ static int jam_out_menu(void)
     menu_add_rom_items(&m, JAM_OUT_ITEMS_ROM, (int16_t)rd16(JAM_OUT_COUNT_ROM), 0);
     m.escape_value = MENU_ESCAPE;
     return menu_run(&m, MENU_TITLE_JAM_OUT);
-}
-
-static int controller_menu(void)
-{
-    Menu m;
-    int v;
-    menu_init(&m);
-    menu_add_rom_items(&m, CONTROLLER_ITEMS_ROM, (int16_t)rd16(CONTROLLER_COUNT_ROM), 0);
-    m.escape_value = MENU_ESCAPE;
-    v = menu_run(&m, MENU_TITLE_CONTROLLER);
-    return v == MENU_ESCAPE ? (int)rd8(CONTROLLER_LAYOUT) : v;   /* Escape keeps the layout */
 }
 
 TJE_OVERRIDE(0x0233B2)
@@ -210,8 +197,8 @@ who:
         case 2:                                   /* show the intro again */
             CALL(f_029A16_IntroVideo);
             goto who;
-        case 3:                                   /* controller options */
-            wr8(CONTROLLER_LAYOUT, (uint32_t)controller_menu());
+        case 3:                                   /* controller options: the port's controls */
+            controls_select_menu();
             continue;
         default:
             continue;

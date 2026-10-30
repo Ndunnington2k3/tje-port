@@ -1,6 +1,7 @@
 /*
- * The Options screens (from the Who screen): port settings, control bindings
- * and Exit Game.
+ * The Options screens (from the Who screen): port settings and Exit Game;
+ * and the controls screens, which replace the game's controller options on
+ * the What screen.
  */
 #include "game.h"
 #include "menu.h"
@@ -31,17 +32,18 @@ typedef struct {
     int key_item, pad_item;        /* menu index of the first keyboard / controller label */
 } ControlsCtx;
 
-/* Shown in the Genesis pad's order; the numbers are the PAD_* bit numbers. */
+/* The game's actions; the numbers are the binding numbers (platform.h). */
 static const struct { const char *name; int bit; } pad_buttons[8] = {
-    {"Up", 0}, {"Down", 1}, {"Left", 2}, {"Right", 3}, {"A", 6}, {"B", 4}, {"C", 5}, {"Start", 7},
+    {"Up", 0}, {"Down", 1}, {"Left", 2}, {"Right", 3},
+    {"Action", 6}, {"Present List", 4}, {"Map", 5}, {"Pause", 7},    /* the game's own names */
 };
 
 #define CTRL_RESET   8
 #define CTRL_BACK    9
 #define CTRL_ROW     11             /* first button line */
 #define COL_NAME     6
-#define COL_KEY      15
-#define COL_PAD      28
+#define COL_KEY      19
+#define COL_PAD      29
 
 /* The game's font is proportional, so each column is its own line of text. */
 static void refresh_controls(Menu *m)
@@ -62,7 +64,7 @@ static void refresh_controls(Menu *m)
 static void wait_all_released(void)
 {
     int frames;
-    for (frames = 0; frames < 60 * 5 && ((g_pad[0] | g_pad[1]) & 0x1FFu); frames++)
+    for (frames = 0; frames < 60 * 5 && (((g_pad[0] | g_pad[1]) & 0x1FFu) || g_menu_pad); frames++)
         menu_frame();
 }
 
@@ -78,6 +80,7 @@ static int capture_one(Menu *m, int i)
     snprintf(prompt, sizeof prompt, "Press %s...", pad_buttons[i].name);
     menu_set_text(m, c->key_item + i, prompt);
     menu_set_text(m, c->pad_item + i, "");
+    g_binding_active = 1;          /* the menu ignores its controls until this is done */
     plat_capture_start(c->player);
     for (frames = 0; frames < 60 * 8 && r == 0; frames++) {
         menu_point(m, i);
@@ -96,6 +99,7 @@ static int capture_one(Menu *m, int i)
     }
     refresh_controls(m);
     wait_all_released();          /* after binding, so the new binding is what is checked */
+    g_binding_active = 0;
     return r;
 }
 
@@ -140,19 +144,41 @@ static void controls_menu(int player)
     c.pad_item = m.count;
     for (i = 0; i < 8; i++) menu_add(&m, COL_PAD, CTRL_ROW + i, "", -1);
     refresh_controls(&m);
-    options_screen(&m);
+    menu_run(&m, MENU_TITLE_CONTROLLER);
+}
+
+/* "Controller Options" on the What screen (replacing the game's two fixed
+ * layouts): pick a player, then set that player's controls. */
+void controls_select_menu(void)
+{
+    int sel = 0;
+    for (;;) {
+        Menu m;
+        int v;
+        menu_init(&m);
+        m.b_is_back = 1;
+        menu_add(&m, 6, 12, "Player 1 Controls", 0);
+        menu_add(&m, 6, 14, "Player 2 Controls", 1);
+        menu_add(&m, 6, 18, "Back", 2);
+        m.sel = sel;
+        v = menu_run(&m, MENU_TITLE_CONTROLLER);
+        sel = m.sel;
+        if (v != 0 && v != 1) break;
+        controls_menu(v);
+    }
+    settings_save();
 }
 
 /* ---- Options ------------------------------------------------------------------ */
 
-enum { OPT_CONTROLS1, OPT_CONTROLS2, OPT_QUICK, OPT_CLEAN, OPT_BACK, OPT_EXIT };
+enum { OPT_QUICK, OPT_CLEAN, OPT_BACK, OPT_EXIT };
 
 /* On/Off settings: their names are choosable lines; the values are separate
  * lines in a column further right (the font is proportional). */
 typedef struct { int value; const char *name; int *setting; int row; } Toggle;
 static const Toggle toggles[] = {
-    {OPT_QUICK, "Quick Start", &g_options.quick_start, 15},
-    {OPT_CLEAN, "Clean Transitions", &g_options.clean_transitions, 17},
+    {OPT_QUICK, "Quick Start", &g_options.quick_start, 12},
+    {OPT_CLEAN, "Clean Transitions", &g_options.clean_transitions, 14},
 };
 #define NTOGGLES ((int)(sizeof toggles / sizeof toggles[0]))
 #define COL_VALUE 28
@@ -197,20 +223,14 @@ void options_menu(void)
         m.action = options_action;
         m.user = value_items;
         m.b_is_back = 1;
-        menu_add(&m, 6, 10, "Controls -- Player 1", OPT_CONTROLS1);
-        menu_add(&m, 6, 12, "Controls -- Player 2", OPT_CONTROLS2);
         for (i = 0; i < NTOGGLES; i++) menu_add(&m, 6, toggles[i].row, toggles[i].name, toggles[i].value);
-        menu_add(&m, 6, 20, "Back", OPT_BACK);
-        menu_add(&m, 6, 24, "Exit Game", OPT_EXIT);   /* out of the way, and it asks first */
+        menu_add(&m, 6, 18, "Back", OPT_BACK);
+        menu_add(&m, 6, 23, "Exit Game", OPT_EXIT);   /* out of the way, and it asks first */
         for (i = 0; i < NTOGGLES; i++)
             value_items[i] = menu_add(&m, COL_VALUE, toggles[i].row, *toggles[i].setting ? "On" : "Off", -1);
         m.sel = sel;
         v = options_screen(&m);
         sel = m.sel;
-        if (v == OPT_CONTROLS1 || v == OPT_CONTROLS2) {
-            controls_menu(v == OPT_CONTROLS1 ? 0 : 1);
-            continue;
-        }
         if (v == OPT_EXIT) {
             if (confirm_exit()) {
                 settings_save();

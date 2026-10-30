@@ -26,10 +26,17 @@ int plat_audio_enabled(void);
 /* Queue one frame's worth of audio: interleaved stereo int16 at 48 kHz. */
 void plat_audio(const int16_t *samples, int frames);
 
+/* Menu controls, fixed (not the game's bindings): any keyboard or controller.
+ * Arrows / d-pad / left stick move (PAD_UP..PAD_RIGHT); Enter, Space,
+ * controller A or Start = MENU_OK; Escape, Backspace, controller B or Back =
+ * MENU_BACK. Nothing while a binding is being captured. */
+uint16_t plat_menu_input(void);
+
 /* ---- input bindings ------------------------------------------------------
- * Each Genesis button of each player (button = bit number of its PAD_* flag:
- * 0 Up, 1 Down, 2 Left, 3 Right, 4 B, 5 C, 6 A, 7 Start) can have one keyboard
- * binding and one controller binding, stored as text tokens ("" = none) so the
+ * Each game action of each player (button = bit number:
+ * 0 Up, 1 Down, 2 Left, 3 Right, 4 Present List, 5 Map, 6 Action, 7 Pause;
+ * with the game's standard controller layout these are the Genesis B, C, A and
+ * Start bits) can have one keyboard binding and one controller binding, stored as text tokens ("" = none) so the
  * game can keep them in its settings file. */
 #define PLAT_BIND_KEY 0
 #define PLAT_BIND_PAD 1

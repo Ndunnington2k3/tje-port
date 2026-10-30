@@ -1,10 +1,11 @@
 /*
  * SDL2 platform backend (Windows, Linux, macOS).
  *
- * Default controls (player 1):  arrows = d-pad, Z = A, X = B, C = C, Enter = Start
- * Default controls (player 2):  W/A/S/D = d-pad, J = A, K = B, L = C, Right Shift = Start
- * Game controllers are assigned to players 1 and 2 in the order they are connected;
- * by default X/A/B = Genesis A/B/C. All of this can be rebound (plat_set_binding).
+ * Default game controls (player 1): arrows, Z = Action, X = Present List, C = Map, Enter = Pause
+ * Default game controls (player 2): W/A/S/D, J = Action, K = Present List, L = Map, Right Shift = Pause
+ * Controllers (players 1 and 2 in the order connected): A = Action, B = Present List, X = Map,
+ * Start = Pause. All of these can be rebound (What screen -> Controller Options). Menus use fixed
+ * controls (plat_menu_input): Enter/A choose, Escape/B go back.
  * F11 / Alt+Enter toggles fullscreen. Escape (or a controller's Back button) is
  * PAD_BACK: "back" on the port's menus, Start (pause) during play. --mute disables sound.
  */
@@ -172,14 +173,15 @@ static void open_pads(void)
 static SDL_Scancode bind_key[2][NBUTTONS];
 static char bind_pad[2][NBUTTONS][24];       /* "a", "dpup", "+lefttrigger", "-leftx"... */
 
+/* Actions in bit order: Up, Down, Left, Right, Present List, Map, Action, Pause */
 static const SDL_Scancode default_keys[2][NBUTTONS] = {
     {SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
      SDL_SCANCODE_X, SDL_SCANCODE_C, SDL_SCANCODE_Z, SDL_SCANCODE_RETURN},
     {SDL_SCANCODE_W, SDL_SCANCODE_S, SDL_SCANCODE_A, SDL_SCANCODE_D,
      SDL_SCANCODE_K, SDL_SCANCODE_L, SDL_SCANCODE_J, SDL_SCANCODE_RSHIFT},
 };
-/* Xbox layout: X = A, A = B, B = C (the Genesis pad's A B C row) */
-static const char *const default_pad[NBUTTONS] = {"dpup", "dpdown", "dpleft", "dpright", "a", "b", "x", "start"};
+/* controller: A = Action, B = Present List, X = Map, Start = Pause */
+static const char *const default_pad[NBUTTONS] = {"dpup", "dpdown", "dpleft", "dpright", "b", "x", "a", "start"};
 
 void plat_default_bindings(int player)
 {
@@ -348,6 +350,42 @@ static uint16_t read_player(int p, const Uint8 *k)
         if (y > 12000) bits |= PAD_DOWN;
     }
     return bits;
+}
+
+uint16_t plat_menu_input(void)
+{
+    const Uint8 *k = SDL_GetKeyboardState(NULL);
+    uint16_t m = 0;
+    int p;
+    if (capturing) return 0;
+    if (k[SDL_SCANCODE_UP]) m |= PAD_UP;
+    if (k[SDL_SCANCODE_DOWN]) m |= PAD_DOWN;
+    if (k[SDL_SCANCODE_LEFT]) m |= PAD_LEFT;
+    if (k[SDL_SCANCODE_RIGHT]) m |= PAD_RIGHT;
+    if ((k[SDL_SCANCODE_RETURN] && !(SDL_GetModState() & KMOD_ALT)) || k[SDL_SCANCODE_SPACE] ||
+        k[SDL_SCANCODE_KP_ENTER])
+        m |= MENU_OK;
+    if (k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_BACKSPACE]) m |= MENU_BACK;
+    for (p = 0; p < 2; p++) {
+        SDL_GameController *c = pads[p];
+        Sint16 x, y;
+        if (!c) continue;
+        if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_UP)) m |= PAD_UP;
+        if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_DOWN)) m |= PAD_DOWN;
+        if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_LEFT)) m |= PAD_LEFT;
+        if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) m |= PAD_RIGHT;
+        x = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX);
+        y = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTY);
+        if (x < -16000) m |= PAD_LEFT;
+        if (x > 16000) m |= PAD_RIGHT;
+        if (y < -16000) m |= PAD_UP;
+        if (y > 16000) m |= PAD_DOWN;
+        if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A) ||
+            SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_START)) m |= MENU_OK;
+        if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_B) ||
+            SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_BACK)) m |= MENU_BACK;
+    }
+    return m;
 }
 
 const char *plat_data_dir(void)

@@ -310,8 +310,11 @@ static void cheat(uint32_t p0, uint32_t p1)
     cheat_step++;
 }
 
-/* Input for the menu: buttons newly pressed on the pausing player's pad (Start on
- * either), with the original code checked along the way. */
+/* Input for the menu: the menu controls (fixed: arrows / d-pad, Enter or A to
+ * choose, Escape or B to go back), plus the game's Pause button on either pad,
+ * which chooses (so Pause, Pause still pauses and unpauses). Returned as
+ * PAD_UP..PAD_RIGHT, PAD_START = choose, PAD_BACK = back. The original
+ * pause-screen button code is checked on the game's own controls. */
 static uint32_t prev_buttons;
 static int menu_player;
 
@@ -323,8 +326,13 @@ static uint32_t menu_input(void)
     p0 = pad(0);
     p1 = pad(1);
     cheat(p0, p1);
-    now = (menu_player ? p1 : p0) | ((p0 | p1) & PAD_START);
-    if ((g_pad[0] | g_pad[1]) & PAD_BACK) now |= PAD_BACK;  /* Escape / Back: back out */
+    (void)menu_player;
+    now = ((p0 | p1) & PAD_START);
+    if (!g_binding_active) {
+        now |= g_menu_pad & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT);
+        if (g_menu_pad & MENU_OK) now |= PAD_START;
+        if (g_menu_pad & MENU_BACK) now |= PAD_BACK;
+    }
     pressed = now & ~prev_buttons;
     prev_buttons = now;
     return pressed;
@@ -513,7 +521,7 @@ void f_01DBD8_GamePaused(void)
     CALL(f_00D950);
     POP_ARGS(1);
     /* Start, or the button used to back out, must not reach the game */
-    while ((pad(1) | pad(0)) & (PAD_START | PAD_A | PAD_B | PAD_C))
+    while (((pad(1) | pad(0)) & (PAD_START | PAD_A | PAD_B | PAD_C)) || (g_menu_pad & (MENU_OK | MENU_BACK)))
         wait_vblank();
     RETURN();
 }

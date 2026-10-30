@@ -5,8 +5,9 @@
  *   - the cursor can start on any item;
  *   - Left/Right reach the menu's action callback (for settings with values);
  *   - item text can change while the menu is up;
- *   - Escape / a controller's Back button can mean "back" (A, B, C and Start all
- *     choose, as on the game's menus).
+ *   - the menu controls are fixed and separate from the game's bindings
+ *     (plat_menu_input: Enter/A choose, Escape/B go back), so a mistaken
+ *     binding can never lock you out of the menus.
  */
 #ifndef TJE_MENU_H
 #define TJE_MENU_H
@@ -39,17 +40,18 @@ typedef struct {
 #define MENU_RIGHT  1
 #define MENU_UP    -2          /* only on items with .edit set */
 #define MENU_DOWN   2
-#define MENU_BACK   3          /* Escape on an item with .edit set (when b_is_back) */
+#define MENU_BACK_DIR 3        /* "back" on an item with .edit set (when b_is_back) */
 
 struct Menu {
     MenuItem item[MENU_MAX];
     int count;
     int sel;                   /* item the hand starts on; the one chosen on return */
     int hand_col;              /* hand position (window column), 2 by default */
-    int b_is_back;             /* Escape / Back leaves the menu: menu_run returns -1 (on an
-                                  item being edited it goes to the action as MENU_BACK) */
-    int escape_value;          /* without b_is_back: if not 0, Escape / Back leaves the menu
-                                  and menu_run returns this */
+    int b_is_back;             /* "back" (Escape, controller B...) leaves the menu: menu_run
+                                  returns -1 (on an item being edited it goes to the action
+                                  as MENU_BACK) */
+    int escape_value;          /* without b_is_back: if not 0, "back" leaves the menu and
+                                  menu_run returns this */
     /* Optional. Called for Left/Right (dir -1/+1) and for A, C and Start (dir 0) on
      * item `sel`. Return 1 to close the menu (it then returns the item's value), 0
      * to stay. It may change texts with menu_set_text(). */
@@ -81,6 +83,8 @@ void menu_frame(void);
 /* Nonzero while a port menu (or the pause menu) is reading input itself:
  * Escape is "back" there, and Start (pause) during play. */
 extern int g_port_menu_active;
+/* Set while a control is being bound: menus ignore their controls meanwhile. */
+extern int g_binding_active;
 void game_input_hook(uint16_t pad[2]);
 
 /* A port title (a PNG from art/) where the game's titles sit, for MENU_NO_TITLE screens;

@@ -8,7 +8,7 @@
 
 #define SETTINGS_FILE "tje.cfg"
 
-static const char *const button_names[8] = {"up", "down", "left", "right", "b", "c", "a", "start"};
+static const char *const button_names[8] = {"up", "down", "left", "right", "presents", "map", "action", "pause"};
 static const char *const slot_names[2] = {"key", "pad"};
 
 /* port options kept in the file */

@@ -5,7 +5,8 @@
  *     --frames N           stop after N frames (default 600)
  *     --shot F:path.ppm    save frame F as a PPM image (repeatable)
  *     --press F:N:buttons  hold buttons from frame F for N frames, pad 1
- *                          (buttons: any of U D L R A B C S, E = Escape)
+ *                          (buttons: any of U D L R A B C S, E = Escape; on menus
+ *                          A/C/S = choose, B/E = back)
  *     --random SEED        after frame 500, mash random buttons (Start only rarely)
  *     --dumpram F:path     save the 64 KB of work RAM at frame F (repeatable)
  *     --dumpvram F:path    save VRAM, CRAM and the VDP registers at frame F
@@ -180,9 +181,9 @@ const char *plat_rom_path(void) { return rom_path; }
 /* Bindings are only stored here (input comes from the command line). */
 static const char *const def_bind[2][8][2] = {
     {{"Up", "dpup"}, {"Down", "dpdown"}, {"Left", "dpleft"}, {"Right", "dpright"},
-     {"X", "a"}, {"C", "b"}, {"Z", "x"}, {"Return", "start"}},
+     {"X", "b"}, {"C", "x"}, {"Z", "a"}, {"Return", "start"}},
     {{"W", "dpup"}, {"S", "dpdown"}, {"A", "dpleft"}, {"D", "dpright"},
-     {"K", "a"}, {"L", "b"}, {"J", "x"}, {"Right Shift", "start"}},
+     {"K", "b"}, {"L", "x"}, {"J", "a"}, {"Right Shift", "start"}},
 };
 void plat_default_bindings(int player)
 {
@@ -225,6 +226,17 @@ int plat_capture_poll(int *slot, char *token, int size)
     return 1;
 }
 const char *plat_data_dir(void) { return ""; }
+
+/* Menu controls from the same --press letters: directions; A, C, S = OK; B, E = back. */
+static uint16_t held_now;
+uint16_t plat_menu_input(void)
+{
+    uint16_t m = held_now & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT);
+    if (capturing) return 0;
+    if (held_now & (PAD_A | PAD_C | PAD_START)) m |= MENU_OK;
+    if (held_now & (PAD_B | PAD_BACK)) m |= MENU_BACK;
+    return m;
+}
 
 void plat_message(const char *title, const char *text)
 {
@@ -337,6 +349,7 @@ int plat_poll(uint16_t pad[2])
             if (frame >= presses[i].frame && frame < presses[i].frame + presses[i].len) held |= presses[i].buttons;
         if (capturing && (held & ~held_before)) capture_ready = 1;
         held_before = held;
+        held_now = held;
     }
     for (i = 0; i < npokes; i++)
         if (pokes[i].frame == frame) wr8(pokes[i].addr, pokes[i].val);
