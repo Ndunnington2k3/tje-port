@@ -365,6 +365,7 @@ int plat_poll(uint16_t pad[2])
         }
     for (i = 0; i < npresses; i++)
         if (frame >= presses[i].frame && frame < presses[i].frame + presses[i].len) pad[0] |= presses[i].buttons;
+    if (capturing) pad[0] = pad[1] = 0;   /* as SDL: nothing reaches the game while capturing */
     return frame < max_frames;
 }
 

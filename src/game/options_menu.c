@@ -60,6 +60,11 @@ static void refresh_controls(Menu *m)
 static void wait_all_released(void)
 {
     int frames;
+    /* First a fresh reading: the inputs were last read while the capture was
+     * still running, when they all read as nothing. Without this the wait
+     * ended at once, and a button still held (Start, for Pause) chose the
+     * line again and started another capture, over and over. */
+    menu_frame();
     for (frames = 0; frames < 60 * 5 && (((g_pad[0] | g_pad[1]) & 0x1FFu) || g_menu_pad); frames++)
         menu_frame();
 }
