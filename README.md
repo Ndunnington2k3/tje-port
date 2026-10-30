@@ -78,6 +78,7 @@ Options:
 - `--state "<path>\Level 12.gsx"` - start from a Gens save state (the disassembly ships one for every
   level in `Resources\Save States`), handy as a level select while developing.
 - `--mute` - no sound (saves CPU).
+- `--input-log` - write what the keyboard and controllers send to `tje_input.log` (for controller trouble).
 - `--vanilla` - turn off the port's changes and behave exactly like the original.
 
 Port changes so far (on by default):

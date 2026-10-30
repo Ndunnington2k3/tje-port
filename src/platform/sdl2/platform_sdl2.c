@@ -6,6 +6,7 @@
  * Controllers (players 1 and 2 in the order connected): A = Action, B = Present List, X = Map,
  * Start = Pause. All of these can be rebound (What screen -> Controller Options). Menus use fixed
  * controls (plat_menu_input): Enter/A choose, Escape/B go back.
+ * --input-log writes what the keyboard and controllers send to tje_input.log.
  * F11 / Alt+Enter toggles fullscreen. Escape (or a controller's Back button) is
  * PAD_BACK: "back" on the port's menus, Start (pause) during play. --mute disables sound.
  */
@@ -27,6 +28,7 @@ static Uint64 next_frame_time;
 static int vsync_ok;
 static SDL_AudioDeviceID audio_dev;
 static int audio_on = 1;
+static FILE *input_log;     /* --input-log: what the keyboard and controllers send */
 
 int plat_init(int argc, char **argv)
 {
@@ -34,11 +36,21 @@ int plat_init(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--state")) i++;  /* handled in main.c */
         else if (!strcmp(argv[i], "--mute")) audio_on = 0;
+        else if (!strcmp(argv[i], "--input-log")) {
+            char path[1100];
+            snprintf(path, sizeof path, "%stje_input.log", plat_data_dir());
+            input_log = fopen(path, "w");
+        }
         else if (argv[i][0] != '-') rom_path = argv[i];
     }
 
     plat_default_bindings(0);
     plat_default_bindings(1);
+    /* Read Steam Controllers directly (SDL's HIDAPI driver; off by default in
+     * SDL2). Note: while Steam is running it usually takes the controller over and,
+     * for programs it does not know, turns it into keyboard and mouse ("Desktop
+     * configuration"). */
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -400,12 +412,47 @@ const char *plat_data_dir(void)
     return dir;
 }
 
+static void log_event(const SDL_Event *e)
+{
+    switch (e->type) {
+    case SDL_KEYDOWN:
+        if (!e->key.repeat) fprintf(input_log, "key down: %s\n", SDL_GetScancodeName(e->key.keysym.scancode));
+        break;
+    case SDL_CONTROLLERDEVICEADDED: {
+        SDL_GameController *c = SDL_GameControllerFromInstanceID(e->cdevice.which);
+        fprintf(input_log, "controller added: %s\n",
+                SDL_GameControllerNameForIndex(e->cdevice.which) ? SDL_GameControllerNameForIndex(e->cdevice.which) : "?");
+        (void)c;
+        break;
+    }
+    case SDL_CONTROLLERBUTTONDOWN:
+        fprintf(input_log, "controller %d button: %s\n", pad_player(e->cbutton.which) + 1,
+                SDL_GameControllerGetStringForButton((SDL_GameControllerButton)e->cbutton.button));
+        break;
+    case SDL_CONTROLLERAXISMOTION:
+        if (e->caxis.value > 24000 || e->caxis.value < -24000)
+            fprintf(input_log, "controller %d axis: %s %d\n", pad_player(e->caxis.which) + 1,
+                    SDL_GameControllerGetStringForAxis((SDL_GameControllerAxis)e->caxis.axis), e->caxis.value);
+        break;
+    case SDL_MOUSEBUTTONDOWN:
+        fprintf(input_log, "mouse button %d\n", e->button.button);
+        break;
+    case SDL_JOYDEVICEADDED:
+        fprintf(input_log, "joystick added: %s (game controller: %s)\n",
+                SDL_JoystickNameForIndex(e->jdevice.which) ? SDL_JoystickNameForIndex(e->jdevice.which) : "?",
+                SDL_IsGameController(e->jdevice.which) ? "yes" : "no");
+        break;
+    }
+    fflush(input_log);
+}
+
 int plat_poll(uint16_t pad[2])
 {
     SDL_Event e;
     const Uint8 *k;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return 0;
+        if (input_log) log_event(&e);
         if (capturing) { capture_event(&e); if (e.type == SDL_KEYDOWN) continue; }
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             if (e.key.keysym.sym == SDLK_F11 ||
