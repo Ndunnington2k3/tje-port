@@ -12,6 +12,8 @@
 #define WHAT_ITEMS_ROM    0x0242B0u   /* the original five items */
 #define WHAT_COUNT_ROM    0x024340u
 #define WHAT_RANDOM       0           /* item values (MenuRoutine's jump table) */
+#define WHAT_CONTROLS     3           /* "controller options": now in Options (Who screen) */
+#define CONTROLS_ROW      18
 #define WHAT_CUSTOM       5           /* new: MenuRoutine never sees it */
 
 #define CURRENT_RANDOM    0xFF91E2u
@@ -167,7 +169,8 @@ TJE_OVERRIDE(0x023654)
 void f_023654_GameSelectMenu(void)
 {
     /* Returns the choice in D0, as the original: 0 Random World, 1 Jam Out,
-     * 2 intro, 3 controller options, 4 Fixed World. */
+     * 2 intro, 4 Fixed World (3, controller options, is not offered:
+     * the controls are in Options on the Who screen). */
     int sel = 0, v;
     CY(40);
     for (;;) {
@@ -180,7 +183,12 @@ void f_023654_GameSelectMenu(void)
             int k;
             for (k = 0; k < MENU_TEXT - 1 && rd8(s + (uint32_t)k); k++) text[k] = (char)rd8(s + (uint32_t)k);
             text[k] = 0;
-            menu_add(&m, (int)rd8(e), (int)rd8(e + 1), text, (int16_t)rd16(e + 6));
+            {
+                int value = (int16_t)rd16(e + 6), row = (int)rd8(e + 1);
+                if (value == WHAT_CONTROLS) continue;   /* moved to Options on the Who screen */
+                if (row > CONTROLS_ROW) row -= 2;       /* close the gap it leaves */
+                menu_add(&m, (int)rd8(e), row, text, value);
+            }
             if (i == 0)   /* right under Random World, in the gap the original leaves */
                 menu_add(&m, 6, 12, "Play New Game -- Custom World", WHAT_CUSTOM);
         }

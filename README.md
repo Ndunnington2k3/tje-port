@@ -89,7 +89,7 @@ Port changes so far (on by default):
   The same code always gives the same world (floors, items, earthlings, ship pieces). The code
   screen starts on the last world played, so a good Random World can be shared; saved games show
   their world's code.
-- **Controller Options** on the What screen (replacing the game's two fixed layouts): for each player,
+- **Controls** in Options on the Who screen (replacing the game's two fixed layouts): for each player,
   choose an action and the screen asks for each one in turn (Up, Down, Left, Right, Action, Present
   List, Map, Pause): press a key or controller button for each. Each action has a keyboard and a
   controller binding.

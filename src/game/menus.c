@@ -122,8 +122,8 @@ void f_0235E2_PlayerSelectMenu(void)
 
 /* ---- MenuRoutine: Who, then What (Source/Menus in the disassembly) ------------
  * As the original, plus "back": on the What screen it goes back to Who, and on
- * Jam Out back to What. "Controller Options" opens the port's controls screens
- * (any input for each action) instead of the game's two fixed layouts. */
+ * Jam Out back to What. The What screen no longer offers the game's controller
+ * options (3): the port's controls screens are in Options on the Who screen. */
 
 #define TOEJAMS_LIVES       0xFFA248u    /* Earl's are the next byte */
 #define TOEJAMS_PROMOTION   0xFFA250u
@@ -197,9 +197,6 @@ who:
         case 2:                                   /* show the intro again */
             CALL(f_029A16_IntroVideo);
             goto who;
-        case 3:                                   /* controller options: the port's controls */
-            controls_select_menu();
-            continue;
         default:
             continue;
         }

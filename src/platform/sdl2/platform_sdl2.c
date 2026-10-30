@@ -4,7 +4,7 @@
  * Default game controls (player 1): arrows, Z = Action, X = Present List, C = Map, Enter = Pause
  * Default game controls (player 2): W/A/S/D, J = Action, K = Present List, L = Map, Right Shift = Pause
  * Controllers (players 1 and 2 in the order connected): A = Action, B = Present List, X = Map,
- * Start = Pause. All of these can be rebound (What screen -> Controller Options). Menus use fixed
+ * Start = Pause. All of these can be rebound (Who screen -> Options -> Controls). Menus use fixed
  * controls (plat_menu_input): Enter/A choose, Escape/B go back.
  * --input-log writes what the keyboard and controllers send to tje_input.log.
  * F11 / Alt+Enter toggles fullscreen. Escape (or a controller's Back button) is

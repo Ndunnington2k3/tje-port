@@ -83,7 +83,7 @@ Replaced so far:
 | `SEGAVideo` ($03A476) | `intro.c` | Start ends the SEGA screen cleanly (logo or ship phase); skipped after Quit to Menu |
 | `InGameLoop` ($0014E6) | `save.c` | records an arrival snapshot when a player reaches a floor |
 | `GamePaused` ($01DBD8) | `pause.c` | pause menu (resume / save / quit) in the status bar |
-| `MenuRoutine` ($0233B2) | `menus.c` | Who then What as before; "back" returns (What -> Who, Jam Out -> What); Controller Options opens the port's controls screens |
+| `MenuRoutine` ($0233B2) | `menus.c` | Who then What as before; "back" returns (What -> Who, Jam Out -> What); the What screen no longer lists controller options (Controls is in Options on the Who screen) |
 | `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" (saved-games list) and "Options" (`options_menu.c`) |
 | `GameSelectMenu` ($023654) | `world.c` | What screen gets "Custom World" and the world code screen |
 | `GenerateLevelsForGame` ($004658) | `world.c` | uses a Custom World's seed; remembers every world's seed |

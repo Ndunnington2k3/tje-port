@@ -1,7 +1,7 @@
 /*
- * The Options screens (from the Who screen): port settings and Exit Game;
- * and the controls screens, which replace the game's controller options on
- * the What screen.
+ * The Options screens (from the Who screen): Controls, port settings and
+ * Exit Game. The controls screens replace the game's controller options,
+ * which were on the What screen.
  */
 #include "game.h"
 #include "menu.h"
@@ -143,8 +143,8 @@ static void controls_menu(int player)
     menu_run(&m, MENU_TITLE_CONTROLLER);
 }
 
-/* "Controller Options" on the What screen (replacing the game's two fixed
- * layouts): pick a player, then set that player's controls. */
+/* "Controls" in Options (replacing the game's two fixed layouts): pick a
+ * player, then set that player's controls. */
 void controls_select_menu(void)
 {
     int sel = 0;
@@ -167,14 +167,14 @@ void controls_select_menu(void)
 
 /* ---- Options ------------------------------------------------------------------ */
 
-enum { OPT_QUICK, OPT_CLEAN, OPT_BACK, OPT_EXIT };
+enum { OPT_QUICK, OPT_CLEAN, OPT_BACK, OPT_EXIT, OPT_CONTROLS };
 
 /* On/Off settings: their names are choosable lines; the values are separate
  * lines in a column further right (the font is proportional). */
 typedef struct { int value; const char *name; int *setting; int row; } Toggle;
 static const Toggle toggles[] = {
-    {OPT_QUICK, "Quick Start", &g_options.quick_start, 12},
-    {OPT_CLEAN, "Clean Transitions", &g_options.clean_transitions, 14},
+    {OPT_QUICK, "Quick Start", &g_options.quick_start, 14},
+    {OPT_CLEAN, "Clean Transitions", &g_options.clean_transitions, 16},
 };
 #define NTOGGLES ((int)(sizeof toggles / sizeof toggles[0]))
 #define COL_VALUE 28
@@ -219,14 +219,19 @@ void options_menu(void)
         m.action = options_action;
         m.user = value_items;
         m.b_is_back = 1;
+        menu_add(&m, 6, 12, "Controls", OPT_CONTROLS);
         for (i = 0; i < NTOGGLES; i++) menu_add(&m, 6, toggles[i].row, toggles[i].name, toggles[i].value);
-        menu_add(&m, 6, 18, "Back", OPT_BACK);
+        menu_add(&m, 6, 19, "Back", OPT_BACK);
         menu_add(&m, 6, 23, "Exit Game", OPT_EXIT);   /* out of the way, and it asks first */
         for (i = 0; i < NTOGGLES; i++)
             value_items[i] = menu_add(&m, COL_VALUE, toggles[i].row, *toggles[i].setting ? "On" : "Off", -1);
         m.sel = sel;
         v = options_screen(&m);
         sel = m.sel;
+        if (v == OPT_CONTROLS) {
+            controls_select_menu();
+            continue;
+        }
         if (v == OPT_EXIT) {
             if (confirm_exit()) {
                 settings_save();
