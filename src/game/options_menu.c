@@ -15,14 +15,12 @@
 #include <string.h>
 
 
-/* All Options screens run under the "OPTIONS..." title (art/options_title.png). */
+/* All Options screens use the game's own "OPTIONS" title, the one from its
+ * controller options screen (LoadMenu 3). (art/options_title.png is kept for
+ * a port-drawn title.) */
 static int options_screen(Menu *m)
 {
-    int v;
-    menu_art_title(&art_options_title);
-    v = menu_run(m, MENU_NO_TITLE);
-    menu_art_title(NULL);
-    return v;
+    return menu_run(m, MENU_TITLE_CONTROLLER);
 }
 
 /* ---- Controls ---------------------------------------------------------------- */
