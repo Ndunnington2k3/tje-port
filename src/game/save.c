@@ -15,6 +15,8 @@
 /* RAM (names from GameConstants.X68) */
 #define PLAYER_INDICATOR      0xFF802Eu   /* 0 ToeJam, 1 Earl, 2 both */
 #define TOEJAMS_CURRENT_LEVEL 0xFF912Cu   /* Earl's is the next word */
+#define MAP_UNCOVERED      0xFF91ECu  /* 7 bytes a floor: a bit per map square uncovered */
+#define MAP_UNCOVERED_END  0xFF9358u  /* with the map screen's copy at $FF92A2 */
 #define HIGHEST_LEVEL         0xFF9132u
 #define FIXED_WORLD_FLAG      0xFF9134u
 #define PLAYER_STATS          0xFFA248u   /* lives, cash, score, promotion, health ... */
@@ -387,6 +389,7 @@ static void patch_progress(uint8_t *ram)
     static const struct { uint32_t from, to; } keep[] = {
         {PLAYER_STATS, PLAYER_STATS_END},          /* lives, bucks, points, rank, health */
         {HIGHEST_LEVEL, HIGHEST_LEVEL + 1},
+        {MAP_UNCOVERED, MAP_UNCOVERED_END},        /* the map squares each floor has uncovered */
         {PRESENT_IDENTITIES, INVENTORIES_END},     /* which presents are known; both inventories */
         {SHIP_PIECE_LEVELS, SHIP_PIECE_LEVELS + 10},
         {DROPPED_PRESENTS, ITEMS_TAKEN_END},       /* presents dropped, items taken on every floor */
