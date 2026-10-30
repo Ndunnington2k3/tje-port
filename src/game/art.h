@@ -13,7 +13,5 @@ typedef struct {
 
 /* "LOAD?" title for the saved-games list (palette line 1, slots 12-15) */
 extern const ArtImage art_load_title;
-/* "OPTIONS..." title for the Options screens */
-extern const ArtImage art_options_title;
 
 #endif

@@ -9,15 +9,13 @@
 #include "options_menu.h"
 #include "platform/platform.h"
 #include "core/vdp.h"
-#include "art.h"
 
 #include <stdio.h>
 #include <string.h>
 
 
 /* All Options screens use the game's own "OPTIONS" title, the one from its
- * controller options screen (LoadMenu 3). (art/options_title.png is kept for
- * a port-drawn title.) */
+ * controller options screen (LoadMenu 3). */
 static int options_screen(Menu *m)
 {
     return menu_run(m, MENU_TITLE_CONTROLLER);

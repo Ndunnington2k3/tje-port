@@ -266,8 +266,6 @@ lines and cannot race with the game's own video updates.
 
 - `load_title.png`: "LOAD?" on the saved-games list, which is its own screen (no game title is
   loaded: `menu_run(..., MENU_NO_TITLE)`), placed where the game's titles sit (`menu_art_title`).
-- `options_title.png`: an "OPTIONS..." title (not used at the moment: the Options screens use the
-  game's own "OPTIONS" title from its controller options screen).
 
 An earlier version repainted the "WHO..." title sprites' tiles every frame from a frame hook
 (`genesis_set_frame_hook`, still available); it flickered whenever the game re-uploaded those
