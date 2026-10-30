@@ -40,21 +40,33 @@ int main(void)
     view_layout_expand(3440, 1440, VIEW_MAX_W, VIEW_MAX_H, &v);
     expect("ultrawide", &v, 6, 572, 240, 4, 0, 3432, 1440);
     view_layout_expand(5120, 1440, VIEW_MAX_W, VIEW_MAX_H, &v);
-    expect("super ultrawide capped", &v, 6, 640, 240, 640, 0, 3840, 1440);
+    expect("super ultrawide zooms in", &v, 8, 640, 180, 0, 0, 5120, 1440);
+    view_layout_expand(3840, 2160, VIEW_MAX_W, VIEW_MAX_H, &v);
+    expect("4K", &v, 9, 426, 240, 3, 0, 3834, 2160);
+    view_layout_expand(256, 192, VIEW_MAX_W, VIEW_MAX_H, &v);
+    expect("DS screen", &v, 1, 256, 192, 0, 0, 256, 192);
     view_layout_expand(100, 100, VIEW_MAX_W, VIEW_MAX_H, &v);
-    expect("tiny", &v, 0, 320, 224, 0, 15, 100, 70);
+    expect("tiny", &v, 1, 100, 100, 0, 0, 100, 100);
 
-    /* every size: the original area always shows, never more than the cap, never
-     * outside the window, and the view is even-sized (camera in the middle) */
-    for (w = 1; w <= 2600; w += 7)
-        for (h = 1; h <= 1600; h += 11) {
+    /* every size: whole zoom, never more than the limit, inside the window and
+     * filling it but for less than two zoom steps (one, plus the even size), even-sized
+     * view (camera in the middle), and the original area shown whenever the window
+     * holds it within the limit */
+    for (w = 2; w <= 6000; w += 7)
+        for (h = 2; h <= 3400; h += 11) {
             view_layout_expand(w, h, VIEW_MAX_W, VIEW_MAX_H, &v);
-            CHECK(v.view_w >= VIEW_BASE_W && v.view_h >= VIEW_BASE_H, "%dx%d too little shown", w, h);
+            CHECK(v.scale >= 1 && v.dst_w == v.view_w * v.scale && v.dst_h == v.view_h * v.scale, "%dx%d not whole", w, h);
             CHECK(v.view_w <= VIEW_MAX_W && v.view_h <= VIEW_MAX_H, "%dx%d too much shown", w, h);
             CHECK(v.dst_x >= 0 && v.dst_y >= 0 && v.dst_x + v.dst_w <= w && v.dst_y + v.dst_h <= h,
                   "%dx%d outside the window", w, h);
+            CHECK(w - v.dst_w < 2 * v.scale && h - v.dst_h < 2 * v.scale, "%dx%d does not fill the window", w, h);
             CHECK(!(v.view_w & 1) && !(v.view_h & 1), "%dx%d odd view", w, h);
-            if (v.scale) CHECK(v.dst_w == v.view_w * v.scale && v.dst_h == v.view_h * v.scale, "%dx%d not whole", w, h);
+            {
+                /* some whole zoom shows the original area without passing the limit */
+                int z = w / VIEW_BASE_W < h / VIEW_BASE_H ? w / VIEW_BASE_W : h / VIEW_BASE_H;
+                if (z >= 1 && z >= (w + VIEW_MAX_W - 1) / VIEW_MAX_W && z >= (h + VIEW_MAX_H - 1) / VIEW_MAX_H)
+                    CHECK(v.view_w >= VIEW_BASE_W && v.view_h >= VIEW_BASE_H, "%dx%d hides the original area", w, h);
+            }
             view_layout_fixed(w, h, &v);
             CHECK(v.dst_x >= 0 && v.dst_y >= 0 && v.dst_x + v.dst_w <= w && v.dst_y + v.dst_h <= h,
                   "%dx%d fixed outside the window", w, h);

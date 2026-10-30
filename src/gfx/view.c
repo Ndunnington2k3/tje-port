@@ -47,13 +47,17 @@ void view_layout_fixed(int win_w, int win_h, ViewLayout *o)
 void view_layout_expand(int win_w, int win_h, int max_w, int max_h, ViewLayout *o)
 {
     int s = whole_zoom(win_w, win_h), w, h;
-    if (s < 1) { shrink(win_w, win_h, o); return; }
-    if (max_w < VIEW_BASE_W) max_w = VIEW_BASE_W;
-    if (max_h < VIEW_BASE_H) max_h = VIEW_BASE_H;
+    if (max_w < 2) max_w = 2;
+    if (max_h < 2) max_h = 2;
+    if (win_w < 2) win_w = 2;
+    if (win_h < 2) win_h = 2;
+    /* never below 1x: a small screen (a DS, a tiny window) shows less of the level */
+    if (s < 1) s = 1;
+    /* zoom in rather than show more than the limit */
+    if (s < (win_w + max_w - 1) / max_w) s = (win_w + max_w - 1) / max_w;
+    if (s < (win_h + max_h - 1) / max_h) s = (win_h + max_h - 1) / max_h;
     w = (win_w / s) & ~1;
     h = (win_h / s) & ~1;
-    if (w > max_w) w = max_w & ~1;
-    if (h > max_h) h = max_h & ~1;
     o->scale = s;
     o->view_w = w;
     o->view_h = h;

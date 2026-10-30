@@ -45,6 +45,12 @@ uint8_t *genesis_port_rom_ptr(uint32_t addr);
  * (after the game's VBlank work), e.g. to put the port's own graphics in VRAM.
  * NULL to stop. Cleared when the machine restarts. */
 void genesis_set_frame_hook(void (*fn)(void));
+/* Called after the VDP has drawn each visible line (0-223), with the machine as it
+ * is at that moment: for renderers that draw the screen themselves. */
+void genesis_set_line_hook(void (*fn)(int line));
+/* Where each frame's picture comes from: fn returns 1 with a picture of its own
+ * (e.g. the gameplay view), or 0 to show the VDP's. */
+void genesis_set_picture_source(int (*fn)(const uint32_t **pixels, int *w, int *h, int *pitch));
 
 /* Machine snapshots: the complete machine (CPU registers, RAM, VDP, sound) as a
  * portable byte blob. Taken by game code at a known point (the top of the main

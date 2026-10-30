@@ -29,10 +29,15 @@ typedef struct {
  * Smaller than 320x224: shrunk to fit, keeping its shape. */
 void view_layout_fixed(int win_w, int win_h, ViewLayout *out);
 
-/* The gameplay view: the same zoom as view_layout_fixed (so the original area is
- * always visible), with the rest of the window filled with more of the level, up
- * to max_w x max_h game pixels (then borders). view_w and view_h are even, so the
- * camera stays in the middle. */
+/* The gameplay view, always at a whole-number zoom and filling the window (but
+ * for less than one zoom step at the edges):
+ *  - the zoom is the largest that still shows the original 320x224 area, and
+ *    the rest of the window shows more of the level;
+ *  - if that would show more than max_w x max_h game pixels, it zooms in further
+ *    instead (the original area may then be partly cut off in one direction);
+ *  - never below 1x: a window or screen smaller than 320x224 (e.g. a DS) shows
+ *    less of the level around the camera.
+ * view_w and view_h are even, so the camera stays in the middle. */
 void view_layout_expand(int win_w, int win_h, int max_w, int max_h, ViewLayout *out);
 
 #endif

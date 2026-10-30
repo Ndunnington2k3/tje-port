@@ -57,6 +57,7 @@ add_library(tje_core STATIC
     src/gfx/view.c
     src/gfx/present.c
     src/gfx/gfx_gl.c
+    src/gfx/gfx_soft.c
     third_party/nuked-opn2/ym3438.c
     third_party/z80/z80.c
     ${TJE_GAME_SOURCES}

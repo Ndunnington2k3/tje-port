@@ -9,11 +9,18 @@ typedef struct {
     /* No half-built screens during scene changes (the original shows a frame or
      * two of garbage, most visibly when the elevator takes off). */
     int clean_transitions;
+    /* The gameplay screen is drawn from game memory (src/game/gameview.c) instead of
+     * by the emulated video chip: no sprite flicker or drop-outs, and the base for
+     * showing more of the level. */
+    int native_view;
 } GameOptions;
 
 extern GameOptions g_options;
 
 /* Parse port options from the command line (e.g. --vanilla). */
 void options_from_args(int argc, char **argv);
+
+/* Put the options into effect (after changing g_options). */
+void options_apply(void);
 
 #endif

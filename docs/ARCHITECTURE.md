@@ -141,10 +141,12 @@ sprites with link list, per-line limits and masking, priorities). Not yet: shado
   against OpenGL), `src/platform/sdl2/gfx_sdlrender.c` (SDL's 2D renderer, used when OpenGL is
   missing; `TJE_NO_GL=1` forces it). Later: sceGu (PSP), citro3d (3DS), software (tests).
 - `view.c`: where the picture goes in a window of any size. Menus and other screens drawn the original
-  way: 320x224 at the largest whole-number zoom that fits, centred. The gameplay view (coming): the
-  same zoom, with the rest of the window filled with more of the level, up to 640x448 game pixels
-  (the area around the camera where the game keeps Earthlings awake). Windows smaller than 320x224
-  shrink the picture smoothly. `tje_view_test` checks the rules for every window size.
+  way: 320x224 at the largest whole-number zoom that fits, centred. Windows smaller than 320x224 shrink
+  those smoothly. The gameplay view (coming) is always whole-number zoom and fills the window: the
+  same zoom as above with the rest of the window showing more of the level, up to 640x448 game
+  pixels (the area around the camera where the game keeps Earthlings awake); past that it zooms in
+  further instead; and never below 1x, so a small screen (a DS, a tiny window) shows less of the
+  level. `tje_view_test` checks the rules for every window size.
 - `present.c`: draws each frame through the drawing layer; can redraw the last frame at a new size
   (the SDL platform does that while a window edge is being dragged, so the picture follows the mouse).
 - The game itself never sees the window size: it always runs with its original 320x224 cameras, so

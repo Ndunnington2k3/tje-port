@@ -49,6 +49,12 @@ void vdp_frame_stats(uint32_t out[5]);
 const uint32_t *vdp_framebuffer(void);   /* 0x00RRGGBB, VDP_FB_PITCH pixels per row */
 int vdp_width(void);                     /* 256 or 320 */
 
+/* Is the picture of this frame a live one (display on, not frozen, not hidden by
+ * clean transitions)? For renderers that draw the screen themselves. */
+int vdp_live_picture(void);
+/* CRAM entry i (0-63) as 0x00RRGGBB */
+uint32_t vdp_palette_rgb(int i);
+
 /* Raw access for tools/debugging and future native renderers */
 extern uint8_t vdp_vram[0x10000];
 extern uint16_t vdp_cram[64];

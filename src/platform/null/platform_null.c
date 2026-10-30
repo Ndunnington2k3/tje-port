@@ -18,12 +18,21 @@
  *     --capture key:NAME|pad:NAME   answer the next input-binding capture with this (repeatable)
  *     --elevator N         every N frames, put ToeJam in the elevator (ELEVATOR_FLAG = 1)
  *                          (test hook: exercises level transitions)
+ *     --window WxH         draw every frame into a window of this size with the software
+ *                          backend of the drawing layer (src/gfx), as the real program
+ *                          would; --shot then saves the window's picture
+ *     --gvcheck PREFIX     compare the gameplay view drawn from game memory (gameview.c)
+ *                          with the VDP picture every frame; report differences and save
+ *                          the first few as PREFIX_<frame>_vdp.ppm / _gv.ppm
  */
 #include "platform/platform.h"
 #include "core/genesis.h"
 #include "core/m68k_rt.h"
 #include "core/vdp.h"
 #include "game/save.h"
+#include "gfx/gfx_soft.h"
+#include "gfx/present.h"
+#include "game/gameview.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +57,12 @@ static unsigned random_left;
 static unsigned elevator_period;
 static struct { unsigned frame; int slot, load; } saves[MAX_EVENTS];
 static int nsaves;
+static int window_w, window_h;   /* --window */
+static const char *gvcheck;      /* --gvcheck */
+static unsigned gv_frames, gv_bad_frames, gv_saved;
+static unsigned long gv_bad_pixels;
+static unsigned gv_reasons[16];
+extern int g_gameview_reason;
 static char captures[16][32];
 static int ncaptures, next_capture, capturing, capture_ready;
 static char bindings[2][8][2][32];
@@ -133,6 +148,13 @@ int plat_init(int argc, char **argv)
             if (wav) { static const uint8_t hdr[44] = {0}; fwrite(hdr, 1, 44, wav); }
         } else if (!strcmp(argv[i], "--elevator") && i + 1 < argc) {
             elevator_period = (unsigned)atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--gvcheck") && i + 1 < argc) {
+            gvcheck = argv[++i];   /* (the gameplay view is on by default: options.c) */
+        } else if (!strcmp(argv[i], "--window") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%dx%d", &window_w, &window_h) == 2 && window_w > 0 && window_h > 0)
+                present_init(gfx_soft_init());
+            else
+                window_w = window_h = 0;
         } else if (!strcmp(argv[i], "--random") && i + 1 < argc) {
             random_seed = (unsigned)atoi(argv[++i]) * 2654435761u + 1;
         } else if (argv[i][0] != '-') rom_path = argv[i];
@@ -145,6 +167,14 @@ static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(
 
 void plat_shutdown(void)
 {
+    if (gvcheck) {
+        int r;
+        fprintf(stderr, "gvcheck: %u gameplay frames drawn, %u differ (%lu pixels)\n",
+                gv_frames, gv_bad_frames, gv_bad_pixels);
+        fprintf(stderr, "gvcheck: not drawn:");
+        for (r = 0; r < 16; r++) if (gv_reasons[r]) fprintf(stderr, " [%d] %u", r, gv_reasons[r]);
+        fprintf(stderr, "\n");
+    }
     if (wav) {
         uint8_t h[44];
         memcpy(h, "RIFF\0\0\0\0WAVEfmt ", 16);
@@ -262,8 +292,51 @@ static void save_ppm(const char *path, const uint32_t *px, int w, int h, int pit
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     int i;
-    for (i = 0; i < nshots; i++)
-        if (shots[i].frame == frame) save_ppm(shots[i].path, pixels, width, height, pitch);
+    if (gvcheck) {
+        const uint32_t *gv;
+        int gw, gh, gp;
+        if (!gameview_frame(&gv, &gw, &gh, &gp)) {
+            if (gv_reasons[g_gameview_reason & 15]++ == 20) {
+                char path[512];
+                snprintf(path, sizeof path, "%s_reason%d_%u.ppm", gvcheck, g_gameview_reason, frame);
+                save_ppm(path, pixels, width, height, pitch);
+            }
+        }
+        else {
+            unsigned long bad = 0;
+            int x, y;
+            gv_frames++;
+            const uint32_t *v = vdp_framebuffer();     /* the VDP's own picture */
+            for (y = 0; y < gh; y++)
+                for (x = 0; x < gw; x++)
+                    if ((gv[y * gp + x] & 0xFFFFFF) != (v[y * VDP_FB_PITCH + x] & 0xFFFFFF)) bad++;
+            if (bad) {
+                gv_bad_frames++;
+                gv_bad_pixels += bad;
+                if (gv_saved < 6) {
+                    char path[512];
+                    snprintf(path, sizeof path, "%s_%u_vdp.ppm", gvcheck, frame);
+                    save_ppm(path, v, gw, gh, VDP_FB_PITCH);
+                    snprintf(path, sizeof path, "%s_%u_gv.ppm", gvcheck, frame);
+                    save_ppm(path, gv, gw, gh, gp);
+                    gv_saved++;
+                    fprintf(stderr, "gvcheck: frame %u: %lu pixels differ\n", frame, bad);
+                }
+            }
+        }
+    }
+    if (window_w > 0) {
+        int w, h;
+        const uint32_t *win;
+        present_set_frame(pixels, width, height, pitch);
+        present_draw(window_w, window_h);
+        win = gfx_soft_target(&w, &h);
+        for (i = 0; i < nshots; i++)
+            if (shots[i].frame == frame && win) save_ppm(shots[i].path, win, w, h, w);
+    } else {
+        for (i = 0; i < nshots; i++)
+            if (shots[i].frame == frame) save_ppm(shots[i].path, pixels, width, height, pitch);
+    }
     for (i = 0; i < ndumps; i++)
         if (dumps[i].frame == frame) {
             FILE *f = fopen(dumps[i].path, "wb");

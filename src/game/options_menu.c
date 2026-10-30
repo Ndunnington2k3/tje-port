@@ -186,7 +186,7 @@ static const Toggle toggles[] = {
 
 static void apply_options(void)
 {
-    vdp_set_clean_transitions(g_options.clean_transitions);
+    options_apply();
 }
 
 static int options_action(Menu *m, int dir)

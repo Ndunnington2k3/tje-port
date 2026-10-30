@@ -15,6 +15,7 @@ static const char *const slot_names[2] = {"key", "pad"};
 static struct { const char *name; int *value; } const option_list[] = {
     {"quick_start", &g_options.quick_start},
     {"clean_transitions", &g_options.clean_transitions},
+    {"native_view", &g_options.native_view},
 };
 
 void data_path(const char *name, char *out, size_t size)

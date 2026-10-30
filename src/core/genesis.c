@@ -25,11 +25,15 @@ static int hint_counter;
 static int vint_pending, hint_pending;
 static int in_events;
 static void (*line0_hook)(void);
+static void (*line_hook)(int line);
+static int (*picture_source)(const uint32_t **pixels, int *w, int *h, int *pitch);
 static void (*input_hook)(uint16_t pad[2]);
 
 void genesis_set_input_hook(void (*fn)(uint16_t pad[2])) { input_hook = fn; }
 
 void genesis_set_frame_hook(void (*fn)(void)) { line0_hook = fn; }
+void genesis_set_line_hook(void (*fn)(int line)) { line_hook = fn; }
+void genesis_set_picture_source(int (*fn)(const uint32_t **pixels, int *w, int *h, int *pitch)) { picture_source = fn; }
 static uint8_t *pending_state;   /* Gens save state to start from, if any */
 
 /* Restarts requested from inside the running game (see genesis_restart_*). */
@@ -142,7 +146,12 @@ static void end_of_frame(void)
     int n = snd_end_frame(&audio);
     if (n > 0) plat_audio(audio, n);
     g_frame++;
-    plat_present(vdp_framebuffer(), vdp_width(), VDP_HEIGHT, VDP_FB_PITCH);
+    {
+        const uint32_t *px;
+        int w, h, pitch;
+        if (picture_source && picture_source(&px, &w, &h, &pitch)) plat_present(px, w, h, pitch);
+        else plat_present(vdp_framebuffer(), vdp_width(), VDP_HEIGHT, VDP_FB_PITCH);
+    }
     if (!plat_poll(g_pad)) {
         quit_code = 0;
         longjmp(quit_jmp, 1);
@@ -161,6 +170,7 @@ void genesis_run_events(void)
         snd_line(line);
         if (line < VDP_HEIGHT) {
             vdp_render_line(line);
+            if (line_hook) line_hook(line);
             /* horizontal interrupt counter runs during active display */
             if (--hint_counter < 0) {
                 hint_counter = vdp_hint_reload();

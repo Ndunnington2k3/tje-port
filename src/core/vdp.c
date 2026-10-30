@@ -138,6 +138,16 @@ static int clean_transitions;
 void vdp_set_clean_transitions(int on) { clean_transitions = on; }
 void vdp_freeze(int frames) { freeze_frames = clean_transitions ? frames : 0; }
 
+int vdp_live_picture(void)
+{
+    return !freeze_frames && (vdp_reg[1] & 0x40) && (!clean_transitions || frame_visible);
+}
+
+uint32_t vdp_palette_rgb(int i)
+{
+    return palette_rgb[i & 0x3F];
+}
+
 static void stat_write(uint32_t a)
 {
     uint32_t pa = (uint32_t)(vdp_reg[2] & 0x38) << 10, pb = (uint32_t)(vdp_reg[4] & 7) << 13;
