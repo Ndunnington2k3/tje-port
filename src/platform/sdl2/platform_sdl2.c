@@ -241,8 +241,17 @@ void plat_binding_label(int slot, const char *token, char *out, int size)
 static int capturing, capture_player, capture_done, capture_slot;
 static char capture_token[24];
 
+static int axis_rested[SDL_CONTROLLER_AXIS_MAX];
+
 void plat_capture_start(int player)
 {
+    int a;
+    for (a = 0; a < SDL_CONTROLLER_AXIS_MAX; a++) axis_rested[a] = 0;
+    if (pads[player])
+        for (a = 0; a < SDL_CONTROLLER_AXIS_MAX; a++) {
+            Sint16 v = SDL_GameControllerGetAxis(pads[player], (SDL_GameControllerAxis)a);
+            axis_rested[a] = v > -8000 && v < 8000;
+        }
     capturing = 1;
     capture_player = player;
     capture_done = 0;
@@ -283,9 +292,17 @@ static void capture_event(const SDL_Event *e)
         capture_done = 1;
         capture_slot = PLAT_BIND_PAD;
         snprintf(capture_token, sizeof capture_token, "%s", t);
-    } else if (e->type == SDL_CONTROLLERAXISMOTION && pad_player(e->caxis.which) == capture_player &&
-               (e->caxis.value > 24000 || e->caxis.value < -24000)) {
-        const char *t = SDL_GameControllerGetStringForAxis((SDL_GameControllerAxis)e->caxis.axis);
+    } else if (e->type == SDL_CONTROLLERAXISMOTION && pad_player(e->caxis.which) == capture_player) {
+        /* only a stick or trigger pushed well out of its resting range counts: an
+         * axis that rests at an extreme (some triggers report -32768) or drifts
+         * does not, and it must have been back near rest since capture began */
+        int axis = e->caxis.axis, v = e->caxis.value;
+        int trigger = axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
+        const char *t;
+        if (axis < 0 || axis >= SDL_CONTROLLER_AXIS_MAX) return;
+        if (v > -8000 && v < 8000) { axis_rested[axis] = 1; return; }
+        if (!axis_rested[axis] || (v > -24000 && v < 24000) || (trigger && v < 0)) return;
+        t = SDL_GameControllerGetStringForAxis((SDL_GameControllerAxis)axis);
         if (!t) return;
         capture_done = 1;
         capture_slot = PLAT_BIND_PAD;

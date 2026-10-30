@@ -57,25 +57,34 @@ static void refresh_controls(Menu *m)
     }
 }
 
-/* Wait for a key or controller input for the button under the hand. */
-static void capture_binding(Menu *m, int i)
+/* Wait until nothing is held, so the input just bound cannot act on the menu
+ * (bound to A, it would choose the line under the hand straight away). */
+static void wait_all_released(void)
+{
+    int frames;
+    for (frames = 0; frames < 60 * 5 && ((g_pad[0] | g_pad[1]) & 0x1FFu); frames++)
+        menu_frame();
+}
+
+/* Ask for one button: returns 1 when bound, 0 when skipped (8 seconds pass),
+ * -1 when cancelled (Escape). */
+static int capture_one(Menu *m, int i)
 {
     ControlsCtx *c = (ControlsCtx *)m->user;
     int bit = pad_buttons[i].bit, slot = 0, frames, r = 0, b;
-    char token[32];
+    char token[32], prompt[40];
 
-    menu_set_text(m, c->key_item + i, "Press a key or button...");
+    menu_point(m, i);
+    snprintf(prompt, sizeof prompt, "Press %s...", pad_buttons[i].name);
+    menu_set_text(m, c->key_item + i, prompt);
     menu_set_text(m, c->pad_item + i, "");
     plat_capture_start(c->player);
-    for (frames = 0; frames < 60 * 8 && r == 0; frames++) {   /* gives up after 8 seconds */
+    for (frames = 0; frames < 60 * 8 && r == 0; frames++) {
+        menu_point(m, i);
         menu_frame();
         r = plat_capture_poll(&slot, token, sizeof token);
     }
     if (r == 0) plat_capture_cancel();
-    /* Wait until everything is let go: the key just pressed may now be bound to
-     * a button the menu reacts to (A would start another capture at once). */
-    for (frames = 0; frames < 60 * 5 && ((g_pad[0] | g_pad[1]) & 0x1FFu); frames++)
-        menu_frame();
     if (r == 1) {
         /* an input already used by another button of this player swaps over */
         char old[32];
@@ -86,13 +95,23 @@ static void capture_binding(Menu *m, int i)
         plat_set_binding(c->player, bit, slot, token);
     }
     refresh_controls(m);
+    wait_all_released();          /* after binding, so the new binding is what is checked */
+    return r;
+}
+
+/* Go down the list from button i to Start, one press each (Escape stops). */
+static void capture_from(Menu *m, int i)
+{
+    for (; i < 8; i++)
+        if (capture_one(m, i) < 0) break;
+    menu_point(m, i < 8 ? i : 7);
 }
 
 static int controls_action(Menu *m, int dir)
 {
     int v = m->item[m->sel].value;
     if (dir != 0) return 0;
-    if (v < 8) { capture_binding(m, v); return 0; }
+    if (v < 8) { capture_from(m, v); return 0; }
     if (v == CTRL_RESET) { plat_default_bindings(((ControlsCtx *)m->user)->player); refresh_controls(m); return 0; }
     return 1;   /* Back */
 }

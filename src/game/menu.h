@@ -70,6 +70,9 @@ void menu_set_text(Menu *m, int i, const char *text);
  * Returns the chosen item's value, or -1 when B backs out (b_is_back). */
 int menu_run(Menu *m, int title);
 
+/* Move the hand to item i (inside an action callback). */
+void menu_point(Menu *m, int i);
+
 /* Wait for a frame on a menu screen (for use inside an action callback). */
 void menu_frame(void);
 

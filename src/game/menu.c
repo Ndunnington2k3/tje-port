@@ -97,6 +97,13 @@ static void place_hand(Menu *m)
     POP_ARGS(2);
 }
 
+void menu_point(Menu *m, int i)
+{
+    if (i < 0 || i >= m->count) return;
+    m->sel = i;
+    place_hand(m);
+}
+
 /* One frame of the menu screen, as the original's loop does it. */
 void menu_frame(void)
 {

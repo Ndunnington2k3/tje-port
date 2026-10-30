@@ -88,8 +88,9 @@ Port changes so far (on by default):
   The same code always gives the same world (floors, items, earthlings, ship pieces). The code
   screen starts on the last world played, so a good Random World can be shared; saved games show
   their world's code.
-- **Options** on the Who screen: controls for both players (choose a Genesis button, then press the
-  key or controller button for it; each button has a keyboard and a controller binding), Quick
+- **Options** on the Who screen: controls for both players (choose a button and the screen asks for
+  each button in turn from there down to Start: press the key or controller button for each, Escape
+  stops; each button has a keyboard and a controller binding), Quick
   Start and Clean Transitions on/off, and Exit Game (at the bottom, asks first). Settings are kept
   in `tje.cfg` next to the program.
 - **Clean screen transitions**: no flashes of half-built screens when the game changes scene
