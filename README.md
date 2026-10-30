@@ -12,7 +12,8 @@ Windows is the first (prototype) target. PSP and Nintendo 3DS are planned.
 
 - The whole game is translated to C (~770 routines, ~57,000 68000 instructions) and runs natively:
   SEGA logo, intro, menus, Jam Out, one- and two-player games, split screen, presents, map.
-- Video: software renderer of the Genesis VDP (planes, window, sprites, scrolling, DMA).
+- Video: software renderer of the Genesis VDP (planes, window, sprites, scrolling, DMA), shown through
+  OpenGL (or SDL's renderer) at whole-number zoom in a freely resizable window.
 - Sound: emulated - the game's Z80 sound driver runs on a Z80 core and drives an emulated
   YM2612 FM chip (Nuked-OPN2) and PSG. A native sound routine can replace this later.
 - Tested from boot and from save states on all 26 levels with automated random play
@@ -118,9 +119,9 @@ Port changes so far (on by default):
 | Start | Enter | Right Shift |
 
 Escape (or a controller's Back button) goes back on the menus and pauses during play.
-These are the defaults; change them under Options on the What screen. Game controllers work too
+These are the defaults; change them under Options -> Controls on the Who screen. Game controllers work too
 (X = A, A = B, B = C on an Xbox layout; the left stick also works as the d-pad). F11 or Alt+Enter toggles
-fullscreen. To quit, use Exit Game under Options (or close the window).
+fullscreen. The window can be resized freely: the picture keeps sharp, whole-number zoom. To quit, use Exit Game under Options (or close the window).
 
 ## Testing
 

@@ -54,6 +54,9 @@ add_library(tje_core STATIC
     src/core/vdp.c
     src/core/io.c
     src/core/sound.c
+    src/gfx/view.c
+    src/gfx/present.c
+    src/gfx/gfx_gl.c
     third_party/nuked-opn2/ym3438.c
     third_party/z80/z80.c
     ${TJE_GAME_SOURCES}
@@ -72,6 +75,9 @@ endif()
 if(TJE_BUILD_HEADLESS)
     add_executable(tje_headless src/main.c src/platform/null/platform_null.c)
     target_link_libraries(tje_headless PRIVATE tje_core)
+    # Window layout rules (src/gfx/view.c): run tje_view_test
+    add_executable(tje_view_test tests/view_test.c src/gfx/view.c)
+    target_include_directories(tje_view_test PRIVATE src)
 endif()
 
 if(TJE_BUILD_SDL2)
@@ -86,7 +92,8 @@ if(TJE_BUILD_SDL2)
         set(SDL_TEST OFF CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(SDL2)
     endif()
-    add_executable(tje WIN32 src/main.c src/platform/sdl2/platform_sdl2.c)
+    add_executable(tje WIN32 src/main.c src/platform/sdl2/platform_sdl2.c src/platform/sdl2/gfx_sdlrender.c)
+    target_include_directories(tje PRIVATE src/platform/sdl2)
     if(TARGET SDL2::SDL2-static)
         target_link_libraries(tje PRIVATE tje_core SDL2::SDL2-static)
     else()

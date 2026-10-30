@@ -12,16 +12,21 @@
  */
 #include "platform/platform.h"
 #include "core/genesis.h"
+#include "gfx/gfx_gl.h"
+#include "gfx/present.h"
+#include "gfx/view.h"
+#include "gfx_sdlrender.h"
 
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static SDL_Window *window;
-static SDL_Renderer *renderer;
-static SDL_Texture *texture;
-static int tex_w;
+static SDL_Renderer *renderer;      /* only when OpenGL is not available */
+static SDL_GLContext gl_context;
+static const GfxBackend *gfx;
 static const char *rom_path = "tje.bin";
 static SDL_GameController *pads[2];
 static Uint64 next_frame_time;
@@ -29,6 +34,102 @@ static int vsync_ok;
 static SDL_AudioDeviceID audio_dev;
 static int audio_on = 1;
 static FILE *input_log;     /* --input-log: what the keyboard and controllers send */
+
+/* The first window: the largest whole-number zoom of 320x224 that fits in
+ * about 80% of the screen. */
+static void first_window_size(int *w, int *h)
+{
+    SDL_Rect r;
+    int s = 3;
+    if (SDL_GetDisplayUsableBounds(0, &r) == 0) {
+        int sx = r.w * 4 / 5 / VIEW_BASE_W, sy = r.h * 4 / 5 / VIEW_BASE_H;
+        s = sx < sy ? sx : sy;
+        if (s < 1) s = 1;
+    }
+    *w = VIEW_BASE_W * s;
+    *h = VIEW_BASE_H * s;
+}
+
+static void *gl_proc(const char *name) { return SDL_GL_GetProcAddress(name); }
+
+static void target_size(int *w, int *h)
+{
+    if (gl_context) SDL_GL_GetDrawableSize(window, w, h);
+    else SDL_GetRendererOutputSize(renderer, w, h);
+}
+
+static void draw_and_show(void)
+{
+    int w, h;
+    target_size(&w, &h);
+    present_draw(w, h);
+    if (gl_context) SDL_GL_SwapWindow(window);
+    else SDL_RenderPresent(renderer);
+}
+
+/* Windows stops the program while a window edge is being dragged, but SDL still
+ * passes on the size changes here: draw the last frame again at the new size, so
+ * the picture follows the mouse. */
+static int SDLCALL resize_watch(void *data, SDL_Event *e)
+{
+    (void)data;
+    if (e->type == SDL_WINDOWEVENT && SDL_GetWindowFromID(e->window.windowID) == window &&
+        (e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e->window.event == SDL_WINDOWEVENT_EXPOSED))
+        draw_and_show();
+    return 0;
+}
+
+/* OpenGL 2.1 if possible, else SDL's own renderer (Direct3D etc.). */
+static int open_window(void)
+{
+    int w, h, vsync = 0;
+    first_window_size(&w, &h);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    window = SDL_CreateWindow("ToeJam & Earl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h,
+                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (window && !getenv("TJE_NO_GL")) {
+        gl_context = SDL_GL_CreateContext(window);
+        if (gl_context) {
+            gfx = gfx_gl_init(gl_proc);
+            if (!gfx) { SDL_GL_DeleteContext(gl_context); gl_context = NULL; }
+            else vsync = SDL_GL_SetSwapInterval(1) == 0;
+        }
+    }
+    if (!gfx) {
+        if (window) SDL_DestroyWindow(window);
+        window = SDL_CreateWindow("ToeJam & Earl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h,
+                                  SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        if (!window) {
+            fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+            return 1;
+        }
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
+        if (!renderer) {
+            fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
+            return 1;
+        }
+        {
+            SDL_RendererInfo info;
+            vsync = SDL_GetRendererInfo(renderer, &info) == 0 && (info.flags & SDL_RENDERER_PRESENTVSYNC);
+        }
+        gfx = gfx_sdlrender_init(renderer);
+    }
+    present_init(gfx);
+    fprintf(stderr, "Drawing with %s\n", gfx->name);
+    SDL_SetWindowMinimumSize(window, 160, 112);
+    /* only trust vsync for pacing on ~60 Hz displays */
+    vsync_ok = vsync;
+    {
+        SDL_DisplayMode dm;
+        if (SDL_GetCurrentDisplayMode(0, &dm) == 0 && (dm.refresh_rate < 59 || dm.refresh_rate > 61))
+            vsync_ok = 0;
+    }
+    SDL_AddEventWatch(resize_watch, NULL);
+    return 0;
+}
 
 int plat_init(int argc, char **argv)
 {
@@ -51,33 +152,14 @@ int plat_init(int argc, char **argv)
      * for programs it does not know, turns it into keyboard and mouse ("Desktop
      * configuration"). */
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
+    /* Real pixels on high-DPI screens (Windows would otherwise blur the picture) */
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
-    window = SDL_CreateWindow("ToeJam & Earl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                              320 * 3, 224 * 3, SDL_WINDOW_RESIZABLE);
-    if (!window) {
-        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-        return 1;
-    }
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
-    if (!renderer) {
-        fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
-        return 1;
-    }
-    {
-        SDL_RendererInfo info;
-        vsync_ok = SDL_GetRendererInfo(renderer, &info) == 0 && (info.flags & SDL_RENDERER_PRESENTVSYNC);
-        /* only trust vsync for pacing on ~60 Hz displays */
-        {
-            SDL_DisplayMode dm;
-            if (SDL_GetCurrentDisplayMode(0, &dm) == 0 && (dm.refresh_rate < 59 || dm.refresh_rate > 61))
-                vsync_ok = 0;
-        }
-    }
+    if (open_window() != 0) return 1;
     if (audio_on) {
         SDL_AudioSpec want, have;
         SDL_zero(want);
@@ -89,8 +171,6 @@ int plat_init(int argc, char **argv)
         if (audio_dev) SDL_PauseAudioDevice(audio_dev, 0);
         else { fprintf(stderr, "No audio: %s\n", SDL_GetError()); audio_on = 0; }
     }
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    SDL_RenderSetLogicalSize(renderer, 320, 224);
     next_frame_time = SDL_GetPerformanceCounter();
     return 0;
 }
@@ -101,7 +181,9 @@ void plat_shutdown(void)
     for (i = 0; i < 2; i++)
         if (pads[i]) SDL_GameControllerClose(pads[i]);
     if (audio_dev) SDL_CloseAudioDevice(audio_dev);
-    if (texture) SDL_DestroyTexture(texture);
+    SDL_DelEventWatch(resize_watch, NULL);
+    present_shutdown();
+    if (gl_context) SDL_GL_DeleteContext(gl_context);
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
     SDL_Quit();
@@ -129,17 +211,8 @@ void plat_message(const char *title, const char *text)
 
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
-    if (!texture || tex_w != width) {
-        if (texture) SDL_DestroyTexture(texture);
-        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, width, height);
-        tex_w = width;
-        SDL_RenderSetLogicalSize(renderer, width == 256 ? 256 : 320, height);
-    }
-    SDL_UpdateTexture(texture, NULL, pixels, pitch * 4);
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-    SDL_RenderCopy(renderer, texture, NULL, NULL);
-    SDL_RenderPresent(renderer);
+    present_set_frame(pixels, width, height, pitch);
+    draw_and_show();
 
     if (!vsync_ok) {
         /* NTSC Genesis runs at ~59.92 fps */

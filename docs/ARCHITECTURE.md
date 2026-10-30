@@ -133,8 +133,26 @@ byte-swapping `rd`/`wr` helpers. Hand-ported code uses native structs and is fre
 renderer (planes A/B with full/cell/line horizontal scroll and 2-cell vertical scroll, window plane,
 sprites with link list, per-line limits and masking, priorities). Not yet: shadow/highlight, interlace.
 
-Later, level and sprite drawing move to a native renderer that can show a wider view and use the GPU on
-PSP and 3DS; the software VDP stays as the reference.
+### Putting frames on the screen (src/gfx)
+
+- `gfx.h`: the drawing layer, everything the renderer needs from a GPU: 32-bit textures, batches of
+  textured rectangles with flipping, clipping and alpha test. One implementation per platform:
+  `gfx_gl.c` (OpenGL 2.1 or OpenGL ES 2, functions fetched through the host's loader, so nothing links
+  against OpenGL), `src/platform/sdl2/gfx_sdlrender.c` (SDL's 2D renderer, used when OpenGL is
+  missing; `TJE_NO_GL=1` forces it). Later: sceGu (PSP), citro3d (3DS), software (tests).
+- `view.c`: where the picture goes in a window of any size. Menus and other screens drawn the original
+  way: 320x224 at the largest whole-number zoom that fits, centred. The gameplay view (coming): the
+  same zoom, with the rest of the window filled with more of the level, up to 640x448 game pixels
+  (the area around the camera where the game keeps Earthlings awake). Windows smaller than 320x224
+  shrink the picture smoothly. `tje_view_test` checks the rules for every window size.
+- `present.c`: draws each frame through the drawing layer; can redraw the last frame at a new size
+  (the SDL platform does that while a window edge is being dragged, so the picture follows the mouse).
+- The game itself never sees the window size: it always runs with its original 320x224 cameras, so
+  play is identical at any size or shape.
+
+Next: the gameplay view drawn from game memory instead of the VDP (level from the floor data,
+objects from the game's own draw requests, graphics from the ROM), first pixel-identical at 320x224,
+then wider. The software VDP stays for menus and cutscenes and as the reference.
 
 ## Audio (src/core/sound.c)
 
