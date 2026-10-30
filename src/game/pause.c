@@ -327,11 +327,15 @@ static uint32_t menu_input(void)
     p1 = pad(1);
     cheat(p0, p1);
     (void)menu_player;
-    now = ((p0 | p1) & PAD_START);
+    now = 0;
     if (!g_binding_active) {
         now |= g_menu_pad & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT);
         if (g_menu_pad & MENU_OK) now |= PAD_START;
         if (g_menu_pad & MENU_BACK) now |= PAD_BACK;
+        /* The player's Pause button closes the menu (or backs out of a question),
+         * as Start unpauses in the original. When it is also a menu "choose"
+         * input (Enter, controller Start), choosing wins. */
+        if (((p0 | p1) & PAD_START) && !(g_menu_pad & MENU_OK)) now |= PAD_BACK;
     }
     pressed = now & ~prev_buttons;
     prev_buttons = now;
