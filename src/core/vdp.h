@@ -52,6 +52,8 @@ int vdp_width(void);                     /* 256 or 320 */
 /* Is the picture of this frame a live one (display on, not frozen, not hidden by
  * clean transitions)? For renderers that draw the screen themselves. */
 int vdp_live_picture(void);
+/* Is the last picture being kept on screen (vdp_freeze)? */
+int vdp_frozen(void);
 /* CRAM entry i (0-63) as 0x00RRGGBB */
 uint32_t vdp_palette_rgb(int i);
 

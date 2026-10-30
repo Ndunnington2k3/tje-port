@@ -13,6 +13,9 @@
  */
 #include "game.h"
 #include "save.h"
+#include "core/vdp.h"
+
+extern int g_gameview_extend_screen;   /* gameview.c: the star background may be drawn wider */
 
 /* RAM used by the SEGA screen (names from GameConstants.X68 where it has them) */
 #define VBLANK_FLAG_6       0xFF801Au   /* byte, set while the boot videos run */
@@ -114,6 +117,7 @@ void f_03A476_SEGAVideo(void)
     wr16(SEGA_ANIM_ACTIVE, 1);
     wait_vblank();
     display_on();
+    g_gameview_extend_screen = 1;     /* (the stars repeat: wider windows show more of them) */
 
     /* Phase 1: the logo cycles colours for 120 frames (a busy loop in the original). */
     start = last = rd16(VBLANK_COUNTER);
@@ -124,6 +128,10 @@ void f_03A476_SEGAVideo(void)
         cycle_logo_palette(&last, &step);
         if (g_options.quick_start && start_held()) { skip = 1; break; }
     }
+
+    /* Clean transitions: the end of the screen changes the palette a frame before
+     * the screen goes; keep the last picture until the next screen is set up. */
+    if (skip || rd16(SEGA_SHIP_SHOWN)) vdp_freeze(-1);
 
     if (skip) {
         /* stop the colour cycling, as the end of phase 1 does */
@@ -178,6 +186,7 @@ void f_03A476_SEGAVideo(void)
             CY(120);
             if (g_options.quick_start && start_held()) { skip = 1; break; }
         }
+        vdp_freeze(-1);            /* (clean transitions, as above) */
         CALL(f_028BDE);            /* remove the ship */
         CALL(f_03A714);
         wr16(SEGA_SHIP_SHOWN, 1);
@@ -186,6 +195,8 @@ void f_03A476_SEGAVideo(void)
     wait_vblank();
     wr32(VBLANK_OVERRIDE, 0);
     sega_skipped = skip;
+    g_gameview_extend_screen = 0;
+    vdp_freeze(2);                 /* the next screen turns the display off within these */
     RETURN();
 }
 
@@ -200,7 +211,9 @@ void f_027AD6_SEGAAndIntroVideoRoutine(void)
         CALL(f_03A476_SEGAVideo);
         if (sega_skipped)
             goto load_palettes;            /* port feature: straight to the menus */
+        g_gameview_extend_screen = 2;      /* (its pattern, on plane A, repeats too) */
         CALL(f_027998_TitleScreenVideo);
+        g_gameview_extend_screen = 0;
         if ((R.d[0] & 0xFFFF) != 0)
             break;                         /* Start pressed on the title screen */
         CALL(f_029A16_IntroVideo);         /* attract mode: play the intro */

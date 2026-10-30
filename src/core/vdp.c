@@ -138,6 +138,11 @@ static int clean_transitions;
 void vdp_set_clean_transitions(int on) { clean_transitions = on; }
 void vdp_freeze(int frames) { freeze_frames = clean_transitions ? frames : 0; }
 
+int vdp_frozen(void)
+{
+    return freeze_frames != 0;
+}
+
 int vdp_live_picture(void)
 {
     return !freeze_frames && (vdp_reg[1] & 0x40) && (!clean_transitions || frame_visible);

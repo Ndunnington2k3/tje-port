@@ -111,8 +111,29 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
 - At exactly 320x224 nothing outside is drawn, so the picture is the original's (0 differing pixels
   over ~50,000 frames of random play, all floors, 1P and 2P).
 - Split screen stays 320x224 for now (shown with borders).
-- Not yet: shadows of objects outside the original screen; the sinking-into-water clip and flashing
-  effects for them.
+- Floor items (presents, food, trees and the like, dropped presents, telephones) are not objects until
+  they come within about 20 px of the original screen (LOC_00015118, CheckForTelephone); outside that
+  they are drawn from their records (8 bytes: type, floor, object, x, y) with the frame the game would
+  give them (`item_frame`, from LOC_00014FFE / LOC_00022B7E). Items the game would show but has no
+  object for are skipped, as it does.
+- Objects with hardware sprites that reach outside the original gameplay area are drawn from their
+  frame data instead (and their sprites skipped): a hardware sprite's X wraps past 383, and the game
+  cuts and culls sprites at its screen edges and under the status bar.
+- Shadows of objects drawn that way: the game's shadow sprite (VRAM graphics), learned per shadow
+  class ($2E) from objects that have one on screen.
+- The status bar is kept flush with the bottom: the filler row under it (one cell repeated) is not
+  copied; the level shows there.
+- The elevator you arrive in closes and sinks away about 30 frames after you step out (a timer: states
+  4 -> 0 -> 9 -> 11 in LOC_00014052 and on); that is the original's behaviour, now visible further out.
+- Not yet: the sinking-into-water clip and flashing effects for objects drawn from frame data.
+
+### Other screens drawn wider
+
+While `g_gameview_extend_screen` is set (by the screen's code) and the window wants a wider picture,
+the screen is drawn with its repeating background plane everywhere and everything else only where the
+original screen is: 1 = plane B is the background (SEGA screen, stars), 2 = plane A (title screen).
+Kept on screen while the VDP is frozen (clean transitions). The SEGA screen also freezes its last
+picture across its end, which changes the palette a frame before the screen goes.
 
 ## Steps
 
