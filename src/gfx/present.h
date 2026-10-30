@@ -22,4 +22,8 @@ void present_set_frame(const uint32_t *pixels, int width, int height, int pitch)
  * frame, e.g. while the window is being resized. */
 void present_draw(int win_w, int win_h);
 
+/* The size (game pixels) a gameplay view should have to fill the window that
+ * present_draw last drew into (view_layout_expand). 320x224 until then. */
+void present_wanted_view(int *w, int *h);
+
 #endif

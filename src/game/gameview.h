@@ -11,7 +11,11 @@
  * the same line from game memory, with the machine as it is at that moment. */
 void gameview_line(int line);
 
-/* At the end of a frame: the gameplay picture of this frame (0x00RRGGBB), if every
+/* The size of the gameplay picture wanted (game pixels; e.g. from view_layout_expand
+ * for the window). Takes effect at the next frame. 320x224 is the original. */
+void gameview_set_size(int w, int h);
+
+/* At the end of a frame: the gameplay picture of this frame (0x00RRGGBB, any size), if every
  * line of it was gameplay. Returns 0 when the screen showed something else
  * (menus, map, transitions): show the VDP picture then. */
 int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch);

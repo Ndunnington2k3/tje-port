@@ -7,6 +7,7 @@ static const GfxBackend *gfx;
 static GfxTex *frame_tex;
 static int tex_w, tex_h;
 static int frame_w = VIEW_BASE_W, frame_h = VIEW_BASE_H, have_frame;
+static int wanted_w = VIEW_BASE_W, wanted_h = VIEW_BASE_H;
 
 void present_init(const GfxBackend *backend)
 {
@@ -39,15 +40,36 @@ void present_set_frame(const uint32_t *pixels, int width, int height, int pitch)
 
 void present_draw(int win_w, int win_h)
 {
-    ViewLayout v;
+    ViewLayout v, e;
     if (!gfx) return;
+    view_layout_expand(win_w, win_h, VIEW_MAX_W, VIEW_MAX_H, &e);
+    wanted_w = e.view_w;
+    wanted_h = e.view_h;
     gfx->frame_begin(win_w, win_h);
     if (have_frame && frame_tex) {
-        /* A 256-wide picture (the Genesis' narrow mode) fills the same area as a
-         * 320-wide one, as on a television. */
-        view_layout_fixed(win_w, win_h, &v);
+        if (frame_w == VIEW_BASE_W && frame_h == VIEW_BASE_H) {
+            /* drawn the original way (menus etc.), or a 256-wide picture (the
+             * Genesis' narrow mode), which fills the same area, as on a television */
+            view_layout_fixed(win_w, win_h, &v);
+        } else if (frame_w == VIEW_BASE_W * 256 / 320 && frame_h == VIEW_BASE_H) {
+            view_layout_fixed(win_w, win_h, &v);
+        } else {
+            /* the gameplay view at the size asked for (or, right after the window
+             * changed size, the previous size at the new zoom, centred) */
+            v = e;
+            v.dst_w = frame_w * e.scale;
+            v.dst_h = frame_h * e.scale;
+            v.dst_x = (win_w - v.dst_w) / 2;
+            v.dst_y = (win_h - v.dst_h) / 2;
+        }
         gfx->quad(frame_tex, 0, 0, frame_w, frame_h, v.dst_x, v.dst_y, v.dst_w, v.dst_h,
                   GFX_OPAQUE | (v.scale ? 0 : GFX_SMOOTH));
     }
     gfx->frame_end();
+}
+
+void present_wanted_view(int *w, int *h)
+{
+    *w = wanted_w;
+    *h = wanted_h;
 }

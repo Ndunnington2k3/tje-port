@@ -93,6 +93,27 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
   one frame at a split-screen switch where the game briefly draws its divider bar into plane A.
 - Option `native_view` (on; `--vdp-view` or `--vanilla` turns it off).
 
+### Wider than the original (step 3, 1 player)
+
+- The picture is the size `view_layout_expand` gives for the window (`present_wanted_view`). The
+  original 320x224 screen sits in the middle of it; output rows above and below it are drawn at line 0
+  and line 223 with the state then.
+- Level outside the original screen: from the floor layout. Plane B (starfield) from VRAM, repeating.
+- The status bar and the present list (window rows) stay at the bottom / top edge, centred; the level
+  continues beside them. Sprites that are not objects' (status bar icons, hint boxes, the pause sign)
+  are only drawn on the original gameplay rows; objects' sprites anywhere.
+- Objects with no hardware sprites (off the original screen) are drawn from their current frame in ROM
+  (frame/piece format and the three unpackers re-implemented read-only), in the game's drawing order
+  (object lists at `$FFD938` / `$FFD93C`, linked via `$5A`). An object that passes the game's own
+  on-screen test (LOC_0000BDB8) but has no sprites is one the game is hiding, and is skipped.
+  `TJE_GV_PIECES=1 tje_headless --gvcheck` draws every object this way and compares with the VDP:
+  identical but for a few pixels (elevator base, speech bubble offsets).
+- At exactly 320x224 nothing outside is drawn, so the picture is the original's (0 differing pixels
+  over ~50,000 frames of random play, all floors, 1P and 2P).
+- Split screen stays 320x224 for now (shown with borders).
+- Not yet: shadows of objects outside the original screen; the sinking-into-water clip and flashing
+  effects for them.
+
 ## Steps
 
 1. Done: drawing layer (`src/gfx`), OpenGL + fallback, whole-number zoom, live resize.

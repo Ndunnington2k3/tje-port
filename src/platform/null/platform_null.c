@@ -150,6 +150,10 @@ int plat_init(int argc, char **argv)
             elevator_period = (unsigned)atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--gvcheck") && i + 1 < argc) {
             gvcheck = argv[++i];   /* (the gameplay view is on by default: options.c) */
+            {
+                extern int g_gameview_test_pieces;
+                g_gameview_test_pieces = getenv("TJE_GV_PIECES") != NULL;
+            }
         } else if (!strcmp(argv[i], "--window") && i + 1 < argc) {
             if (sscanf(argv[++i], "%dx%d", &window_w, &window_h) == 2 && window_w > 0 && window_h > 0)
                 present_init(gfx_soft_init());
@@ -306,6 +310,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             unsigned long bad = 0;
             int x, y;
             gv_frames++;
+            if (gw != 320 || gh != VDP_HEIGHT) goto gv_done;   /* a wider view: nothing to compare */
             const uint32_t *v = vdp_framebuffer();     /* the VDP's own picture */
             for (y = 0; y < gh; y++)
                 for (x = 0; x < gw; x++)
@@ -313,7 +318,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             if (bad) {
                 gv_bad_frames++;
                 gv_bad_pixels += bad;
-                if (gv_saved < 6) {
+                if (gv_saved < 6 || (gv_saved < 40 && frame % 97 == 0)) {
                     char path[512];
                     snprintf(path, sizeof path, "%s_%u_vdp.ppm", gvcheck, frame);
                     save_ppm(path, v, gw, gh, VDP_FB_PITCH);
@@ -323,6 +328,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
                     fprintf(stderr, "gvcheck: frame %u: %lu pixels differ\n", frame, bad);
                 }
             }
+        gv_done:;
         }
     }
     if (window_w > 0) {
