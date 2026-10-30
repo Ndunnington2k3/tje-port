@@ -131,6 +131,19 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
 
 ### Other screens drawn wider
 
+Option `extend_screens` (on). Every screen that is not gameplay keeps its original 320x224 picture
+in the middle, untouched; only what goes around it is made up (cutscenes are designed for 4:3):
+- a screen with a border ring (edge blocks whose tiles do not occur further in: the purple frames of
+  the cutscenes and menus) has the border carried on outwards, its tiles picked from its top and
+  bottom stretch, staggered so it does not look repeated;
+- a screen without one whose picture repeats (or one plane of it: the title screen) has the pattern
+  carried on, with the period measured in the outer band of the screen;
+- the map, during play, gets the menus' starry sky around it (captured from the menus' plane B when
+  they are shown), so its purple squares do not look like more floor to uncover;
+- anything else stays 4:3.
+Gameplay is told apart from cutscenes by the main game loop having started (`g_in_game`) and the
+status bar being up (or split screen, or the last floor).
+
 While `g_gameview_extend_screen` is set (by the screen's code) and the window wants a wider picture,
 the screen is drawn with its repeating background plane everywhere and everything else only where the
 original screen is: 1 = plane B is the background (SEGA screen, stars), 2 = plane A (title screen).

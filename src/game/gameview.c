@@ -12,6 +12,7 @@
  */
 #include "game.h"
 #include "gameview.h"
+#include "options.h"
 #include "core/vdp.h"
 #include "gfx/present.h"
 
@@ -604,7 +605,8 @@ static int hud_end;   /* the line after the status bar's last line (bottom windo
 /* Set while a screen with a repeating background is up: 1 = plane B is the
  * background (SEGA screen), 2 = plane A is (title screen). */
 int g_gameview_extend_screen;
-static int last_ok, last_w, last_h;   /* the last picture made here, kept while the VDP is frozen */
+static int last_ok, last_w, last_h;
+extern int g_in_game;   /* the last picture made here, kept while the VDP is frozen */
 static int window_row_filler(int row);
 static uint8_t band_row[GAMEVIEW_MAX_H];  /* picture rows holding the status bar / present list */
 static int pic_w = 320, pic_h = VDP_HEIGHT;
@@ -637,6 +639,18 @@ static int frame_setup(void)
         else { win_from = 0; win_to = wv; }
     }
     if (win_from == 0 && win_to >= VDP_HEIGHT) { g_gameview_reason = 4; return 0; }
+    /* only while the game is being played: the main game loop has started, and
+     * the status bar is up (window rows), or the screen is split, or this is the
+     * last floor (no status bar there). Cutscenes in space can otherwise look like
+     * the space around floor 1. */
+    {
+        extern int g_in_game;
+        if (!g_in_game ||
+            (win_from == win_to && !rd8(SPLIT_SCREEN) && rd8(TOEJAMS_LEVEL) != FINAL_LEVEL)) {
+            g_gameview_reason = 9;
+            return 0;
+        }
+    }
 
     region[0].cam_x = (int16_t)rd16(TOEJAM_CAMERA_XPOS);
     region[0].cam_y = (int16_t)rd16(TOEJAM_CAMERA_YPOS);
@@ -789,10 +803,250 @@ static void draw_screen_row(int r, int y)
     }
 }
 
+/* ---- other screens, wider -----------------------------------------------------
+ * Any screen that is not gameplay (cutscenes, menus, map, ride between floors)
+ * drawn wider. The background layers (planes and window, no sprites) of the
+ * frame are collected line by line; at the end of the frame:
+ *  - a border ring (rows/columns at the screen edge whose tiles do not occur
+ *    further in) moves out to the edges of the picture; along the new stretches
+ *    its tiles are picked from elsewhere on the border, staggered, so it does
+ *    not look repeated;
+ *  - the space between is filled with the background next to the border,
+ *    repeated with its own period when it has one;
+ *  - the inside of the original screen (with its sprites) stays as it was.
+ * Things the original kept just off its screen are never shown. */
+
+static uint32_t bg_pic[VDP_HEIGHT][320];
+
+/* The menus' starry sky (their plane B, 512x256, repeating), kept to go around
+ * the map during play. */
+static uint32_t star_pic[256][512];
+static int have_stars, map_mode;
+
+void gameview_capture_stars(void)
+{
+    uint32_t base = (uint32_t)(vdp_reg[4] & 7) << 13, backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    int ty, tx, y, x;
+    if ((vdp_reg[16] & 0x33) != 0x01) return;          /* (expects 64 x 32 planes) */
+    for (ty = 0; ty < 32; ty++)
+        for (tx = 0; tx < 64; tx++) {
+            uint32_t ea = (base + (uint32_t)(ty * 64 + tx) * 2) & 0xFFFF;
+            uint32_t e = ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1];
+            for (y = 0; y < 8; y++) {
+                uint8_t px[8];
+                tile_row(px, e, y);
+                for (x = 0; x < 8; x++)
+                    star_pic[ty * 8 + y][tx * 8 + x] = (px[x] & PIX_OPAQUE) ? vdp_palette_rgb(px[x] & 0x3F) : backdrop;
+            }
+        }
+    have_stars = 1;
+}
+static uint32_t plane_pic[2][VDP_HEIGHT][320];   /* each plane alone (window in A), backdrop where clear */
+
+static void bg_line(int line)
+{
+    static uint8_t a[GAMEVIEW_MAX_W], b[GAMEVIEW_MAX_W];
+    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    int x, wfrom = 0, wto = 0;
+    {
+        int wv = (vdp_reg[18] & 0x1F) * 8, down = vdp_reg[18] & 0x80;
+        int wh = (vdp_reg[17] & 0x1F) * 16, right = vdp_reg[17] & 0x80;
+        int in_v = down ? (line >= wv) : (line < wv);
+        if (in_v) { wfrom = 0; wto = 320; }
+        else if (wh) {
+            if (right) { wfrom = wh; wto = 320; } else { wfrom = 0; wto = wh; }
+            if (wto > 320) wto = 320;
+        }
+    }
+    plane_row(b, 0, 0, 320, line, 1);
+    plane_row(a, 0, 0, 320, line, 0);
+    if (wto > wfrom) {
+        uint32_t base = (uint32_t)(vdp_reg[3] & 0x3C) << 10;
+        int col;
+        for (col = wfrom / 8; col < wto / 8; col++) {
+            uint32_t ea = (base + (uint32_t)((line >> 3) * 64 + col) * 2) & 0xFFFF;
+            tile_row(a + col * 8, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1], line & 7);
+        }
+    }
+    for (x = 0; x < 320; x++) {
+        uint8_t pa = a[x], pb = b[x], c;
+        plane_pic[0][line][x] = (pa & PIX_OPAQUE) ? vdp_palette_rgb(pa & 0x3F) : backdrop;
+        plane_pic[1][line][x] = (pb & PIX_OPAQUE) ? vdp_palette_rgb(pb & 0x3F) : backdrop;
+        if ((pa & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pa;
+        else if ((pb & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pb;
+        else if (pa & PIX_OPAQUE) c = pa;
+        else if (pb & PIX_OPAQUE) c = pb;
+        else { bg_pic[line][x] = backdrop; continue; }
+        bg_pic[line][x] = vdp_palette_rgb(c & 0x3F);
+    }
+}
+
+static uint32_t (*hash_src)[320] = bg_pic;
+
+static uint32_t block_hash(int bx, int by)
+{
+    uint32_t h = 2166136261u;
+    int x, y;
+    for (y = 0; y < 8; y++)
+        for (x = 0; x < 8; x++) h = (h ^ hash_src[by * 8 + y][bx * 8 + x]) * 16777619u;
+    return h;
+}
+
+static void hash_blocks(uint32_t (*src)[320]);
+
+#define BW 40
+#define BH 28
+static uint32_t blocks[BH][BW];
+
+static int ring_of(int bx, int by)
+{
+    int d = bx < by ? bx : by;
+    if (BW - 1 - bx < d) d = BW - 1 - bx;
+    if (BH - 1 - by < d) d = BH - 1 - by;
+    return d;
+}
+
+/* Border thickness in blocks (0-3): the outer rings whose blocks do not occur in
+ * the two rings inside them. */
+static int find_border(void)
+{
+    int b;
+    for (b = 3; b >= 1; b--) {
+        int inner = 0, shared = 0, bx, by, ox, oy;
+        for (by = 0; by < BH; by++)
+            for (bx = 0; bx < BW; bx++) {
+                int d = ring_of(bx, by);
+                if (d < b || d >= b + 2) continue;
+                inner++;
+                for (oy = 0; oy < BH; oy++) {
+                    for (ox = 0; ox < BW; ox++)
+                        if (ring_of(ox, oy) < b && blocks[oy][ox] == blocks[by][bx]) { shared++; goto next; }
+                }
+            next:;
+            }
+        /* the ring itself must not be one plain colour like the inside */
+        if (inner && shared * 10 <= inner) {
+            int bxx = 0, diff = 0;
+            for (bxx = 1; bxx < BW; bxx++) if (blocks[0][bxx] != blocks[0][0]) diff = 1;
+            if (diff || blocks[0][0] != blocks[b][b]) return b;
+        }
+    }
+    return 0;
+}
+
+/* Period (in blocks) of the picture along x (axis 0) or y (axis 1), measured in
+ * the outer band near the edges (where cutscene panels and text do not reach):
+ * the smallest p for which the band repeats every p blocks; 0 if none. */
+static int find_period(int axis)
+{
+    int p;
+    int len = axis ? BH : BW, other = axis ? BW : BH;
+    for (p = 1; p <= 16 && 2 * p <= len; p++) {
+        int same = 0, total = 0, i, j;
+        for (i = 0; i + p < len; i++)
+            for (j = 0; j < other; j++) {
+                uint32_t h1, h2;
+                if (j >= 4 && j < other - 4) continue;          /* only the outer band */
+                h1 = axis ? blocks[i][j] : blocks[j][i];
+                h2 = axis ? blocks[i + p][j] : blocks[j][i + p];
+                total++;
+                if (h1 == h2) same++;
+            }
+        if (total && same * 100 >= total * 98) return p;
+    }
+    return 0;
+}
+
+static uint32_t mix(uint32_t v)
+{
+    v ^= v >> 16; v *= 0x7FEB352Du; v ^= v >> 15; v *= 0x846CA68Bu; v ^= v >> 16;
+    return v;
+}
+
+static int floor_div(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
+static void hash_blocks(uint32_t (*src)[320])
+{
+    int bx, by;
+    hash_src = src;
+    for (by = 0; by < BH; by++)
+        for (bx = 0; bx < BW; bx++) blocks[by][bx] = block_hash(bx, by);
+}
+
+/* Returns 0 if the screen has neither a border nor a repeating pattern: it is
+ * then shown at its original size. */
+static int build_extended_screen(void)
+{
+    const uint32_t *vfb = vdp_framebuffer();
+    uint32_t (*fill)[320] = bg_pic;
+    int b, px = 0, py = 0, x, y, pl;
+    if (map_mode) {
+        /* the map during play: the menus' starry sky around it */
+        for (y = 0; y < pic_h; y++) {
+            int ry = y - off_y;
+            uint32_t *o = picture + (size_t)y * GAMEVIEW_MAX_W;
+            for (x = 0; x < pic_w; x++) {
+                int rx = x - off_x;
+                if (rx >= 0 && rx < 320 && ry >= 0 && ry < VDP_HEIGHT) o[x] = vfb[(size_t)ry * VDP_FB_PITCH + (size_t)rx];
+                else o[x] = star_pic[((ry % 256) + 256) % 256][((rx % 512) + 512) % 512];
+            }
+        }
+        return 1;
+    }
+    hash_blocks(bg_pic);
+    b = find_border();
+    if (!b) {
+        /* a repeating pattern: the whole picture, or one plane behind things on the
+         * other (the title screen) */
+        px = find_period(0);
+        py = find_period(1);
+        for (pl = 0; pl < 2 && !(px && py); pl++) {
+            hash_blocks(plane_pic[pl]);
+            px = find_period(0);
+            py = find_period(1);
+            if (px && py) fill = plane_pic[pl];
+        }
+        if (!(px && py)) return 0;
+    }
+    for (y = 0; y < pic_h; y++) {
+        int ry = y - off_y;
+        uint32_t *o = picture + (size_t)y * GAMEVIEW_MAX_W;
+        for (x = 0; x < pic_w; x++) {
+            int rx = x - off_x;
+            if (rx >= 0 && rx < 320 && ry >= 0 && ry < VDP_HEIGHT) {
+                o[x] = vfb[(size_t)ry * VDP_FB_PITCH + (size_t)rx];   /* the original, as it is */
+                continue;
+            }
+            if (b) {
+                /* the border carried on outwards: its tiles, picked from along its
+                 * top and bottom stretch, staggered so they do not look repeated */
+                int bx = floor_div(rx, 8), by = floor_div(ry, 8), span = BW - 2 * b;
+                uint32_t h = mix((uint32_t)bx * 2654435761u ^ (uint32_t)by * 2246822519u);
+                int sbx = b + (int)(h % (uint32_t)span), sby = (int)((h >> 16) % (uint32_t)b);
+                if ((h >> 8) & 1) sby = BH - 1 - sby;
+                o[x] = bg_pic[sby * 8 + (ry - by * 8)][sbx * 8 + (rx - bx * 8)];
+            } else {
+                int sx = rx % (px * 8), sy = ry % (py * 8);
+                if (sx < 0) sx += px * 8;
+                if (sy < 0) sy += py * 8;
+                o[x] = fill[sy][sx];
+            }
+        }
+    }
+    return 1;
+}
+
 void gameview_line(int line)
 {
     const Region *r;
     int y, in_window, wv;
+    if (frame_ok == 3 && line != 0) {                 /* another screen, wider */
+        if (line < 0 || line >= VDP_HEIGHT) return;
+        if (!vdp_live_picture() || vdp_width() != 320) { frame_ok = 0; return; }
+        bg_line(line);
+        if (line == VDP_HEIGHT - 1 && !build_extended_screen()) frame_ok = 0;
+        return;
+    }
     if (frame_ok == 2 && line != 0) {                 /* a wider screen with a repeating background */
         if (line < 0 || line >= VDP_HEIGHT) return;
         if (!vdp_live_picture() || (vdp_reg[17] & 0x1F) || (vdp_reg[18] & 0x1F)) {
@@ -822,6 +1076,20 @@ void gameview_line(int line)
             frame_ok = 2;
             for (y = -off_y; y < 0; y++) draw_screen_row(y + off_y, y);
             draw_screen_row(off_y, 0);
+            return;
+        }
+        /* (the map, during play: its purple squares carried on outwards would look
+         * like more of the floor still to uncover; the menus' starry sky goes
+         * around it instead, or nothing if it has not been seen yet) */
+        map_mode = g_in_game && (vdp_reg[17] & 0x1F);
+        if (!frame_ok && g_options.extend_screens && vdp_live_picture() && vdp_width() == 320 &&
+            (!map_mode || have_stars) && (want_w != 320 || want_h != VDP_HEIGHT)) {
+            pic_w = want_w;
+            pic_h = want_h;
+            off_x = (pic_w - 320) / 2;
+            off_y = (pic_h - VDP_HEIGHT) / 2;
+            frame_ok = 3;
+            bg_line(0);
             return;
         }
         if (frame_ok) {
@@ -882,7 +1150,7 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
         last_ok = 0;
         return 0;
     }
-    if (frame_ok == 2) {
+    if (frame_ok == 2 || frame_ok == 3) {
         last_ok = 1;
         last_w = pic_w;
         last_h = pic_h;

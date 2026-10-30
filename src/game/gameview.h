@@ -20,4 +20,7 @@ void gameview_set_size(int w, int h);
  * (menus, map, transitions): show the VDP picture then. */
 int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch);
 
+/* Keep the menus' starry sky (plane B as it is now) to go around the map. */
+void gameview_capture_stars(void);
+
 #endif

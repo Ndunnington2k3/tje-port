@@ -13,6 +13,9 @@ typedef struct {
      * by the emulated video chip: no sprite flicker or drop-outs, and the base for
      * showing more of the level. */
     int native_view;
+    /* Screens other than gameplay fill wider windows too: borders move out to the
+     * edges, background patterns repeat (gameview.c). Off: they stay 4:3. */
+    int extend_screens;
 } GameOptions;
 
 extern GameOptions g_options;

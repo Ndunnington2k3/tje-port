@@ -211,9 +211,7 @@ void f_027AD6_SEGAAndIntroVideoRoutine(void)
         CALL(f_03A476_SEGAVideo);
         if (sega_skipped)
             goto load_palettes;            /* port feature: straight to the menus */
-        g_gameview_extend_screen = 2;      /* (its pattern, on plane A, repeats too) */
         CALL(f_027998_TitleScreenVideo);
-        g_gameview_extend_screen = 0;
         if ((R.d[0] & 0xFFFF) != 0)
             break;                         /* Start pressed on the title screen */
         CALL(f_029A16_IntroVideo);         /* attract mode: play the intro */

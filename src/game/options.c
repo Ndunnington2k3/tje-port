@@ -9,6 +9,7 @@ GameOptions g_options = {
     1,  /* quick_start */
     1,  /* clean_transitions */
     1,  /* native_view */
+    1,  /* extend_screens */
 };
 
 void options_from_args(int argc, char **argv)
@@ -20,6 +21,7 @@ void options_from_args(int argc, char **argv)
             g_options.quick_start = 0;
             g_options.clean_transitions = 0;
             g_options.native_view = 0;
+            g_options.extend_screens = 0;
         }
         else if (!strcmp(argv[i], "--vdp-view")) g_options.native_view = 0;
     }

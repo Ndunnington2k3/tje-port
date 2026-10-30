@@ -8,6 +8,7 @@
 #include "menu.h"
 #include "core/vdp.h"
 #include "art.h"
+#include "gameview.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -238,6 +239,7 @@ int menu_run(Menu *m, int title)
     CALL(f_00CED0_SpriteLoadingStuff);
     POP_ARGS(2);
     display(1);
+    gameview_capture_stars();            /* (for around the map in wider windows) */
     CALL(f_008BB2_SetVHBlankFlag2);
 
     /* wait until choose and back are let go */

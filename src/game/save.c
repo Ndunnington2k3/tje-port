@@ -186,8 +186,11 @@ static void after_load(void)
 #define JSR(fn, ret) do { push32(ret); fn(); } while (0)
 
 TJE_OVERRIDE(0x0014E6)
+int g_in_game;   /* the main game loop has started (reset with the machine) */
+
 void f_0014E6_InGameLoop(void)
 {
+    g_in_game = 1;
     if (post_load_pending) {
         post_load_pending = 0;
         after_load();
@@ -480,5 +483,6 @@ int save_load(int slot)
 void save_quit_to_menu(void)
 {
     g_boot_to_menu = 1;
+    g_in_game = 0;
     genesis_restart_boot();
 }
