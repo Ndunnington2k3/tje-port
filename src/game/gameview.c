@@ -264,6 +264,12 @@ typedef struct {
 } Piece;
 
 static Piece pieces[MAX_PIECES];
+unsigned long long g_gv_drawn_mask;   /* (tests) objects drawn this frame */
+uint8_t g_gv_item_drawn[98];          /* (tests) floor items drawn this frame (themselves or as objects) */
+int g_gv_item_x[98], g_gv_item_y[98];
+int g_gv_max_pieces;
+int g_gv_cam_x, g_gv_cam_y;   /* (tests) */
+uint8_t *g_gv_layer;           /* (tests) 1 where a sprite or piece shows */
 static int npieces;
 int g_gameview_test_pieces;   /* tests: draw every object from its frame data, none from the sprite table */
 
@@ -494,21 +500,39 @@ static uint32_t item_frame(int type)
 static struct { int cls, x, y; } sh[NUM_OBJECTS + 100];
 static int nsh;
 
-static void add_items(const Region *r, uint32_t list, int count, int telephones, int x0, int y0, int x1, int y1)
+static void add_items(const Region *r, uint32_t list, int count, int telephones, int x0, int y0, int x1, int y1,
+                      int game_bottom)
 {
     int i;
+    uint32_t fr;
     for (i = 0; i < count && npieces < MAX_PIECES; i++) {
         uint32_t a = list + (uint32_t)i * 8;
         int type = rd8(a), x, y, near;
+        int rec = (list == LEVEL_ITEMS ? 0 : list == DROPPED_PRESENTS ? 64 : 96) + i;
+        g_gv_item_drawn[rec] = 0;
         if (telephones ? !rd8(a + 1) : type == 0xFF) continue;
-        if ((int)rd8(a + 1) != r->level || rd8(a + 2)) continue;     /* other floor, or an object now */
+        g_gv_item_x[rec] = (int16_t)rd16(a + 4) - r->cam_x;
+        g_gv_item_y[rec] = (int16_t)rd16(a + 6) - r->cam_y;
+        if ((int)rd8(a + 1) != r->level) continue;
+        if (rd8(a + 2)) {                                              /* an object now */
+            if (g_gv_drawn_mask & (1ull << (rd8(a + 2) % 40))) g_gv_item_drawn[rec] = 2;
+            continue;
+        }
         x = (int16_t)rd16(a + 4) - r->cam_x;
         y = (int16_t)rd16(a + 6) - r->cam_y + r->top;
         /* where the game would have made it an object: if it has none there, the
          * game is not showing it */
         near = x > -0x14 && x < 0x154 && y > -0x14 && y < ((!telephones && type >= 0x51) ? 0x120 : 0xF4);
-        if (near) continue;
-        add_frame(0, telephones ? rd32(rd32(0x0AF03Cu)) : item_frame(type), x, y, 0, 0x8000, x0, y0, x1, y1);
+        fr = telephones ? rd32(rd32(0x0AF03Cu)) : item_frame(type);
+        /* near the screen with no object: the game is not showing it, unless part
+         * of it is outside the original screen (it may get its object a frame later,
+         * or none if the game has run out) */
+        if (near && !frame_leaves_screen(fr, x, y, 0, 0x8000, game_bottom)) continue;
+        {
+            int before = npieces;
+            add_frame(0, fr, x, y, 0, 0x8000, x0, y0, x1, y1);
+            if (npieces > before) g_gv_item_drawn[rec] = 1;
+        }
         sh[nsh].cls = (!telephones && type >= 0x51) ? 2 : 1;     /* (LOC_00014FFE, LOC_00022B7E: $2E) */
         sh[nsh].x = x;
         sh[nsh].y = y;
@@ -541,6 +565,7 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
         if (!listed[e]) order[norder++] = OBJECTS + (uint32_t)e * OBJECT_SIZE;
     learn_shadows();
     nsh = 0;
+    g_gv_drawn_mask = 0;
     npieces = 0;
     for (k = 0; k < norder && npieces < MAX_PIECES; k++) {
         uint32_t o = order[k], fr;
@@ -555,19 +580,33 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
         oy_ = (int16_t)rd16(o + 2) - r->cam_y + r->top;
         if (rd8(o + 0x2F) & 2) {                           /* has sprites on camera 0 */
             int i, n;
-            if (!rd8(o + 0x4A)) continue;                  /* (none drawn: the game hides it) */
-            if (!g_gameview_test_pieces && !frame_leaves_screen(fr, ox_, oy_, z, attr, game_bottom)) continue;
+            int leaves = frame_leaves_screen(fr, ox_, oy_, z, attr, game_bottom);
+            /* no sprites yet: wholly inside, the game is not showing it; partly
+             * outside, it has just come onto the game's screen and gets its sprites
+             * a frame later (drawn, or it would blink at the old screen edge) */
+            if (!rd8(o + 0x4A) && (!leaves || g_gameview_test_pieces)) continue;
+            if (!g_gameview_test_pieces && !leaves) {
+                g_gv_drawn_mask |= 1ull << ((o - OBJECTS) / OBJECT_SIZE);   /* (drawn by its sprites) */
+                continue;
+            }
             /* drawn from its frame data instead of its sprites */
             n = (fr >= 0x200 && fr < 0x400000) ? rd8(fr) : 0;
             for (i = 0; i < n && i < 12; i++) sat_suppressed[rd8(o + 0x30 + (uint32_t)i) % 80] = 1;
             if (rd8(o + 0x48)) sat_suppressed[rd8(o + 0x48) % 80] = 1;     /* its shadow: drawn below */
             sat_suppressed[0] = 0;
-        } else if (on_game_screen(o, r)) {
-            continue;                                       /* the game hides it */
+        } else if (on_game_screen(o, r) && !frame_leaves_screen(fr, ox_, oy_, z, attr, game_bottom)) {
+            /* wholly where the original screen shows gameplay, yet no sprites: the
+             * game is not showing it. (Partly outside, draw it: the game may simply
+             * not have given it sprites yet, or have run out of them.) */
+            continue;
         }
         if (z > 0xE0 || z < -0xE0) continue;
         if (ox_ < x0 - 96 || ox_ > x1 + 96 || oy_ < y0 - 96 || oy_ > y1 + 160) continue;
-        add_frame(o, fr, ox_, oy_, z, attr, x0, y0, x1, y1);
+        {
+            int before = npieces;
+            add_frame(o, fr, ox_, oy_, z, attr, x0, y0, x1, y1);
+            if (npieces > before) g_gv_drawn_mask |= 1ull << ((o - OBJECTS) / OBJECT_SIZE);
+        }
         if (rd8(o + 0x2E) && !(rd8(o + 0x4D) & 0x40)) {
             sh[nsh].cls = rd8(o + 0x2E);
             sh[nsh].x = ox_;
@@ -575,11 +614,12 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
             nsh++;
         }
     }
-    add_items(r, LEVEL_ITEMS, 64, 0, x0, y0, x1, y1);
-    add_items(r, DROPPED_PRESENTS, 32, 0, x0, y0, x1, y1);
-    add_items(r, TELEPHONES, 2, 1, x0, y0, x1, y1);
+    add_items(r, LEVEL_ITEMS, 64, 0, x0, y0, x1, y1, game_bottom);
+    add_items(r, DROPPED_PRESENTS, 32, 0, x0, y0, x1, y1, game_bottom);
+    add_items(r, TELEPHONES, 2, 1, x0, y0, x1, y1, game_bottom);
     /* shadows behind everything (the game links them after the objects) */
     for (k = 0; k < nsh; k++) add_shadow(sh[k].cls, sh[k].x, sh[k].y, x0, y0, x1, y1);
+    if (npieces > g_gv_max_pieces) g_gv_max_pieces = npieces;
 }
 
 static void pieces_row(uint8_t *buf, int off, int x_from, int x_to, int y)
@@ -654,6 +694,8 @@ static int frame_setup(void)
 
     region[0].cam_x = (int16_t)rd16(TOEJAM_CAMERA_XPOS);
     region[0].cam_y = (int16_t)rd16(TOEJAM_CAMERA_YPOS);
+    g_gv_cam_x = region[0].cam_x;
+    g_gv_cam_y = region[0].cam_y;
     region[0].tiles = TOEJAM_LEVEL_TILES;
     region[0].level = rd8(TOEJAMS_LEVEL);
     region[0].top = 0;
@@ -724,8 +766,9 @@ static void draw_row(int r, int y, int game_line)
         else if (s & PIX_OPAQUE) c = s;
         else if (pa & PIX_OPAQUE) c = pa;
         else if (pb & PIX_OPAQUE) c = pb;
-        else { o[x] = backdrop; continue; }
+        else { o[x] = backdrop; if (g_gv_layer) g_gv_layer[(size_t)r * GAMEVIEW_MAX_W + x] = 0; continue; }
         o[x] = vdp_palette_rgb(c & 0x3F);
+        if (g_gv_layer) g_gv_layer[(size_t)r * GAMEVIEW_MAX_W + x] = (uint8_t)(c == s);
     }
 }
 
@@ -798,8 +841,9 @@ static void draw_screen_row(int r, int y)
         else if (s & PIX_OPAQUE) c = s;
         else if (pa & PIX_OPAQUE) c = pa;
         else if (pb & PIX_OPAQUE) c = pb;
-        else { o[x] = backdrop; continue; }
+        else { o[x] = backdrop; if (g_gv_layer) g_gv_layer[(size_t)r * GAMEVIEW_MAX_W + x] = 0; continue; }
         o[x] = vdp_palette_rgb(c & 0x3F);
+        if (g_gv_layer) g_gv_layer[(size_t)r * GAMEVIEW_MAX_W + x] = (uint8_t)(c == s);
     }
 }
 

@@ -171,6 +171,10 @@ static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(
 
 void plat_shutdown(void)
 {
+    if (getenv("TJE_GV_FLICKER")) {
+        extern int g_gv_max_pieces;
+        fprintf(stderr, "max pieces %d\n", g_gv_max_pieces);
+    }
     if (gvcheck) {
         int r;
         fprintf(stderr, "gvcheck: %u gameplay frames drawn, %u differ (%lu pixels)\n",
@@ -329,6 +333,97 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
                 }
             }
         gv_done:;
+        }
+    }
+    if (getenv("TJE_GV_BLINK")) {
+        /* pixels of the wider picture that change for exactly one frame (A == C != B),
+         * compared at the same world position (the level does not move with the camera) */
+        static uint32_t *pic[3];
+        static uint8_t *lay[3];
+        extern uint8_t *g_gv_layer;
+        static int pw[3], ph[3], cx[3], cy[3], ok[3];
+        static FILE *bl;
+        const uint32_t *gv;
+        int gw, gh, gp, k;
+        if (!bl) bl = fopen(getenv("TJE_GV_BLINK"), "w");
+        for (k = 0; k < 3 && !pic[k]; k++) { pic[k] = malloc(sizeof(uint32_t) * 1024 * 1024); lay[k] = calloc(1024 * 1024, 1); }
+        if (!g_gv_layer) g_gv_layer = calloc((size_t)GAMEVIEW_MAX_W * GAMEVIEW_MAX_H, 1);
+        { uint32_t *t = pic[2]; pic[2] = pic[1]; pic[1] = pic[0]; pic[0] = t; }
+        { uint8_t *t = lay[2]; lay[2] = lay[1]; lay[1] = lay[0]; lay[0] = t; }
+        for (k = 2; k > 0; k--) { pw[k] = pw[k-1]; ph[k] = ph[k-1]; cx[k] = cx[k-1]; cy[k] = cy[k-1]; ok[k] = ok[k-1]; }
+        ok[0] = gameview_frame(&gv, &gw, &gh, &gp) && (gw != 320 || gh != VDP_HEIGHT) && !rd8(0xFF9364u) ? 1 : 0;
+        if (ok[0]) {
+            int y;
+            pw[0] = gw; ph[0] = gh;
+            extern int g_gv_cam_x, g_gv_cam_y;
+            cx[0] = g_gv_cam_x; cy[0] = g_gv_cam_y;
+            for (y = 0; y < gh; y++) {
+                memcpy(pic[0] + y * gw, gv + y * gp, sizeof(uint32_t) * (size_t)gw);
+                memcpy(lay[0] + y * gw, g_gv_layer + (size_t)y * GAMEVIEW_MAX_W, (size_t)gw);
+            }
+        }
+        if (ok[0] && ok[1] && ok[2] && pw[0] == pw[1] && pw[1] == pw[2] && ph[0] == ph[1] && ph[1] == ph[2]) {
+            int w = pw[1], h = ph[1], ox = (w - 320) / 2, oy = (h - VDP_HEIGHT) / 2, x, y;
+            int nin = 0, nout = 0, bx0 = 9999, by0 = 9999, bx1 = -1, by1 = -1;
+            for (y = 0; y < h; y++)
+                for (x = 0; x < w; x++) {
+                    int xa = x + cx[1] - cx[2], ya = y + cy[1] - cy[2];
+                    int xc = x + cx[1] - cx[0], yc = y + cy[1] - cy[0];
+                    uint32_t a, b, c;
+                    if (xa < 0 || ya < 0 || xa >= w || ya >= h || xc < 0 || yc < 0 || xc >= w || yc >= h) continue;
+                    if (y >= oy + 184) continue;     /* (status bar) */
+                    a = pic[2][ya * w + xa] & 0xFFFFFF; b = pic[1][y * w + x] & 0xFFFFFF; c = pic[0][yc * w + xc] & 0xFFFFFF;
+                    if (a != c || a == b) continue;
+                    if (!lay[1][y * w + x] && !lay[2][ya * w + xa]) continue;   /* (not a sprite: stars) */
+                    if (x >= ox && x < ox + 320 && y >= oy && y < oy + VDP_HEIGHT) nin++;
+                    else {
+                        nout++;
+                        if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+                        if (y < by0) by0 = y; if (y > by1) by1 = y;
+                    }
+                }
+            if ((nout >= 16 || nin >= 16) && getenv("TJE_GV_BLINKSAVE") && nout >= 16) {
+                static int saved;
+                if (saved++ < 30) {
+                    char path[512];
+                    snprintf(path, sizeof path, "%s_%u_a.ppm", getenv("TJE_GV_BLINKSAVE"), frame - 1);
+                    save_ppm(path, pic[2], w, h, w);
+                    snprintf(path, sizeof path, "%s_%u_b.ppm", getenv("TJE_GV_BLINKSAVE"), frame - 1);
+                    save_ppm(path, pic[1], w, h, w);
+                    snprintf(path, sizeof path, "%s_%u_c.ppm", getenv("TJE_GV_BLINKSAVE"), frame - 1);
+                    save_ppm(path, pic[0], w, h, w);
+                }
+            }
+            if (nout >= 16 || nin >= 16)
+                fprintf(bl, "frame %u: blink outside %d (%d,%d)-(%d,%d) inside %d cam %d,%d\n", frame - 1, nout,
+                        bx0 - ox, by0 - oy, bx1 - ox, by1 - oy, nin, cx[1], cy[1]);
+        }
+    }
+    if (getenv("TJE_GV_FLICKER")) {
+        /* objects drawn from frame data, and objects drawn at all, frame by frame:
+         * report any that vanish for 1-2 frames and come back */
+        extern unsigned long long g_gv_drawn_mask;
+        extern uint8_t g_gv_item_drawn[98];
+        extern int g_gv_item_x[98], g_gv_item_y[98];
+        static uint8_t ih[3][98];
+        static unsigned long long hist[4];
+        static FILE *fl;
+        int e;
+        if (!fl) fl = fopen(getenv("TJE_GV_FLICKER"), "w");
+        hist[3] = hist[2]; hist[2] = hist[1]; hist[1] = hist[0]; hist[0] = g_gv_drawn_mask;
+        memcpy(ih[2], ih[1], 98); memcpy(ih[1], ih[0], 98); memcpy(ih[0], g_gv_item_drawn, 98);
+        for (e = 0; e < 98; e++)
+            if (ih[0][e] && !ih[1][e] && ih[2][e])
+                fprintf(fl, "frame %u: item %d missing for 1 frame (x %d y %d, before %d after %d)\n", frame - 1, e,
+                        g_gv_item_x[e], g_gv_item_y[e], ih[2][e], ih[0][e]);
+        for (e = 0; e < 40; e++) {
+            unsigned long long b = 1ull << e;
+            if ((hist[0] & b) && !(hist[1] & b) && (hist[2] & b))
+                fprintf(fl, "frame %u: object %d missing for 1 frame (x %d y %d 2F %02X 4A %d 22 %06X)\n", frame - 1, e,
+                        (int16_t)rd16(0xFFA25Au + (uint32_t)e * 0x80) - (int16_t)rd16(0xFF8002u),
+                        (int16_t)rd16(0xFFA25Cu + (uint32_t)e * 0x80) - (int16_t)rd16(0xFF8004u),
+                        rd8(0xFFA289u + (uint32_t)e * 0x80), rd8(0xFFA2A4u + (uint32_t)e * 0x80),
+                        rd32(0xFFA27Cu + (uint32_t)e * 0x80));
         }
     }
     if (window_w > 0) {

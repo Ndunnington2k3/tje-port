@@ -116,6 +116,15 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
   they are drawn from their records (8 bytes: type, floor, object, x, y) with the frame the game would
   give them (`item_frame`, from LOC_00014FFE / LOC_00022B7E). Items the game would show but has no
   object for are skipped, as it does.
+- An object that has just come onto the game's screen gets its hardware sprites a frame after the
+  game's on-screen test passes ($2F bit 1 set, $4A still 0). Wholly inside, the original shows
+  nothing for that frame too; partly outside, it is drawn from its frame data, or it would blink
+  at the old screen edge for a frame each time it crosses it.
+- Test tools (tje_headless, wider `--window`): `TJE_GV_FLICKER=file` lists objects and items drawn,
+  then missing for one frame, then drawn again; `TJE_GV_BLINK=file` lists sprite pixels that change
+  for exactly one frame at the same world position (`TJE_GV_BLINKSAVE=prefix` saves the three
+  pictures). Remaining reports are the game's own: a new particle object has no frame for its first
+  frame, objects walking out of the picture, animations.
 - Objects with hardware sprites that reach outside the original gameplay area are drawn from their
   frame data instead (and their sprites skipped): a hardware sprite's X wraps past 383, and the game
   cuts and culls sprites at its screen edges and under the status bar.
