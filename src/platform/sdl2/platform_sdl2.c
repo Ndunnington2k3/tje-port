@@ -269,6 +269,7 @@ void plat_capture_start(int player)
     capturing = 1;
     capture_player = player;
     capture_done = 0;
+    if (input_log) { fprintf(input_log, "[capture start, player %d]\n", player + 1); fflush(input_log); }
 }
 
 void plat_capture_cancel(void) { capturing = 0; capture_done = 0; }
@@ -278,6 +279,10 @@ int plat_capture_poll(int *slot, char *token, int size)
     if (!capture_done) return 0;
     capture_done = 0;
     capturing = 0;
+    if (input_log) {
+        fprintf(input_log, "[capture done: %s]\n", capture_slot < 0 ? "cancelled" : capture_token);
+        fflush(input_log);
+    }
     if (capture_slot < 0) return -1;
     *slot = capture_slot;
     snprintf(token, (size_t)size, "%s", capture_token);
@@ -364,7 +369,23 @@ static uint16_t read_player(int p, const Uint8 *k)
     return bits;
 }
 
+static uint16_t menu_input_now(void);
+
 uint16_t plat_menu_input(void)
+{
+    static uint16_t last;
+    uint16_t m = menu_input_now();
+    if (input_log && m != last) {
+        fprintf(input_log, "[menu input:%s%s%s%s%s%s]\n", m & PAD_UP ? " up" : "", m & PAD_DOWN ? " down" : "",
+                m & PAD_LEFT ? " left" : "", m & PAD_RIGHT ? " right" : "", m & MENU_OK ? " choose" : "",
+                m & MENU_BACK ? " back" : "");
+        fflush(input_log);
+    }
+    last = m;
+    return m;
+}
+
+static uint16_t menu_input_now(void)
 {
     const Uint8 *k = SDL_GetKeyboardState(NULL);
     uint16_t m = 0;
@@ -417,6 +438,13 @@ static void log_event(const SDL_Event *e)
     switch (e->type) {
     case SDL_KEYDOWN:
         if (!e->key.repeat) fprintf(input_log, "key down: %s\n", SDL_GetScancodeName(e->key.keysym.scancode));
+        break;
+    case SDL_KEYUP:
+        fprintf(input_log, "key up: %s\n", SDL_GetScancodeName(e->key.keysym.scancode));
+        break;
+    case SDL_CONTROLLERBUTTONUP:
+        fprintf(input_log, "controller %d button up: %s\n", pad_player(e->cbutton.which) + 1,
+                SDL_GameControllerGetStringForButton((SDL_GameControllerButton)e->cbutton.button));
         break;
     case SDL_CONTROLLERDEVICEADDED: {
         SDL_GameController *c = SDL_GameControllerFromInstanceID(e->cdevice.which);
