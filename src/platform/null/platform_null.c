@@ -318,7 +318,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             if (bad) {
                 gv_bad_frames++;
                 gv_bad_pixels += bad;
-                if (gv_saved < 6 || (gv_saved < 40 && frame % 97 == 0)) {
+                if (gv_saved < 6 || (gv_saved < 40 && (frame % 97 == 0 || getenv("TJE_GV_SAVEALL")))) {
                     char path[512];
                     snprintf(path, sizeof path, "%s_%u_vdp.ppm", gvcheck, frame);
                     save_ppm(path, v, gw, gh, VDP_FB_PITCH);

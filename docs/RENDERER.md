@@ -125,7 +125,9 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
   copied; the level shows there.
 - The elevator you arrive in closes and sinks away about 30 frames after you step out (a timer: states
   4 -> 0 -> 9 -> 11 in LOC_00014052 and on); that is the original's behaviour, now visible further out.
-- Not yet: the sinking-into-water clip and flashing effects for objects drawn from frame data.
+- Objects drawn from frame data get the same effects as their sprites would: wading (rows under the
+  waterline taken away, the first with a wavy edge; LOC_0000C83A) and flashing (colour 15 dropped;
+  LOC_0000C8CC).
 
 ### Other screens drawn wider
 

@@ -343,7 +343,9 @@ static int on_game_screen(uint32_t o, const Region *r)
 /* Decode the pieces of one frame drawn at original-screen position (x, y) with
  * altitude z and attribute word attr ($2C: priority, flip), into the piece list,
  * keeping those that show in x0..x1, y0..y1. */
-static void add_frame(uint32_t fr, int x, int y, int z, int attr, int x0, int y0, int x1, int y1)
+/* o: the object (0 for items), for its graphic effects as LOC_0000C900 applies
+ * them: wading in water (LOC_0000C83A) and flashing (LOC_0000C8CC). */
+static void add_frame(uint32_t o, uint32_t fr, int x, int y, int z, int attr, int x0, int y0, int x1, int y1)
 {
     static uint8_t data[16 * 32];
     int n, i;
@@ -364,6 +366,27 @@ static void add_frame(uint32_t fr, int x, int y, int z, int attr, int x0, int y0
         p->h = ch * 8;
         if (p->x + p->w <= x0 || p->x >= x1 || p->y + p->h <= y0 || p->y >= y1) continue;
         unpack(rd32(pc + 6), flags, cw * ch, data);
+        /* in water (below ground level, players only): the rows under the
+         * waterline are taken away, the first with a wavy edge; a piece wholly
+         * under it is not drawn */
+        if (o && z < 0 && (int8_t)rd8(o + 0x5E) <= 1 && !(rd8(o + 0x55) & 0x20)) {
+            int rows = ch * 8, cut = dy - 2 - z, c, r;
+            if (cut >= 0) continue;
+            if (cut + rows > 0) {
+                for (c = 0; c < cw; c++)
+                    for (r = -cut; r < rows; r++) {
+                        uint8_t *b = data + (size_t)(c * rows + r) * 4;
+                        if (r == -cut) { b[0] &= 0x0F; b[1] &= 0x00; b[2] &= 0x0F; b[3] &= 0xF0; }
+                        else b[0] = b[1] = b[2] = b[3] = 0;
+                    }
+            }
+        }
+        /* flashing: colour 15 dropped */
+        if (o && (rd8(o + 0x4D) & 0x20)) {
+            int k;
+            for (k = 0; k < cw * ch * 32; k++)
+                if (data[k] == 0xFF || data[k] == 0xF0 || data[k] == 0x0F) data[k] = 0;
+        }
         for (py = 0; py < p->h; py++)
             for (px = 0; px < p->w; px++) {
                 int sxp = flip ? p->w - 1 - px : px;            /* pixel within the unflipped sprite */
@@ -484,7 +507,7 @@ static void add_items(const Region *r, uint32_t list, int count, int telephones,
          * game is not showing it */
         near = x > -0x14 && x < 0x154 && y > -0x14 && y < ((!telephones && type >= 0x51) ? 0x120 : 0xF4);
         if (near) continue;
-        add_frame(telephones ? rd32(rd32(0x0AF03Cu)) : item_frame(type), x, y, 0, 0x8000, x0, y0, x1, y1);
+        add_frame(0, telephones ? rd32(rd32(0x0AF03Cu)) : item_frame(type), x, y, 0, 0x8000, x0, y0, x1, y1);
         sh[nsh].cls = (!telephones && type >= 0x51) ? 2 : 1;     /* (LOC_00014FFE, LOC_00022B7E: $2E) */
         sh[nsh].x = x;
         sh[nsh].y = y;
@@ -543,7 +566,7 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
         }
         if (z > 0xE0 || z < -0xE0) continue;
         if (ox_ < x0 - 96 || ox_ > x1 + 96 || oy_ < y0 - 96 || oy_ > y1 + 160) continue;
-        add_frame(fr, ox_, oy_, z, attr, x0, y0, x1, y1);
+        add_frame(o, fr, ox_, oy_, z, attr, x0, y0, x1, y1);
         if (rd8(o + 0x2E) && !(rd8(o + 0x4D) & 0x40)) {
             sh[nsh].cls = rd8(o + 0x2E);
             sh[nsh].x = ox_;
