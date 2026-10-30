@@ -96,7 +96,7 @@ Port changes so far (on by default):
 - **Clean screen transitions**: no flashes of half-built screens when the game changes scene
   (most visible in the original right after the elevator takes off).
 - **Pause menu**: Resume, Save Game, Quit to Menu, in the status bar with ToeJam's pointing hand.
-  Left/Right (or Up/Down) choose, Start selects, B backs out. Start, Start still just pauses and
+  Left/Right (or Up/Down) choose, Start selects, Escape (or a controller's Back button) backs out. Start, Start still just pauses and
   unpauses, and the original pause-screen button code still works.
 - **Saved games** (3 files, both players): saving remembers your presents, identified presents, stats
   and rocketship pieces; presents you picked up stay gone; loading puts you back at the start of that floor, stepping out of the

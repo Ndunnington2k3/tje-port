@@ -271,15 +271,8 @@ int menu_run(Menu *m, int title)
         if (p != prev) {
             uint32_t pressed = p & ~prev;
             prev = p;
-            if ((pressed & PAD_B) && m->b_is_back && m->item[m->sel].edit && m->action) {
-                if (m->action(m, MENU_BACK)) {
-                    result = -1;
-                    break;
-                }
-            } else if ((pressed & PAD_B) && m->b_is_back) {
-                result = -1;
-                break;
-            }
+            /* A, B, C and Start all choose, as on the game's own menus (a controller's
+             * A button is the Genesis B by default); "back" is Escape / Back only */
             if (pressed & (PAD_A | PAD_B | PAD_C | PAD_START)) {
                 if (!m->action || m->action(m, 0)) {
                     result = m->item[m->sel].value;

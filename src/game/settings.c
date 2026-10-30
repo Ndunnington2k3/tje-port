@@ -72,7 +72,7 @@ int settings_save(void)
     data_path(SETTINGS_FILE, path, sizeof path);
     f = fopen(path, "w");
     if (!f) return -1;
-    fprintf(f, "# ToeJam & Earl port settings (also changed from Options on the What screen)\n");
+    fprintf(f, "# ToeJam & Earl port settings (also changed from Options on the Who screen)\n");
     for (i = 0; i < sizeof option_list / sizeof option_list[0]; i++)
         fprintf(f, "%s = %d\n", option_list[i].name, *option_list[i].value);
     for (p = 0; p < 2; p++)

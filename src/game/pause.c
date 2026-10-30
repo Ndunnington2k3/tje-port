@@ -7,9 +7,10 @@
  * The PAUSE sign drops in exactly as in the original. The menu is drawn in the
  * status bar (the window plane at the bottom of the screen) with the HUD's own
  * font, and the bar is put back as it was when the game resumes.
- * Left/Right choose, Start selects, B goes back. Start on "resume" (where the
- * cursor starts) unpauses, so Start, Start still works as it always did, and
- * the original pause-screen button code still works too.
+ * Left/Right choose, Start selects, Escape (or a controller's Back) goes back.
+ * A, B and C do nothing here, so the original pause-screen button code still
+ * works. Start on "resume" (where the cursor starts) unpauses, so Start, Start
+ * still works as it always did.
  */
 #include "game.h"
 #include "save.h"
@@ -323,7 +324,7 @@ static uint32_t menu_input(void)
     p1 = pad(1);
     cheat(p0, p1);
     now = (menu_player ? p1 : p0) | ((p0 | p1) & PAD_START);
-    if ((g_pad[0] | g_pad[1]) & PAD_BACK) now |= PAD_B;     /* Escape backs out like B */
+    if ((g_pad[0] | g_pad[1]) & PAD_BACK) now |= PAD_BACK;  /* Escape / Back: back out */
     pressed = now & ~prev_buttons;
     prev_buttons = now;
     return pressed;
@@ -341,7 +342,7 @@ static int choose(Choice *ch, int sel)
         if (in & (PAD_LEFT | PAD_UP)) { sel = (sel + ch->count - 1) % ch->count; t = 0; play_sound(SND_MOVE); }
         if (in & (PAD_RIGHT | PAD_DOWN)) { sel = (sel + 1) % ch->count; t = 0; play_sound(SND_MOVE); }
         if (in & PAD_START) { choice_draw(ch, sel, 0); hand_on = 0; return sel; }
-        if (in & PAD_B) { choice_draw(ch, sel, 0); hand_on = 0; return -1; }
+        if (in & PAD_BACK) { choice_draw(ch, sel, 0); hand_on = 0; return -1; }
     }
 }
 
@@ -353,7 +354,7 @@ static void flash_message(const char *msg)
     bar_centre(0, msg);
     hand_on = 0;
     for (i = 0; i < 90; i++) {
-        if (menu_input() & (PAD_START | PAD_B)) break;
+        if (menu_input() & (PAD_START | PAD_BACK)) break;
     }
 }
 
@@ -372,7 +373,7 @@ static int yes_no(const char *question)
     return ask(question, &ch, 1) == 0;
 }
 
-/* Pick a file to save to; B backs out. */
+/* Pick a file to save to; Escape backs out. */
 static void save_menu(void)
 {
     int sel = 0;
@@ -503,7 +504,7 @@ void f_01DBD8_GamePaused(void)
 
     cheat_step = 0;
     menu_player = player;
-    prev_buttons = PAD_START | PAD_B;  /* Escape may still be held: it paused the game */
+    prev_buttons = PAD_START | PAD_BACK;  /* Escape may still be held: it paused the game */
     pause_menu();
 
     /* take the sign away and carry on */
