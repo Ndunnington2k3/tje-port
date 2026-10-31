@@ -129,6 +129,13 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
   Measured: frame-data positions vs the VDP's sprite table matched in 97% of object-frames before,
   99.9% after; one-frame drop-outs while walking across six floors went from 59 to 0.
   `TJE_GV_SYNC=file` logs, per frame, each object's frame-data position against the VDP's.
+- A floor item that the game turns into an object (within $14 px of its screen) gets no animation
+  frame until the game's next pass, a whole 30 fps step. On the original that happens just out of
+  sight; here the item vanished for two frames each time it crossed that band (the flicker the
+  user caught with F12 on the first island). Meanwhile the item is drawn from its record.
+- `--view-log` (PC and headless) logs objects and items missing for one or two frames and keeps the
+  last 120 frames (picture, RAM, VRAM); F12 on PC saves them (`tje_captureN.bin`), read with
+  `tools/viewcap.py`.
 - Test tools (tje_headless, wider `--window`): `TJE_GV_FLICKER=file` lists objects and items drawn,
   then missing for one frame, then drawn again; `TJE_GV_BLINK=file` lists sprite pixels that change
   for exactly one frame at the same world position (`TJE_GV_BLINKSAVE=prefix` saves the three

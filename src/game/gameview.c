@@ -548,8 +548,18 @@ static void add_items(const Region *r, uint32_t list, int count, int telephones,
         g_gv_item_y[rec] = (int16_t)ob16(a + 6) - r->cam_y;
         if ((int)ob8(a + 1) != r->level) continue;
         if (ob8(a + 2)) {                                              /* an object now */
-            if (g_gv_drawn_mask & (1ull << (ob8(a + 2) % 40))) g_gv_item_drawn[rec] = 2;
-            continue;
+            /* (drawn as that object, unless it has only just been made: the game
+             * gives a new object its first animation frame a pass later, which on
+             * its own screen happens out of sight, just past the edge, but here
+             * would make the item vanish for a moment: drawn from its record then) */
+            if (g_gv_drawn_mask & (1ull << (ob8(a + 2) % 40))) {
+                g_gv_item_drawn[rec] = 2;
+                continue;
+            }
+            {
+                uint32_t fo = ob32(OBJECTS + (uint32_t)(ob8(a + 2) % 40) * OBJECT_SIZE + 0x22);
+                if (fo >= 0x200 && fo < 0x400000) continue;              /* (shown by the game, or hidden by it) */
+            }
         }
         x = (int16_t)ob16(a + 4) - r->cam_x;
         y = (int16_t)ob16(a + 6) - r->cam_y + r->top;

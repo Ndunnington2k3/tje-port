@@ -49,8 +49,8 @@ static unsigned frame_no;
 static uint32_t *pic[3];
 static uint8_t *lay[3];
 static int pw[3], ph[3], cx[3], cy[3], ok[3];
-static unsigned long long hist[3];
-static uint8_t ih[3][98];
+static unsigned long long hist[4];
+static uint8_t ih[4][98];
 
 int viewdiag_active(void) { return log_file != NULL; }
 
@@ -160,21 +160,28 @@ static void find_dropouts(void)
             found = 1;
         }
     }
-    /* objects and items drawn, then not, then drawn again */
-    hist[2] = hist[1]; hist[1] = hist[0]; hist[0] = g_gv_drawn_mask;
-    memcpy(ih[2], ih[1], 98); memcpy(ih[1], ih[0], 98); memcpy(ih[0], g_gv_item_drawn, 98);
-    for (e = 0; e < 98; e++)
-        if (ih[0][e] && !ih[1][e] && ih[2][e]) {
-            fprintf(log_file, "frame %u: floor item %d missing for one frame (x %d y %d)\n", frame_no - 1, e,
+    /* objects and items drawn, then not for one or two frames (one step of the
+     * game's 30 frames a second), then drawn again */
+    memmove(&hist[1], &hist[0], sizeof hist[0] * 3);
+    hist[0] = g_gv_drawn_mask;
+    memmove(ih[1], ih[0], sizeof ih[0] * 3);
+    memcpy(ih[0], g_gv_item_drawn, 98);
+    for (e = 0; e < 98; e++) {
+        int gap = !ih[0][e] ? 0 : (!ih[1][e] && ih[2][e]) ? 1 : (!ih[1][e] && !ih[2][e] && ih[3][e]) ? 2 : 0;
+        if (gap) {
+            fprintf(log_file, "frame %u: floor item %d missing for %d frame(s) (x %d y %d)\n", frame_no - 1, e, gap,
                     g_gv_item_x[e], g_gv_item_y[e]);
             found = 1;
         }
+    }
     for (e = 0; e < 40; e++) {
         unsigned long long b = 1ull << e;
-        if ((hist[0] & b) && !(hist[1] & b) && (hist[2] & b)) {
+        int gap = !(hist[0] & b) ? 0 : (!(hist[1] & b) && (hist[2] & b)) ? 1 :
+                  (!(hist[1] & b) && !(hist[2] & b) && (hist[3] & b)) ? 2 : 0;
+        if (gap) {
             uint32_t o = 0xFFA25Au + (uint32_t)e * 0x80;
-            fprintf(log_file, "frame %u: object %d missing for one frame (x %d y %d, flags %02X, sprites %d, frame %06X)\n",
-                    frame_no - 1, e, (int16_t)rd16(o) - g_gv_cam_x, (int16_t)rd16(o + 2) - g_gv_cam_y,
+            fprintf(log_file, "frame %u: object %d missing for %d frame(s) (x %d y %d, flags %02X, sprites %d, frame %06X)\n",
+                    frame_no - 1, e, gap, (int16_t)rd16(o) - g_gv_cam_x, (int16_t)rd16(o + 2) - g_gv_cam_y,
                     rd8(o + 0x2F), rd8(o + 0x4A), rd32(o + 0x22));
             found = 1;
         }
