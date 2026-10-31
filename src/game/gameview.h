@@ -23,4 +23,7 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
 /* Keep the menus' starry sky (plane B as it is now) to go around the map. */
 void gameview_capture_stars(void);
 
+/* The game is handing its sprite table to the VDP (vdp_set_sat_dma_hook). */
+void gameview_sat_dma(void);
+
 #endif

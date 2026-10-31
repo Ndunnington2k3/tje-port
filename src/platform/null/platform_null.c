@@ -335,6 +335,11 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         gv_done:;
         }
     }
+    if (getenv("TJE_GV_SYNC")) {
+        extern FILE *g_gv_sync_log;
+        if (!g_gv_sync_log) g_gv_sync_log = fopen(getenv("TJE_GV_SYNC"), "w");
+        fprintf(g_gv_sync_log, "-- frame %u cam %d,%d new %d,%d\n", frame, (int16_t)rd16(0xFF8002u), (int16_t)rd16(0xFF8004u), (int16_t)rd16(0xFF8036u), (int16_t)rd16(0xFF8038u));
+    }
     if (getenv("TJE_GV_BLINK")) {
         /* pixels of the wider picture that change for exactly one frame (A == C != B),
          * compared at the same world position (the level does not move with the camera) */

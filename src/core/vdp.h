@@ -20,6 +20,10 @@ uint32_t vdp_read_hv(void);
 
 void vdp_render_line(int line);
 void vdp_set_line(int line);
+/* Called when the 68000 starts a DMA of the sprite table into VRAM (before it is
+ * copied). */
+void vdp_set_sat_dma_hook(void (*fn)(void));
+int vdp_current_line(void);
 void vdp_set_vblank(int on);
 void vdp_ack_vint(void);
 int vdp_vint_enabled(void);

@@ -109,6 +109,7 @@ int vdp_vint_enabled(void) { return (vdp_reg[1] & 0x20) != 0; }
 int vdp_hint_enabled(void) { return (vdp_reg[0] & 0x10) != 0; }
 int vdp_hint_reload(void) { return vdp_reg[10]; }
 void vdp_set_line(int line) { cur_line = line; }
+int vdp_current_line(void) { return cur_line; }
 void vdp_set_vblank(int on)
 {
     vblank_flag = on;
@@ -208,9 +209,15 @@ static uint32_t dma_length(void)
     return n ? n : 0x10000;
 }
 
+static void (*sat_dma_hook)(void);
+void vdp_set_sat_dma_hook(void (*fn)(void)) { sat_dma_hook = fn; }
+
 static void dma_68k(void)
 {
     uint32_t len = dma_length();
+    /* (the sprite table going to VRAM: let the port see the game's state as it
+     * is handed to the VDP) */
+    if (sat_dma_hook && (code & 0x0F) == 1 && addr == ((uint32_t)(vdp_reg[5] & 0x7F) << 9)) sat_dma_hook();
     /* The 68000 is frozen while the VDP copies from its memory. Bytes per scanline:
      * blanking (or display off) 205 in H40 / 167 in H32; active display 18 / 16. */
     {

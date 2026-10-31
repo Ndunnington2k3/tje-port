@@ -33,4 +33,5 @@ void options_apply(void)
     vdp_set_clean_transitions(g_options.clean_transitions);
     genesis_set_line_hook(g_options.native_view ? gameview_line : NULL);
     genesis_set_picture_source(g_options.native_view ? gameview_frame : NULL);
+    vdp_set_sat_dma_hook(g_options.native_view ? gameview_sat_dma : NULL);
 }

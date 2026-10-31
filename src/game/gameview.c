@@ -17,6 +17,7 @@
 #include "gfx/present.h"
 
 #include <string.h>
+#include <stdio.h>
 
 #define TOEJAM_CAMERA_XPOS  0xFF8002u   /* camera copies the planes were scrolled to */
 #define TOEJAM_CAMERA_YPOS  0xFF8004u
@@ -176,6 +177,35 @@ static void plane_row(uint8_t *buf, int off, int x_from, int x_to, int screen_y,
     }
 }
 
+/* ---- the game's state as the VDP shows it -------------------------------------
+ * The game runs at 30 frames a second: its main loop spends two video frames on
+ * one pass, and hands the VDP a new sprite table (DMA to VRAM, at VBlank) every
+ * other frame. In between, the objects in RAM are half updated (a new animation
+ * frame already set, sprites being reallocated, $4A briefly 0). So objects are
+ * read from a copy of RAM taken when the sprite table goes to the VDP: what is
+ * drawn from frame data then shows the same moment as the hardware sprites, and
+ * an object handed over between the two at the old screen edge does not jump or
+ * blink. (Live RAM when the game has not sent a sprite table for a while.) */
+
+static uint8_t ram_snap[0x10000];
+static int snap_age = 1000;          /* frames since the copy was taken */
+
+static inline uint32_t ob8(uint32_t a)
+{
+    if (a >= 0xE00000u && snap_age < 4) return ram_snap[a & 0xFFFFu];
+    return rd8(a);
+}
+static inline uint32_t ob16(uint32_t a)
+{
+    if (a >= 0xE00000u && snap_age < 4)
+        return ((uint32_t)ram_snap[a & 0xFFFFu] << 8) | ram_snap[(a + 1) & 0xFFFFu];
+    return rd16(a);
+}
+static inline uint32_t ob32(uint32_t a)
+{
+    return (ob16(a) << 16) | ob16(a + 2);
+}
+
 /* ---- sprites ----------------------------------------------------------------- */
 
 #define OBJECTS             0xFFA25Au   /* TOEJAMS_XPOS: 40 objects of $80 bytes */
@@ -197,11 +227,11 @@ static void find_object_sprites(void)
         uint32_t o = OBJECTS + (uint32_t)e * OBJECT_SIZE;
         uint32_t fr;
         int n;
-        if (!(rd8(o + 0x2F) & 1) || !(rd8(o + 0x2F) & 2)) continue;
-        fr = rd32(o + 0x22);
-        n = fr ? (int)rd8(fr) : 0;
-        for (i = 0; i < n && i < 12; i++) object_sprite[rd8(o + 0x30 + (uint32_t)i) % 80] = 1;
-        if (rd8(o + 0x48)) object_sprite[rd8(o + 0x48) % 80] = 1;   /* its shadow */
+        if (!(ob8(o + 0x2F) & 1) || !(ob8(o + 0x2F) & 2)) continue;
+        fr = ob32(o + 0x22);
+        n = fr ? (int)ob8(fr) : 0;
+        for (i = 0; i < n && i < 12; i++) object_sprite[ob8(o + 0x30 + (uint32_t)i) % 80] = 1;
+        if (ob8(o + 0x48)) object_sprite[ob8(o + 0x48) % 80] = 1;   /* its shadow */
     }
     object_sprite[0] = 0;
 }
@@ -269,7 +299,8 @@ uint8_t g_gv_item_drawn[98];          /* (tests) floor items drawn this frame (t
 int g_gv_item_x[98], g_gv_item_y[98];
 int g_gv_max_pieces;
 int g_gv_cam_x, g_gv_cam_y;   /* (tests) */
-uint8_t *g_gv_layer;           /* (tests) 1 where a sprite or piece shows */
+uint8_t *g_gv_layer;
+FILE *g_gv_sync_log;           /* (tests) */           /* (tests) 1 where a sprite or piece shows */
 static int npieces;
 int g_gameview_test_pieces;   /* tests: draw every object from its frame data, none from the sprite table */
 
@@ -284,16 +315,16 @@ static void unpack(uint32_t src, int flags, int tiles, uint8_t *out)
         for (pass = 0; pass < 4; pass++) {
             int left = tiles * 8, o = pass;
             while (left > 0) {
-                int b = (int8_t)rd8(src++), n, k;
+                int b = (int8_t)ob8(src++), n, k;
                 if (b < 0) {
                     uint8_t v = 0;
-                    if (b & 0x40) v = rd8(src++);
+                    if (b & 0x40) v = ob8(src++);
                     n = 64 - (b & 0x3F);
                     for (k = 0; k < n; k++, o += 4) if (o < total) out[o] = v;
                 } else if (b & 0x40) {
                     n = b & 0x1F;
                     if (b & 0x20) {
-                        uint8_t v = rd8(src++), v2 = (uint8_t)((v << 4) | (v >> 4));
+                        uint8_t v = ob8(src++), v2 = (uint8_t)((v << 4) | (v >> 4));
                         for (k = 0; k < n / 2; k++) {
                             if (o < total) out[o] = v;
                             o += 4;
@@ -306,7 +337,7 @@ static void unpack(uint32_t src, int flags, int tiles, uint8_t *out)
                     }
                 } else {
                     n = b;
-                    for (k = 0; k < n; k++, o += 4) { uint8_t v = rd8(src++); if (o < total) out[o] = v; }
+                    for (k = 0; k < n; k++, o += 4) { uint8_t v = ob8(src++); if (o < total) out[o] = v; }
                 }
                 left -= n;
                 if (n <= 0) break;
@@ -314,14 +345,14 @@ static void unpack(uint32_t src, int flags, int tiles, uint8_t *out)
         }
     } else if (flags & 0x40) {
         int k;
-        for (k = 0; k < total; k++) out[k] = rd8(src + (uint32_t)k);
+        for (k = 0; k < total; k++) out[k] = ob8(src + (uint32_t)k);
     } else {
         int left = total, o = 0;
         while (left > 0) {
-            int b = (int8_t)rd8(src++), n, k;
+            int b = (int8_t)ob8(src++), n, k;
             if (b < 0) {
                 uint8_t v = 0;
-                if (b & 0x40) v = rd8(src++);
+                if (b & 0x40) v = ob8(src++);
                 n = 64 - (b & 0x3F);
                 for (k = 0; k < n; k++, o++) if (o < total) out[o] = v;
             } else if (b & 0x40) {
@@ -329,7 +360,7 @@ static void unpack(uint32_t src, int flags, int tiles, uint8_t *out)
                 for (k = 0; k < n; k++, o++) if (o < total) out[o] = 0xFF;
             } else {
                 n = b;
-                for (k = 0; k < n; k++, o++) { uint8_t v = rd8(src++); if (o < total) out[o] = v; }
+                for (k = 0; k < n; k++, o++) { uint8_t v = ob8(src++); if (o < total) out[o] = v; }
             }
             left -= n;
             if (n <= 0) break;
@@ -341,8 +372,8 @@ static void unpack(uint32_t src, int flags, int tiles, uint8_t *out)
  * that passes it but has no sprites is one the game is deliberately not showing. */
 static int on_game_screen(uint32_t o, const Region *r)
 {
-    int dx = (int16_t)rd16(o) - r->cam_x, dy = (int16_t)rd16(o + 2) - r->cam_y;
-    int hw = rd8(o + 0x29), hh = rd8(o + 0x2A), z = (int16_t)rd16(o + 4);
+    int dx = (int16_t)ob16(o) - r->cam_x, dy = (int16_t)ob16(o + 2) - r->cam_y;
+    int hw = ob8(o + 0x29), hh = ob8(o + 0x2A), z = (int16_t)ob16(o + 4);
     int height = (r->bottom - r->top) >= VDP_HEIGHT ? 0xE0 : 0x70;
     return hw + dx >= 0 && dx - hw <= 0x140 && dy + 10 > 0 && dy - hh - z <= height;
 }
@@ -357,11 +388,11 @@ static void add_frame(uint32_t o, uint32_t fr, int x, int y, int z, int attr, in
     static uint8_t data[16 * 32];
     int n, i;
     if (fr < 0x200 || fr >= 0x400000) return;
-    n = rd8(fr);
+    n = ob8(fr);
     for (i = 0; i < n && i < 12 && npieces < MAX_PIECES; i++) {
         uint32_t pc = fr + 4 + (uint32_t)i * 10;
-        int cw = rd8(pc), ch = rd8(pc + 1), flags = rd8(pc + 5);
-        int dx = (int8_t)rd8(pc + ((attr & 0x0800) ? 4 : 2)), dy = (int8_t)rd8(pc + 3);
+        int cw = ob8(pc), ch = ob8(pc + 1), flags = ob8(pc + 5);
+        int dx = (int8_t)ob8(pc + ((attr & 0x0800) ? 4 : 2)), dy = (int8_t)ob8(pc + 3);
         int pal = (flags & 3) << 4, prio = (attr & 0x8000) ? PIX_PRIO : 0, flip = attr & 0x0800;
         Piece *p;
         int px, py;
@@ -372,11 +403,11 @@ static void add_frame(uint32_t o, uint32_t fr, int x, int y, int z, int attr, in
         p->w = cw * 8;
         p->h = ch * 8;
         if (p->x + p->w <= x0 || p->x >= x1 || p->y + p->h <= y0 || p->y >= y1) continue;
-        unpack(rd32(pc + 6), flags, cw * ch, data);
+        unpack(ob32(pc + 6), flags, cw * ch, data);
         /* in water (below ground level, players only): the rows under the
          * waterline are taken away, the first with a wavy edge; a piece wholly
          * under it is not drawn */
-        if (o && z < 0 && (int8_t)rd8(o + 0x5E) <= 1 && !(rd8(o + 0x55) & 0x20)) {
+        if (o && z < 0 && (int8_t)ob8(o + 0x5E) <= 1 && !(ob8(o + 0x55) & 0x20)) {
             int rows = ch * 8, cut = dy - 2 - z, c, r;
             if (cut >= 0) continue;
             if (cut + rows > 0) {
@@ -389,7 +420,7 @@ static void add_frame(uint32_t o, uint32_t fr, int x, int y, int z, int attr, in
             }
         }
         /* flashing: colour 15 dropped */
-        if (o && (rd8(o + 0x4D) & 0x20)) {
+        if (o && (ob8(o + 0x4D) & 0x20)) {
             int k;
             for (k = 0; k < cw * ch * 32; k++)
                 if (data[k] == 0xFF || data[k] == 0xF0 || data[k] == 0x0F) data[k] = 0;
@@ -416,11 +447,11 @@ static int frame_leaves_screen(uint32_t fr, int x, int y, int z, int attr, int b
 {
     int n, i;
     if (fr < 0x200 || fr >= 0x400000) return 0;
-    n = rd8(fr);
+    n = ob8(fr);
     for (i = 0; i < n && i < 12; i++) {
         uint32_t pc = fr + 4 + (uint32_t)i * 10;
-        int dx = (int8_t)rd8(pc + ((attr & 0x0800) ? 4 : 2)), dy = (int8_t)rd8(pc + 3);
-        int w = rd8(pc) * 8, h = rd8(pc + 1) * 8;
+        int dx = (int8_t)ob8(pc + ((attr & 0x0800) ? 4 : 2)), dy = (int8_t)ob8(pc + 3);
+        int w = ob8(pc) * 8, h = ob8(pc + 1) * 8;
         if (x + dx < 0 || x + dx + w > 320 || y + dy - z < 0 || y + dy - z + h > bottom) return 1;
     }
     return 0;
@@ -440,9 +471,9 @@ static void learn_shadows(void)
     int e;
     for (e = 0; e < NUM_OBJECTS; e++) {
         uint32_t o = OBJECTS + (uint32_t)e * OBJECT_SIZE;
-        int cls = rd8(o + 0x2E), slot = rd8(o + 0x48);
+        int cls = ob8(o + 0x2E), slot = ob8(o + 0x48);
         const uint8_t *sp;
-        if (!(rd8(o + 0x2F) & 2) || !slot || cls >= SHADOW_CLASSES) continue;
+        if (!(ob8(o + 0x2F) & 2) || !slot || cls >= SHADOW_CLASSES) continue;
         sp = &vdp_vram[(base + (uint32_t)(slot % 80) * 8) & 0xFFFF];
         if (!(((sp[4] << 8) | sp[5]) & 0x7FF)) continue;
         shadow_tpl[cls].known = 1;
@@ -491,10 +522,10 @@ static void add_shadow(int cls, int x, int y, int x0, int y0, int x1, int y1)
 static uint32_t item_frame(int type)
 {
     uint32_t list;
-    if (type < 0x40) list = 0x0AAF34u + (uint32_t)rd8(PRESENT_IDENTITIES + (uint32_t)type * 2) * 4;
+    if (type < 0x40) list = 0x0AAF34u + (uint32_t)ob8(PRESENT_IDENTITIES + (uint32_t)type * 2) * 4;
     else if (type < 0x51) list = 0x0AB616u + (uint32_t)(type - 0x40) * 4;
     else list = 0x0AF02Cu + (uint32_t)(type - 0x51) * 4;
-    return rd32(list);
+    return ob32(list);
 }
 
 static struct { int cls, x, y; } sh[NUM_OBJECTS + 100];
@@ -507,23 +538,23 @@ static void add_items(const Region *r, uint32_t list, int count, int telephones,
     uint32_t fr;
     for (i = 0; i < count && npieces < MAX_PIECES; i++) {
         uint32_t a = list + (uint32_t)i * 8;
-        int type = rd8(a), x, y, near;
+        int type = ob8(a), x, y, near;
         int rec = (list == LEVEL_ITEMS ? 0 : list == DROPPED_PRESENTS ? 64 : 96) + i;
         g_gv_item_drawn[rec] = 0;
-        if (telephones ? !rd8(a + 1) : type == 0xFF) continue;
-        g_gv_item_x[rec] = (int16_t)rd16(a + 4) - r->cam_x;
-        g_gv_item_y[rec] = (int16_t)rd16(a + 6) - r->cam_y;
-        if ((int)rd8(a + 1) != r->level) continue;
-        if (rd8(a + 2)) {                                              /* an object now */
-            if (g_gv_drawn_mask & (1ull << (rd8(a + 2) % 40))) g_gv_item_drawn[rec] = 2;
+        if (telephones ? !ob8(a + 1) : type == 0xFF) continue;
+        g_gv_item_x[rec] = (int16_t)ob16(a + 4) - r->cam_x;
+        g_gv_item_y[rec] = (int16_t)ob16(a + 6) - r->cam_y;
+        if ((int)ob8(a + 1) != r->level) continue;
+        if (ob8(a + 2)) {                                              /* an object now */
+            if (g_gv_drawn_mask & (1ull << (ob8(a + 2) % 40))) g_gv_item_drawn[rec] = 2;
             continue;
         }
-        x = (int16_t)rd16(a + 4) - r->cam_x;
-        y = (int16_t)rd16(a + 6) - r->cam_y + r->top;
+        x = (int16_t)ob16(a + 4) - r->cam_x;
+        y = (int16_t)ob16(a + 6) - r->cam_y + r->top;
         /* where the game would have made it an object: if it has none there, the
          * game is not showing it */
         near = x > -0x14 && x < 0x154 && y > -0x14 && y < ((!telephones && type >= 0x51) ? 0x120 : 0xF4);
-        fr = telephones ? rd32(rd32(0x0AF03Cu)) : item_frame(type);
+        fr = telephones ? ob32(ob32(0x0AF03Cu)) : item_frame(type);
         /* near the screen with no object: the game is not showing it, unless part
          * of it is outside the original screen (it may get its object a frame later,
          * or none if the game has run out) */
@@ -553,46 +584,68 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
     memset(listed, 0, sizeof listed);
     memset(sat_suppressed, 0, sizeof sat_suppressed);
     for (k = 0; k < 2; k++) {
-        uint32_t o = rd32(k ? 0xFFD93Cu : 0xFFD938u);
+        uint32_t o = ob32(k ? 0xFFD93Cu : 0xFFD938u);
         int guard = 0;
         while (o >= OBJECTS && o < OBJECTS + NUM_OBJECTS * OBJECT_SIZE && guard++ < NUM_OBJECTS) {
             int idx = (int)((o - OBJECTS) / OBJECT_SIZE);
             if (!listed[idx]) { listed[idx] = 1; order[norder++] = o; }
-            o = rd32(o + 0x5A);
+            o = ob32(o + 0x5A);
         }
     }
     for (e = 0; e < NUM_OBJECTS; e++)
         if (!listed[e]) order[norder++] = OBJECTS + (uint32_t)e * OBJECT_SIZE;
     learn_shadows();
+    if (g_gv_sync_log) {
+        /* (tests) where the VDP's sprite table (VRAM) puts each object's first
+         * sprite, against where its frame data in RAM would put it */
+        uint32_t base = (uint32_t)(vdp_reg[5] & 0x7E) << 9;
+        for (e = 0; e < NUM_OBJECTS; e++) {
+            uint32_t o = OBJECTS + (uint32_t)e * OBJECT_SIZE, fr = ob32(o + 0x22), pc;
+            int attr = (int)ob16(o + 0x2C), slot, ex, ey, vx, vy, mx, my;
+            const uint8_t *sp;
+            if (!(ob8(o + 0x2F) & 1) || !(ob8(o + 0x2F) & 2) || !ob8(o + 0x4A)) continue;
+            if (fr < 0x200 || fr >= 0x400000 || !ob8(fr)) continue;
+            slot = ob8(o + 0x30) % 80;
+            pc = fr + 4;
+            ex = (int16_t)ob16(o) - r->cam_x + (int8_t)ob8(pc + ((attr & 0x0800) ? 4 : 2));
+            ey = (int16_t)ob16(o + 2) - r->cam_y + (int8_t)ob8(pc + 3) - (int16_t)ob16(o + 4);
+            sp = &vdp_vram[(base + (uint32_t)slot * 8) & 0xFFFF];
+            vy = (((sp[0] << 8) | sp[1]) & 0x3FF) - 128;
+            vx = (((sp[6] << 8) | sp[7]) & 0x1FF) - 128;
+            mx = (int)(ob16(0xFFB65Au + (uint32_t)slot * 8 + 6) & 0x1FF) - 128;
+            my = (int)(ob16(0xFFB65Au + (uint32_t)slot * 8) & 0x3FF) - 128;
+            fprintf(g_gv_sync_log, "obj %d ram %d,%d vram %d %d ramsat %d %d\n", e, ex, ey, vx - ex, vy - ey, mx - ex, my - ey);
+        }
+    }
     nsh = 0;
     g_gv_drawn_mask = 0;
     npieces = 0;
     for (k = 0; k < norder && npieces < MAX_PIECES; k++) {
         uint32_t o = order[k], fr;
         int ox_, oy_, z, attr;
-        if (!(rd8(o + 0x2F) & 1)) continue;                /* exists */
-        if ((int)rd8(o + 0x4C) != r->level) continue;
-        if (rd8(o + 0x4D) & 0x40) continue;                /* hidden */
-        fr = rd32(o + 0x22);
-        attr = (int)rd16(o + 0x2C);
-        z = (int16_t)rd16(o + 4);
-        ox_ = (int16_t)rd16(o) - r->cam_x;
-        oy_ = (int16_t)rd16(o + 2) - r->cam_y + r->top;
-        if (rd8(o + 0x2F) & 2) {                           /* has sprites on camera 0 */
+        if (!(ob8(o + 0x2F) & 1)) continue;                /* exists */
+        if ((int)ob8(o + 0x4C) != r->level) continue;
+        if (ob8(o + 0x4D) & 0x40) continue;                /* hidden */
+        fr = ob32(o + 0x22);
+        attr = (int)ob16(o + 0x2C);
+        z = (int16_t)ob16(o + 4);
+        ox_ = (int16_t)ob16(o) - r->cam_x;
+        oy_ = (int16_t)ob16(o + 2) - r->cam_y + r->top;
+        if (ob8(o + 0x2F) & 2) {                           /* has sprites on camera 0 */
             int i, n;
             int leaves = frame_leaves_screen(fr, ox_, oy_, z, attr, game_bottom);
             /* no sprites yet: wholly inside, the game is not showing it; partly
              * outside, it has just come onto the game's screen and gets its sprites
              * a frame later (drawn, or it would blink at the old screen edge) */
-            if (!rd8(o + 0x4A) && (!leaves || g_gameview_test_pieces)) continue;
+            if (!ob8(o + 0x4A) && (!leaves || g_gameview_test_pieces)) continue;
             if (!g_gameview_test_pieces && !leaves) {
                 g_gv_drawn_mask |= 1ull << ((o - OBJECTS) / OBJECT_SIZE);   /* (drawn by its sprites) */
                 continue;
             }
             /* drawn from its frame data instead of its sprites */
-            n = (fr >= 0x200 && fr < 0x400000) ? rd8(fr) : 0;
-            for (i = 0; i < n && i < 12; i++) sat_suppressed[rd8(o + 0x30 + (uint32_t)i) % 80] = 1;
-            if (rd8(o + 0x48)) sat_suppressed[rd8(o + 0x48) % 80] = 1;     /* its shadow: drawn below */
+            n = (fr >= 0x200 && fr < 0x400000) ? ob8(fr) : 0;
+            for (i = 0; i < n && i < 12; i++) sat_suppressed[ob8(o + 0x30 + (uint32_t)i) % 80] = 1;
+            if (ob8(o + 0x48)) sat_suppressed[ob8(o + 0x48) % 80] = 1;     /* its shadow: drawn below */
             sat_suppressed[0] = 0;
         } else if (on_game_screen(o, r) && !frame_leaves_screen(fr, ox_, oy_, z, attr, game_bottom)) {
             /* wholly where the original screen shows gameplay, yet no sprites: the
@@ -607,8 +660,8 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
             add_frame(o, fr, ox_, oy_, z, attr, x0, y0, x1, y1);
             if (npieces > before) g_gv_drawn_mask |= 1ull << ((o - OBJECTS) / OBJECT_SIZE);
         }
-        if (rd8(o + 0x2E) && !(rd8(o + 0x4D) & 0x40)) {
-            sh[nsh].cls = rd8(o + 0x2E);
+        if (ob8(o + 0x2E) && !(ob8(o + 0x4D) & 0x40)) {
+            sh[nsh].cls = ob8(o + 0x2E);
             sh[nsh].x = ox_;
             sh[nsh].y = oy_;
             nsh++;
@@ -620,6 +673,12 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
     /* shadows behind everything (the game links them after the objects) */
     for (k = 0; k < nsh; k++) add_shadow(sh[k].cls, sh[k].x, sh[k].y, x0, y0, x1, y1);
     if (npieces > g_gv_max_pieces) g_gv_max_pieces = npieces;
+}
+
+void gameview_sat_dma(void)
+{
+    memcpy(ram_snap, g_ram, sizeof ram_snap);
+    snap_age = 0;
 }
 
 static void pieces_row(uint8_t *buf, int off, int x_from, int x_to, int y)
@@ -1105,6 +1164,7 @@ void gameview_line(int line)
     }
     if (line == 0) {
         int w, h;
+        if (snap_age < 1000) snap_age++;
         present_wanted_view(&w, &h);
         gameview_set_size(w, h);
         frame_ok = frame_setup();

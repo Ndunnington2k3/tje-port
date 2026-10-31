@@ -120,6 +120,15 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
   game's on-screen test passes ($2F bit 1 set, $4A still 0). Wholly inside, the original shows
   nothing for that frame too; partly outside, it is drawn from its frame data, or it would blink
   at the old screen edge for a frame each time it crosses it.
+- In step with the hardware sprites: the game runs at 30 frames a second. Its main loop spends two
+  video frames on one pass and sends the VDP a new sprite table every other frame (DMA at VBlank);
+  in between, the objects in RAM are half updated (next animation frame already set, sprites being
+  reallocated, $4A briefly 0). Objects and items are therefore read from a copy of RAM taken when
+  the sprite table goes to VRAM (`vdp_set_sat_dma_hook` -> `gameview_sat_dma`), so frame data and
+  hardware sprites always show the same moment (live RAM if no table was sent for 4 frames).
+  Measured: frame-data positions vs the VDP's sprite table matched in 97% of object-frames before,
+  99.9% after; one-frame drop-outs while walking across six floors went from 59 to 0.
+  `TJE_GV_SYNC=file` logs, per frame, each object's frame-data position against the VDP's.
 - Test tools (tje_headless, wider `--window`): `TJE_GV_FLICKER=file` lists objects and items drawn,
   then missing for one frame, then drawn again; `TJE_GV_BLINK=file` lists sprite pixels that change
   for exactly one frame at the same world position (`TJE_GV_BLINKSAVE=prefix` saves the three
