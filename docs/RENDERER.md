@@ -204,3 +204,42 @@ picture across its end, which changes the palette a frame before the screen goes
 3. Wider view (`view_layout_expand`), both halves when split.
 4. Status bar, minimap and LAN markers drawn natively.
 5. PSP (sceGu) and 3DS (citro3d) backends.
+
+## Split screen and per-player views (plan, Oct 31)
+
+Requirements (user): split screen at any aspect ratio; robust enough for one window per player;
+local play follows the game's cameras (one shared view while the game has both players on one
+screen, split when it splits); network play shows each player a view centred on themselves
+(drawing only, the game's logic unchanged); the game's own shared status bar; for network play a
+device draws only its own player's view. Split layout in one window: the original's (stacked).
+
+### How the game draws split screen (audit so far)
+
+- `VHBLANK_FLAG_1` ($FF8010) = split. ToeJam's half uses plane A at $A000 and his camera; at line
+  112 the H-interrupt (HBlankJSR) points plane A at $C000 (Earl's plane, streamed separately by
+  UpdateLandAroundPlayer) and sets the scroll to Earl's camera (V scroll minus $70); plane B scrolls
+  at half speed per half. Each half is 320x112; the status bar (window plane) is shared.
+- Objects have hardware sprites per camera: $30.. for camera 0, $3C.. for camera 1, flags $2F
+  bit 1 / bit 2; the on-screen test (LOC_0000BDB8) uses 112 lines when split. Earthling wake-up
+  (LoadInEarthlings) counts Earl's camera only when split.
+- Sprites that are no object's: written into the sprite table copy ($FFB65A) by the status bar and
+  present-list code (LOC_0000AA3A..LOC_0000B93C), ReducePresentTimer / LOC_00015956 (present
+  icons), LOC_0001FBE0 and LOC_0003B4A8, SetupPlayer, Process2FEntityBit0 and the object code.
+  Measured over random play: several kinds show up in the gameplay area too (text, signs), at
+  positions not tied to an object. Each has to be identified and reproduced per view.
+
+### Plan
+
+1. Audit (renderer parity): every writer of the sprite table and what it draws, in which view;
+   every split-screen difference (above); what the game draws per player that is not an object.
+2. A view renderer independent of the VDP's lines: `view_render(player, camera, size)` draws plane B
+   (with that view's parallax), the level from the floor layout, objects and items from their frame
+   data in the game's order (snapshot at the sprite-table DMA), shadows, effects, and the non-object
+   sprites from step 1 placed per view; the status bar from the window plane's tiles in VRAM.
+   Checked against the VDP: 1 player at 320x224, and each 320x112 half in split screen, pixel for
+   pixel (`--gvcheck`).
+3. Layouts: one view (1P, or 2P sharing a camera), two views stacked (split), two windows (one per
+   player; SDL second window), network mode (one view, own player). Per-player cameras for network
+   mode: the game's camera-follow rule run on a private camera per player (drawing only).
+4. Performance: draw only the views shown; skip the VDP's line rendering while the native views are
+   up (still checked in the tests).

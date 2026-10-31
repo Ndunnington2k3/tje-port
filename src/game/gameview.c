@@ -220,6 +220,7 @@ static inline uint32_t ob32(uint32_t a)
 
 /* Which hardware sprites belong to objects of the level (players, Earthlings...)
  * as opposed to the status bar and other screen furniture. */
+FILE *g_gv_sync_log;           /* (tests) */
 static uint8_t object_sprite[80];
 /* Hardware sprites not to draw: those of objects drawn from their frame data
  * instead (because part of them is where a hardware sprite cannot go). */
@@ -244,6 +245,19 @@ static void find_object_sprites(void)
         if (ob8(o + 0x48)) object_sprite[ob8(o + 0x48) % 80] = 1;   /* its shadow */
     }
     object_sprite[0] = 0;
+    if (g_gv_sync_log) {
+        /* (tests) hardware sprites in the gameplay area that are no object's */
+        uint32_t base = (uint32_t)(vdp_reg[5] & 0x7E) << 9;
+        int link = 0, count = 0;
+        do {
+            const uint8_t *sp = &vdp_vram[(base + (uint32_t)link * 8) & 0xFFFF];
+            int sy = (((sp[0] << 8) | sp[1]) & 0x3FF) - 128, sx = (((sp[6] << 8) | sp[7]) & 0x1FF) - 128;
+            int idx = link;
+            link = sp[3] & 0x7F;
+            if (!object_sprite[idx % 80] && idx && sy > -32 && sy < 224 && sx > -32 && sx < 320)
+                fprintf(g_gv_sync_log, "nonobj %d at %d,%d size %X tile %04X\n", idx, sx, sy, sp[2], (sp[4] << 8) | sp[5]);
+        } while (link && ++count < 80);
+    }
 }
 
 /* One row of the sprite table, as the VDP draws it (earlier sprites in the link
