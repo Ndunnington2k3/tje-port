@@ -26,4 +26,12 @@ void gameview_capture_stars(void);
 /* The game is handing its sprite table to the VDP (vdp_set_sat_dma_hook). */
 void gameview_sat_dma(void);
 
+/* One player's view (0 ToeJam, 1 Earl) drawn from game memory at the end of a
+ * frame: w x h pixels around the original screen whose top-left is world
+ * (cam_x, cam_y) and which is screen_h high (224, or 112 for a split half);
+ * game_cam: 0/1 when that is the game's camera 0/1, -1 for a camera of our own.
+ * band: draw the middle band of sprites (hint box). Status bar not included. */
+int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int screen_h,
+                         uint32_t *out, int w, int h, int pitch, int band);
+
 #endif

@@ -57,6 +57,21 @@ static uint32_t edge_cell(uint32_t h, int sy, int sx)
     return rd16(EDGE_CELLS + ((h - 1) << 8) + (uint32_t)sy * 32 + (uint32_t)sx * 2);
 }
 
+/* The floor layouts as they were at the top of the frame (copied then): the
+ * per-player views are drawn at the end of the frame, by when the game may have
+ * changed them (falling to another floor). */
+static uint8_t layout_copy[2][19 * 26 * 2];
+static int layout_copy_on;
+
+static uint32_t layout_word(uint32_t tiles, uint32_t off)
+{
+    if (layout_copy_on && (tiles == TOEJAM_LEVEL_TILES || tiles == EARL_LEVEL_TILES) && off + 1 < sizeof layout_copy[0]) {
+        const uint8_t *c = layout_copy[tiles == EARL_LEVEL_TILES];
+        return ((uint32_t)c[off] << 8) | c[off + 1];
+    }
+    return rd16(tiles + off);
+}
+
 /* The plane cell at cell (cx, cy) of a floor, as the game's plane streamers
  * (LOC_000016D2, LOC_00001BA8) would write it, for any position. */
 static uint32_t level_cell(uint32_t tiles, int level, int cx, int cy)
@@ -68,7 +83,7 @@ static uint32_t level_cell(uint32_t tiles, int level, int cx, int cy)
         if (level == 1 || level == FINAL_LEVEL) return attr | block_cell(SPACE_BLOCK, sy, sx);
         return attr;
     }
-    word = rd16(tiles + (uint32_t)((by - 1) * 19 + (bx - 1)) * 2);
+    word = layout_word(tiles, (uint32_t)((by - 1) * 19 + (bx - 1)) * 2);
     h = (word & 0x1F00u) >> 8;
     if (h) t = edge_cell(h, sy, sx);
     if (!t) t = block_cell(word & 0xFF, sy, sx);
@@ -230,6 +245,8 @@ static uint8_t sat_suppressed[80];
 #define RANK_SHADOW  10000       /* shadows: behind every object */
 static int cur_rank;                  /* rank of the pieces being added */
 static int cur_cam;                   /* which of the game's cameras the view is drawn for (0, 1) */
+static int cur_ui;                    /* the pieces being added are the present list's own icons */
+static int view_top_window;           /* rows of the window plane from the top (present list) in the view being drawn */
 #define CAM_BIT    (cur_cam ? 4 : 2)          /* $2F: has sprites on this camera */
 #define CAM_SLOTS  (cur_cam ? 0x3Cu : 0x30u)  /* its hardware sprites on this camera */
 #define CAM_SHADOW (cur_cam ? 0x49u : 0x48u)  /* its shadow sprite on this camera */
@@ -335,6 +352,7 @@ typedef struct {
     int x, y, w, h;          /* original-screen position and size in pixels */
     int rank;                /* drawing order: lower in front (the game's order) */
     int cy0, cy1;            /* rows it may cover (its half of a split screen) */
+    int ui;                  /* drawn over the present list too (the list's own icons) */
     uint8_t px[PIECE_MAX_PX];
 } Piece;
 
@@ -446,6 +464,7 @@ static void add_frame(uint32_t o, uint32_t fr, int x, int y, int z, int attr, in
         p->rank = cur_rank;
         p->cy0 = clip_top;
         p->cy1 = clip_bottom;
+        p->ui = cur_ui;
         p->x = x + dx;
         p->y = y + dy - z;
         p->w = cw * 8;
@@ -573,6 +592,7 @@ static void add_shadow(int cls, int x, int y, int x0, int y0, int x1, int y1, in
     p->rank = RANK_SHADOW;
     p->cy0 = clip_top;
     p->cy1 = clip_bottom;
+    p->ui = 0;
     p->w = hs * 8;
     p->h = vs * 8;
     p->x = x - (hs * 4);
@@ -977,6 +997,8 @@ static void pieces_row(uint8_t *buf, int off, int x_from, int x_to, int y)
         src = p->px + (y - p->y) * p->w;
         for (x = 0; x < p->w; x++) {
             int sx = p->x + x;
+            /* (rows of the present list: the game cuts the other sprites there) */
+            if (y >= 0 && y < view_top_window && sx >= 0 && sx < 320 && !p->ui) continue;
             /* (in front of a hardware sprite of an object further back) */
             if (sx >= x_from && sx < x_to && (src[x] & PIX_OPAQUE) &&
                 (!(buf[sx + off] & PIX_OPAQUE) || p->rank < row_rank[sx + off])) {
@@ -996,7 +1018,10 @@ static int hud_end;   /* the line after the status bar's last line (bottom windo
 int g_gameview_extend_screen;
 static int last_ok, last_w, last_h;
 static int display_on_at_top;   /* the display was on at the top of this frame */
+int g_gv_win_top_seen;          /* (tests) the window was at the top on some line of this frame */
 int g_gv_kept;                  /* (tests) this frame repeats the last picture (clean transitions) */
+int g_gv_use_views = 1;         /* draw wider gameplay pictures with the per-player views */
+static void render_views_picture(void);
 extern int g_in_game;   /* the last picture made here, kept while the VDP is frozen */
 static int window_row_filler(int row);
 static uint8_t band_row[GAMEVIEW_MAX_H];  /* picture rows holding the status bar / present list */
@@ -1016,6 +1041,7 @@ void gameview_set_size(int w, int h)
 
 /* At line 0: is the screen showing gameplay, and where are the cameras? */
 static int frame_was_gameplay;   /* the last frame was gameplay */
+static int layout_switched;      /* the floor layout became another floor's while plane A still shows this one */
 static int frame_setup_checks(void);
 
 static int frame_setup(void)
@@ -1053,6 +1079,13 @@ static int frame_setup_checks(void)
         }
     }
 
+    {
+        int i;
+        for (i = 0; i < (int)sizeof layout_copy[0]; i++) {
+            layout_copy[0][i] = (uint8_t)rd8(TOEJAM_LEVEL_TILES + (uint32_t)i);
+            layout_copy[1][i] = (uint8_t)rd8(EARL_LEVEL_TILES + (uint32_t)i);
+        }
+    }
     region[0].cam_x = (int16_t)rd16(TOEJAM_CAMERA_XPOS);
     region[0].cam_y = (int16_t)rd16(TOEJAM_CAMERA_YPOS);
     g_gv_cam_x = region[0].cam_x;
@@ -1069,9 +1102,9 @@ static int frame_setup_checks(void)
         region[1].tiles = EARL_LEVEL_TILES;
         region[1].level = rd8(EARLS_LEVEL);
         nregions = 2;
-        /* split screen keeps the original size for now */
-        pic_w = 320;
-        pic_h = VDP_HEIGHT;
+        /* (wider: drawn as two per-player views at the end of the frame) */
+        pic_w = want_w;
+        pic_h = want_h;
     } else {
         region[0].bottom = VDP_HEIGHT;
         nregions = 1;
@@ -1089,11 +1122,23 @@ static int frame_setup_checks(void)
         last_x = region[0].cam_x;
         last_y = region[0].cam_y;
         last_level = region[0].level;
+        /* How much of the floor layout changed since the last frame? A few blocks:
+         * ground caving in. Many: the layout of another floor already (falling),
+         * while the screen still shows this one. */
+        static uint8_t prev_layout[19 * 26 * 2];
+        static int have_prev;
+        int changed = 0, i;
+        for (i = 0; i < (int)sizeof prev_layout; i += 2)
+            if (rd16(region[0].tiles + (uint32_t)i) != (uint32_t)((prev_layout[i] << 8) | prev_layout[i + 1])) changed++;
+        for (i = 0; i < (int)sizeof prev_layout; i++) prev_layout[i] = (uint8_t)rd8(region[0].tiles + (uint32_t)i);
+        if (have_prev && changed > 24) layout_switched = 1;
+        have_prev = 1;
         if (nregions == 1 && !plane_shows_level(&region[0], win_from, win_to)) {
             /* (a few blocks changed, not a different floor altogether) */
-            if (!same_place || plane_match < 60 || ++grace > 60) { g_gameview_reason = 5; return 0; }
+            if (!same_place || plane_match < 60 || layout_switched || ++grace > 60) { g_gameview_reason = 5; return 0; }
         } else {
             grace = 0;
+            layout_switched = 0;
         }
     }
     /* the status bar's last row: filler rows under it show the level instead */
@@ -1181,6 +1226,10 @@ static int window_row_filler(int row)
 /* A window line (status bar, present list) as the VDP drew it, kept at the top
  * or bottom edge of the picture, centred. */
 static int holding;   /* frame_ok 4: the outside kept from the last gameplay frame */
+/* The present list's lines as the VDP drew them this frame: the game reuses
+ * sprite-table entries down the list (its icons), so they are only right line by
+ * line. */
+static uint32_t top_window_lines[VDP_HEIGHT][320];
 static int after_gameplay;   /* gameplay was on screen, and the display has not been off since */
 
 static void draw_band(int line)
@@ -1521,6 +1570,7 @@ void gameview_line(int line)
     if (line == 0) {
         int w, h;
         display_on_at_top = (vdp_reg[1] & 0x40) != 0;
+        g_gv_win_top_seen = 0;
         if (snap_age < 1000) snap_age++;
         g_gv_snap_age = snap_age;
         present_wanted_view(&w, &h);
@@ -1625,9 +1675,12 @@ void gameview_line(int line)
      * present list opens and closes) */
     wv = (vdp_reg[18] & 0x1F) * 8;
     in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;
+    if (!(vdp_reg[18] & 0x80) && wv) g_gv_win_top_seen = 1;
     /* (in a wider picture, filler rows of the window are not kept: level there) */
     if (in_window && (pic_w != 320 || pic_h != VDP_HEIGHT) && window_row_filler(line / 8)) in_window = 0;
     if (in_window) draw_band(line);
+    if (in_window && !(vdp_reg[18] & 0x80) && line < VDP_HEIGHT)
+        memcpy(top_window_lines[line], vdp_framebuffer() + (size_t)line * VDP_FB_PITCH, sizeof top_window_lines[0]);
     if (pic_w == 320 && pic_h == VDP_HEIGHT) {
         if (!in_window) draw_row(line, line, 1);
     } else {
@@ -1675,6 +1728,10 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
         return 0;
     }
     g_gv_gameplay = 1;
+    /* wider than the original: the per-player views (the lines drawn during the
+     * frame are only kept for the original size, where they are checked against
+     * the VDP) */
+    if (g_gv_use_views && (pic_w != 320 || pic_h != VDP_HEIGHT)) render_views_picture();
     last_ok = 1;
     last_w = pic_w;
     last_h = pic_h;
@@ -1683,4 +1740,451 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
     *height = pic_h;
     *pitch = GAMEVIEW_MAX_W;
     return 1;
+}
+
+/* ==== Per-player views ==========================================================
+ * One player's view drawn at the end of a frame, at any size, around any camera,
+ * from game memory only (the snapshot taken when the sprite table went to the VDP,
+ * VRAM graphics and planes, the floor layout and the ROM): no use of the VDP's
+ * lines. Split screen, two windows and network play draw one of these per
+ * player. (docs/RENDERER.md, "Per-player views".) */
+
+/* The game's own cameras this frame (as its planes were scrolled to). */
+static struct { int on, cam_x, cam_y, h, level; } gcam[2];
+int g_gv_view_strict;   /* (tests) draw only what the game shows on its cameras */
+
+static void views_setup_cameras(void)
+{
+    int split = rd8(SPLIT_SCREEN) != 0;
+    gcam[0].on = 1;
+    gcam[0].cam_x = (int16_t)rd16(TOEJAM_CAMERA_XPOS);
+    gcam[0].cam_y = (int16_t)rd16(TOEJAM_CAMERA_YPOS);
+    gcam[0].h = split ? VDP_HEIGHT / 2 : VDP_HEIGHT;
+    gcam[0].level = rd8(TOEJAMS_LEVEL);
+    gcam[1].on = split;
+    gcam[1].cam_x = (int16_t)rd16(EARL_CAMERA_XPOS);
+    gcam[1].cam_y = (int16_t)rd16(EARL_CAMERA_YPOS);
+    gcam[1].h = VDP_HEIGHT / 2;
+    gcam[1].level = rd8(EARLS_LEVEL);
+}
+
+/* Does the game show this object on camera c (it has linked hardware sprites there)? */
+static int shown_on(uint32_t o, int c)
+{
+    if (!gcam[c].on || !(ob8(o + 0x2F) & (c ? 4 : 2))) return 0;
+    if (ob8(o + 0x4A)) return 1;
+    return !c && sat_linked[ob8(o + 0x30) % 80];
+}
+
+/* Is the object wholly where camera c's original screen shows gameplay, yet without
+ * sprites there (the game is not showing it)? */
+static int hidden_by_game(uint32_t o, uint32_t fr, int c, int attr, int z)
+{
+    Region r;
+    int x, y, bottom;
+    if (!gcam[c].on || (int)ob8(o + 0x4C) != gcam[c].level) return 0;
+    r.top = 0;
+    r.bottom = gcam[c].h;
+    r.cam_x = gcam[c].cam_x;
+    r.cam_y = gcam[c].cam_y;
+    if (!on_game_screen(o, &r)) return 0;
+    x = (int16_t)ob16(o) - r.cam_x;
+    y = (int16_t)ob16(o + 2) - r.cam_y;
+    bottom = gcam[c].h == VDP_HEIGHT ? (win_from > 0 ? win_from : VDP_HEIGHT) : gcam[c].h;
+    return !frame_leaves_screen(fr, x, y, z, attr, bottom);
+}
+
+/* Fill the draw list for a view: everything on its floor in the picture area
+ * x0..x1, y0..y1 (coordinates of its original screen, whose top-left is at world
+ * (cam_x, cam_y)). */
+static void view_collect(int level, int cam_x, int cam_y, int x0, int y0, int x1, int y1)
+{
+    uint32_t order[NUM_OBJECTS];
+    uint8_t listed[NUM_OBJECTS];
+    int e, k, norder = 0, list;
+    memset(listed, 0, sizeof listed);
+    memset(in_main_list, 0, sizeof in_main_list);
+    for (k = 0; k < 2; k++) {
+        uint32_t o = ob32(k ? 0xFFD93Cu : 0xFFD938u);
+        int guard = 0;
+        while (o >= OBJECTS && o < OBJECTS + NUM_OBJECTS * OBJECT_SIZE && guard++ < NUM_OBJECTS) {
+            int idx = (int)((o - OBJECTS) / OBJECT_SIZE);
+            if (!listed[idx]) { listed[idx] = 1; order[norder++] = o; in_main_list[idx] = (uint8_t)(k == 0); }
+            o = ob32(o + 0x5A);
+        }
+    }
+    for (e = 0; e < NUM_OBJECTS; e++)
+        if (!listed[e]) order[norder++] = OBJECTS + (uint32_t)e * OBJECT_SIZE;
+    learn_shadows();
+    {
+        int link = 0, count = 0;
+        memset(sat_linked, 0, sizeof sat_linked);
+        do {
+            link = ob8(0xFFB65Au + (uint32_t)link * 8 + 3) & 0x7F;
+            if (link && link < 80) sat_linked[link] = 1;
+        } while (link && link < 80 && ++count < 80);
+    }
+    ndraws = 0;
+    nsh = 0;
+    npieces = 0;
+    clip_top = -(1 << 20);
+    clip_bottom = 1 << 20;
+    for (k = 0; k < norder; k++) {
+        uint32_t o = order[k], fr;
+        int ox_, oy_, z, attr, c, cam = -1;
+        int group = !in_main_list[(o - OBJECTS) / OBJECT_SIZE] ? 2 : (ob8(o + 0x2F) & 0x80) ? 1 : 0;
+        Draw *d;
+        if (!(ob8(o + 0x2F) & 1)) continue;
+        if ((int)ob8(o + 0x4C) != level) continue;
+        if (ob8(o + 0x4D) & 0x40) continue;
+        if (player_blinked_out(o)) continue;
+        fr = ob32(o + 0x22);
+        attr = (int)ob16(o + 0x2C);
+        z = (int16_t)ob16(o + 4);
+        ox_ = (int16_t)ob16(o) - cam_x;
+        oy_ = (int16_t)ob16(o + 2) - cam_y;
+        if ((ob8(o + 0x4D) & 0x08) && (int8_t)ob8(o + 0x56) >= 0) {
+            uint32_t par = OBJECTS + (uint32_t)(ob8(o + 0x56) % NUM_OBJECTS) * OBJECT_SIZE;
+            ox_ = (int16_t)ob16(par) + (int8_t)ob8(o + 0x57) - cam_x;
+            oy_ = (int16_t)ob16(par + 2) + (int8_t)ob8(o + 0x58) - cam_y;
+            z = (int16_t)ob16(par + 4) + (int8_t)ob8(o + 0x59);
+        }
+        for (c = 0; c < 2; c++) if (shown_on(o, c)) { cam = c; break; }
+        if (cam < 0 && g_gv_view_strict) continue;    /* (tests: only what the game shows) */
+        if (cam < 0) {
+            int hidden = 0;
+            for (c = 0; c < 2; c++) if (hidden_by_game(o, fr, c, attr, z)) hidden = 1;
+            if (hidden) continue;
+        }
+        if (z > 0xE0 || z < -0xE0) fr = 0;
+        if (ox_ < x0 - 96 || ox_ > x1 + 96 || oy_ < y0 - 96 || oy_ > y1 + 160) continue;
+        queue_draw(o, fr, ox_, oy_, z, attr, group, (int16_t)ob16(o + 2), -1,
+                   !(ob8(o + 0x2F) & 0x40) ? 0 : (cam >= 0 && !ob8(o + (cam ? 0x49u : 0x48u))) ? 0 : ob8(o + 0x2E));
+        d = &draws[ndraws - 1];
+        d->sat = cam;                 /* (here: which camera's graphics, -1 = ROM) */
+    }
+    /* floor items not (yet) objects */
+    for (list = 0; list < 3; list++) {
+        uint32_t base = list == 0 ? LEVEL_ITEMS : list == 1 ? DROPPED_PRESENTS : TELEPHONES;
+        int count = list == 0 ? 64 : list == 1 ? 32 : 2, i;
+        for (i = 0; i < count; i++) {
+            uint32_t a = base + (uint32_t)i * 8, fr;
+            int type = ob8(a), x, y, skip = 0, tel = list == 2, c;
+            if (tel ? !ob8(a + 1) : type == 0xFF) continue;
+            if ((int)ob8(a + 1) != level) continue;
+            if (ob8(a + 2)) {
+                uint32_t fo = ob32(OBJECTS + (uint32_t)(ob8(a + 2) % 40) * OBJECT_SIZE + 0x22);
+                if (fo >= 0x200 && fo < 0x400000) continue;     /* (drawn as its object) */
+            }
+            fr = tel ? ob32(ob32(0x0AF03Cu)) : item_frame(type);
+            for (c = 0; c < 2; c++) {
+                int gx, gy, bottom;
+                if (!gcam[c].on || gcam[c].level != level) continue;
+                gx = (int16_t)ob16(a + 4) - gcam[c].cam_x;
+                gy = (int16_t)ob16(a + 6) - gcam[c].cam_y;
+                bottom = gcam[c].h == VDP_HEIGHT ? (win_from > 0 ? win_from : VDP_HEIGHT) : gcam[c].h;
+                if (gx > -0x14 && gx < 0x154 && gy > -0x14 && gy < ((!tel && type >= 0x51) ? 0x120 : 0xF4) &&
+                    !frame_leaves_screen(fr, gx, gy, 0, 0x8000, bottom))
+                    skip = 1;                                   /* (near the game's screen: its object or nothing) */
+            }
+            if (skip || g_gv_view_strict) continue;
+            x = (int16_t)ob16(a + 4) - cam_x;
+            y = (int16_t)ob16(a + 6) - cam_y;
+            if (x < x0 - 96 || x > x1 + 96 || y < y0 - 96 || y > y1 + 160) continue;
+            queue_draw(0, fr, x, y, 0, 0x8000, (!tel && type >= 0x40 && type < 0x51) ? 1 : 0, (int16_t)ob16(a + 6), -1, 0);
+            draws[ndraws - 1].sat = -1;
+        }
+    }
+    qsort(draws, (size_t)ndraws, sizeof draws[0], draw_cmp);
+    for (k = 0; k < ndraws && npieces < MAX_PIECES; k++) {
+        const Draw *d = &draws[k];
+        cur_rank = k;
+        cur_cam = d->sat >= 0 ? d->sat : 0;
+        cur_ui = d->group == 2;
+        add_frame(d->o, d->fr, d->x, d->y, d->z, d->attr, x0, y0, x1, y1);
+        if (d->shadow && nsh < (int)(sizeof sh / sizeof sh[0])) {
+            sh[nsh].cls = d->shadow;
+            sh[nsh].x = d->x;
+            sh[nsh].y = d->y;
+            sh[nsh].size = -1;
+            if (d->sat >= 0 && ob8(d->o + (d->sat ? 0x49u : 0x48u))) {
+                uint32_t ent = 0xFFB65Au + (uint32_t)(ob8(d->o + (d->sat ? 0x49u : 0x48u)) % 80) * 8;
+                int ex = (int)(ob16(ent + 6) & 0x1FF) - 128, ey = (int)(ob16(ent) & 0x3FF) - 128;
+                int hs = ((ob8(ent + 2) >> 2) & 3) + 1;
+                sh[nsh].size = ob8(ent + 2);
+                sh[nsh].attr = ob16(ent + 4);
+                if (ex > -128 && ey > -128) {
+                    sh[nsh].x = ex + hs * 4 + (d->x - game_screen_x(d->o));
+                    sh[nsh].y = ey + 4 + (d->y - game_screen_y(d->o)) - (d->sat ? 0x70 : 0);
+                }
+            }
+            nsh++;
+        }
+    }
+    cur_ui = 0;
+    for (k = 0; k < nsh; k++) add_shadow(sh[k].cls, sh[k].x, sh[k].y, x0, y0, x1, y1, sh[k].size, sh[k].attr);
+    cur_cam = 0;
+}
+
+/* The fixed band of sprites across the middle of the screen (entries 1-10: the
+ * hint/message box; the divider in split screen), as the game last sent them,
+ * added to the pieces in front, for a view whose original screen is 224 high. */
+static void view_screen_sprites(int e_from, int e_to, int top, int h, int x0, int y0, int x1, int y1)
+{
+    /* (from the table in VRAM: the game writes these entries there directly) */
+    uint32_t base = (uint32_t)(vdp_reg[5] & 0x7E) << 9;
+    uint8_t linked[80];
+    int e, link = 0, count = 0;
+    memset(linked, 0, sizeof linked);
+    do {
+        link = vdp_vram[(base + (uint32_t)link * 8 + 3) & 0xFFFF] & 0x7F;
+        if (link && link < 80) linked[link] = 1;
+    } while (link && link < 80 && ++count < 80);
+    for (e = e_from; e <= e_to && npieces < MAX_PIECES; e++) {
+        const uint8_t *en = &vdp_vram[(base + (uint32_t)e * 8) & 0xFFFF];
+        int sy = (((en[0] << 8) | en[1]) & 0x3FF) - 128, sx = (((en[6] << 8) | en[7]) & 0x1FF) - 128;
+        int size = en[2], attr = (en[4] << 8) | en[5];
+        int hs = ((size >> 2) & 3) + 1, vs = (size & 3) + 1, py, c, px;
+        Piece *p;
+        if (e_from == 1 && !linked[e]) continue;
+        if (sy < top || sy >= top + h || sy <= -120) continue;
+        sy -= top;
+        p = &pieces[npieces];
+        p->rank = RANK_FRONT;
+        p->cy0 = -(1 << 20);
+        p->cy1 = 1 << 20;
+        p->ui = e >= 11;
+        p->x = sx;
+        p->y = sy;
+        p->w = hs * 8;
+        p->h = vs * 8;
+        if (p->x + p->w <= x0 || p->x >= x1 || p->y + p->h <= y0 || p->y >= y1) continue;
+        for (py = 0; py < p->h; py++) {
+            int row = (attr & 0x1000) ? p->h - 1 - py : py;
+            for (c = 0; c < hs; c++) {
+                int colx = (attr & 0x0800) ? (hs - 1 - c) : c;
+                uint32_t tile = ((uint32_t)attr & 0x7FF) + (uint32_t)(colx * vs + (row >> 3));
+                uint8_t t8[8];
+                tile_row(t8, (((uint32_t)attr & 0xF800) & ~0x1000u) | (tile & 0x7FF), row & 7);
+                for (px = 0; px < 8; px++) p->px[py * p->w + c * 8 + px] = (t8[px] & PIX_OPAQUE) ? t8[px] : 0;
+            }
+        }
+        npieces++;
+    }
+}
+
+/* The fixed band of sprites across the middle (entries 1-10: the hint/message box)
+ * for a one-player view. */
+static void view_band(int x0, int y0, int x1, int y1)
+{
+    view_screen_sprites(1, 10, -32, VDP_HEIGHT + 32, x0, y0, x1, y1);
+}
+
+/* In split screen the game puts each player's level number and life bar at the
+ * top of that player's half (status-bar entries 11-22): part of the view. */
+static void view_half_hud(int top, int x0, int y0, int x1, int y1)
+{
+    int first = npieces, i;
+    view_screen_sprites(11, 22, top, VDP_HEIGHT / 2, x0, y0, x1, y1);
+    /* (kept in the view's top corners: left half of the original screen to the
+     * left edge, right half to the right edge; x0 = -(the view's margin)) */
+    for (i = first; i < npieces; i++) {
+        pieces[i].x += pieces[i].x < 160 ? x0 : -x0;
+        pieces[i].y += y0;
+        pieces[i].ui = 1;
+    }
+}
+
+/* Plane B (the backdrop) for a view whose original screen's top-left is world
+ * (cam_x, cam_y): it scrolls at half speed (as VBlank / HBlankJSR set it). */
+static void view_plane_b_row(uint8_t *buf, int off, int x_from, int x_to, int screen_y, int cam_x, int cam_y)
+{
+    static const int psz[4] = {32, 64, 32, 128};
+    int pw = psz[vdp_reg[16] & 3], ph = psz[(vdp_reg[16] >> 4) & 3];
+    uint32_t base = (uint32_t)(vdp_reg[4] & 7) << 13;
+    int hs = -(cam_x >= 0 ? cam_x >> 1 : -((-cam_x) >> 1));
+    int vs = cam_y >= 0 ? cam_y >> 1 : -((-cam_y) >> 1);
+    int y = (screen_y + vs) & (ph * 8 - 1), x;
+    for (x = x_from; x < x_to; x++) {
+        int px = (x - hs) & (pw * 8 - 1);
+        uint32_t ea = (base + (uint32_t)((y >> 3) * pw + (px >> 3)) * 2) & 0xFFFF;
+        uint8_t t8[8];
+        if (x == x_from || (px & 7) == 0) tile_row(t8, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1], y & 7);
+        buf[x + off] = t8[px & 7];
+    }
+}
+
+/* Plane A (the level) for a view: the game's own plane in VRAM where it holds this
+ * camera's screen (it draws changed ground there a few frames after changing the
+ * layout), the floor layout everywhere else. */
+static void view_plane_a_row(uint8_t *buf, int off, int x_from, int x_to, int screen_y, const Region *r,
+                             int vram_plane, int vram_h)
+{
+    level_row(buf, off, x_from, x_to, r, screen_y);
+    if (vram_plane >= 0 && screen_y >= 0 && screen_y < vram_h) {
+        uint32_t base = vram_plane ? 0xC000u : 0xA000u;
+        int wy = r->cam_y + screen_y, cy = wy >> 3, row = wy & 7;
+        int xa = x_from < 0 ? 0 : x_from, xb = x_to > 320 ? 320 : x_to, x;
+        for (x = xa; x < xb; x++) {
+            int wx = r->cam_x + x, cx = wx >> 3;
+            uint32_t ea = (base + (uint32_t)(((cy & 31) * 64) + (cx & 63)) * 2) & 0xFFFF;
+            uint8_t t8[8];
+            if (x == xa || (wx & 7) == 0) tile_row(t8, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1], row);
+            buf[x + off] = t8[wx & 7];
+        }
+    }
+}
+
+/* One line (0-223) of the window plane (status bar, present list), 320 wide,
+ * into buf[off..off+320), clipped to buf[0..w). */
+static void window_line_clip(uint8_t *buf, int off, int line, int w)
+{
+    uint32_t base = (uint32_t)(vdp_reg[3] & 0x3C) << 10;
+    int col, i;
+    for (col = 0; col < 40; col++) {
+        uint32_t ea = (base + (uint32_t)((line >> 3) * 64 + col) * 2) & 0xFFFF;
+        uint8_t t8[8];
+        tile_row(t8, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1], line & 7);
+        for (i = 0; i < 8; i++) {
+            int x = off + col * 8 + i;
+            if (x >= 0 && x < w) buf[x] = t8[i];
+        }
+    }
+}
+
+static void window_line(uint8_t *buf, int off, int line) { window_line_clip(buf, off, line, off + 320); }
+
+
+
+int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int screen_h,
+                         uint32_t *out, int w, int h, int pitch, int band)
+{
+    static uint8_t a[GAMEVIEW_MAX_W], b[GAMEVIEW_MAX_W], sp[GAMEVIEW_MAX_W];
+    Region r;
+    int ox = (w - 320) / 2, oy = (h - screen_h) / 2, y, x;
+    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    if (w > GAMEVIEW_MAX_W || h > GAMEVIEW_MAX_H) return -1;
+    views_setup_cameras();
+    r.top = 0;
+    r.bottom = screen_h;
+    r.cam_x = cam_x;
+    r.cam_y = cam_y;
+    r.tiles = player ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+    r.level = rd8(player ? EARLS_LEVEL : TOEJAMS_LEVEL);
+    view_collect(r.level, cam_x, cam_y, -ox, -oy, w - ox, h - oy);
+    if (band) view_band(-ox, -oy, w - ox, h - oy);
+    else if (screen_h == VDP_HEIGHT / 2 && game_cam >= 0) view_half_hud(game_cam ? VDP_HEIGHT / 2 : 0, -ox, -oy, w - ox, h - oy);
+    for (y = 0; y < h; y++) {
+        int sy = y - oy;
+        uint32_t *o = out + (size_t)y * pitch;
+        memset(sp, 0, (size_t)w);
+        view_plane_b_row(b, ox, -ox, w - ox, sy, cam_x, cam_y);
+        view_plane_a_row(a, ox, -ox, w - ox, sy, &r, game_cam, screen_h);
+        if (sy >= 0 && sy < view_top_window) window_line_clip(a, ox, sy, w);   /* (present list: the window replaces plane A) */
+        pieces_row(sp, ox, -ox, w - ox, sy);
+        for (x = 0; x < w; x++) {
+            uint8_t s = sp[x], pa = a[x], pb = b[x], c;
+            if ((s & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = s;
+            else if ((pa & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pa;
+            else if ((pb & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pb;
+            else if (s & PIX_OPAQUE) c = s;
+            else if (pa & PIX_OPAQUE) c = pa;
+            else if (pb & PIX_OPAQUE) c = pb;
+            else { o[x] = backdrop; continue; }
+            o[x] = vdp_palette_rgb(c & 0x3F);
+        }
+    }
+    return 0;
+}
+
+/* The status bar (window rows from..to-1 of the original screen) with its icon
+ * sprites (entries 11-22 where they lie in those rows), into out (320 wide). */
+static void render_status_bar(uint32_t *out, int pitch, int from, int to)
+{
+    static uint8_t a[320], sp[320];
+    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    int line, x, saved = npieces;
+    view_screen_sprites(11, 22, from, to - from, 0, 0, 320, to - from);
+    for (line = from; line < to; line++) {
+        uint32_t *o = out + (size_t)(line - from) * pitch;
+        window_line(a, 0, line);
+        memset(sp, 0, sizeof sp);
+        pieces_row(sp, 0, 0, 320, line - from);
+        for (x = 0; x < 320; x++) {
+            uint8_t s = sp[x], pa = a[x], c;
+            if ((s & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = s;
+            else if ((pa & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pa;
+            else if (s & PIX_OPAQUE) c = s;
+            else if (pa & PIX_OPAQUE) c = pa;
+            else { o[x] = backdrop; continue; }
+            o[x] = vdp_palette_rgb(c & 0x3F);
+        }
+    }
+    npieces = saved;
+}
+
+/* One 320-pixel row of the original screen into picture row r, centred and
+ * clipped to the picture (which may be narrower or shorter than 320x224). */
+static void paste_centred_row(int r, const uint32_t *src)
+{
+    int ox = (pic_w - 320) / 2, x0 = ox < 0 ? -ox : 0, n = 320 - x0;
+    if (r < 0 || r >= pic_h) return;
+    if (n > pic_w) n = pic_w;
+    memcpy(picture + (size_t)r * GAMEVIEW_MAX_W + (ox < 0 ? 0 : ox), src + x0, sizeof(uint32_t) * (size_t)n);
+}
+
+/* The gameplay picture of this frame drawn with the per-player views (one view, or
+ * two stacked for split screen) at pic_w x pic_h. */
+static void render_views_picture(void)
+{
+    int split = nregions == 2;
+    views_setup_cameras();
+    layout_copy_on = 1;
+    if (!split) {
+        int bar_h = 0;
+        int top = (win_from == 0 && win_to > 0) ? win_to : 0, line;
+        view_top_window = top;
+        gameview_render_view(0, region[0].cam_x, region[0].cam_y, 0, VDP_HEIGHT, picture, pic_w, pic_h,
+                             GAMEVIEW_MAX_W, 1);
+        view_top_window = 0;
+        /* the present list where the original has it, as the VDP drew its lines */
+        for (line = 0; line < top; line++)
+            paste_centred_row(line + (pic_h - VDP_HEIGHT) / 2, top_window_lines[line]);
+        /* the status bar, flush with the bottom edge, centred */
+        if (win_to == VDP_HEIGHT && win_from > 0) {
+            bar_h = hud_end - win_from;
+            if (bar_h > 0 && bar_h <= VDP_HEIGHT) {
+                static uint32_t bar[VDP_HEIGHT][320];
+                render_status_bar(&bar[0][0], 320, win_from, hud_end);
+                for (line = 0; line < bar_h; line++) paste_centred_row(pic_h - bar_h + line, bar[line]);
+            }
+        }
+    } else {
+        /* split screen: ToeJam's half above Earl's, the divider band between */
+        int half = (pic_h - 8) / 2, k, x;
+        uint32_t *div;
+        gameview_render_view(0, region[0].cam_x, region[0].cam_y, 0, VDP_HEIGHT / 2, picture, pic_w, half,
+                             GAMEVIEW_MAX_W, 0);
+        gameview_render_view(1, region[1].cam_x, region[1].cam_y, 1, VDP_HEIGHT / 2,
+                             picture + (size_t)(half + 8) * GAMEVIEW_MAX_W, pic_w, pic_h - half - 8, GAMEVIEW_MAX_W, 0);
+        /* the divider: the game's band tile, repeated across */
+        div = picture + (size_t)half * GAMEVIEW_MAX_W;
+        {
+            uint32_t base = (uint32_t)(vdp_reg[5] & 0x7E) << 9;
+            const uint8_t *en = &vdp_vram[(base + 8) & 0xFFFF];
+            uint32_t attr = ((uint32_t)en[4] << 8) | en[5];
+            for (k = 0; k < 8; k++) {
+                uint32_t *o = div + (size_t)k * GAMEVIEW_MAX_W;
+                for (x = 0; x < pic_w; x++) {
+                    int c32 = x & 31, colx = c32 >> 3, odd = (x >> 5) & 1;
+                    uint32_t at = odd ? (attr ^ 0x1800) : attr;    /* (every other sprite of the band flipped) */
+                    uint8_t t8[8];
+                    if (at & 0x0800) colx = 3 - colx;
+                    tile_row(t8, (at & 0xF800) | ((at & 0x7FF) + (uint32_t)colx), k);
+                    o[x] = (t8[x & 7] & PIX_OPAQUE) ? vdp_palette_rgb(t8[x & 7] & 0x3F) : vdp_palette_rgb(vdp_reg[7] & 0x3F);
+                }
+            }
+        }
+    }
+    layout_copy_on = 0;
 }

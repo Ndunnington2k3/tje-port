@@ -318,3 +318,20 @@ What a per-view renderer needs from this:
    mode: the game's camera-follow rule run on a private camera per player (drawing only).
 4. Performance: draw only the views shown; skip the VDP's line rendering while the native views are
    up (still checked in the tests).
+
+### Step 2 built (Oct 31): `gameview_render_view`
+
+`gameview_render_view(player, cam_x, cam_y, game_cam, screen_h, out, w, h, pitch, band)` draws one
+player's view from game memory at any size: plane B parallax, the level from the floor layout (the
+copy taken at line 0, so a fall never shows the next floor early), objects and floor items in the
+game's order with their shadows, the band (entries 1-10) or, for a split half, that half's mini-HUD
+(entries 11-22 anchored to the view's top corners). Every wider gameplay picture now comes from it:
+
+- 1 player / shared camera: one view; the present list pasted from the VDP's lines; the status
+  bar from the window tiles and entries 11-22, flush with the bottom, centred.
+- Split: ToeJam's view above Earl's, the 8-pixel band tile divider between, at any aspect.
+
+Checked by `TJE_VIEWCHECK=prefix` (null platform): the view at 320x224 (or each 320x112 half)
+against the VDP's gameplay rows. Result: frame 0 after a state load and a handful of transient
+frames differ; split 3 of 918. `--gvcheck` at 320x224 stays at 0. Pictures narrower than 320 or
+shorter than 224 are clipped (the window rows and the status bar are pasted clipped).

@@ -384,6 +384,48 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         gv_done:;
         }
     }
+    if (getenv("TJE_VIEWCHECK")) {
+        /* (tests) the per-player views drawn at the original size against the VDP's
+         * picture, gameplay rows only (no status bar, no split divider) */
+        extern int g_gv_gameplay, g_gv_view_strict;
+        static uint32_t vbuf[320 * 224];
+        static unsigned frames_1p, frames_split, bad_frames, saved;
+        static unsigned long bad_px;
+        const uint32_t *gv;
+        int gw, gh, gp;
+        extern int g_gv_win_top_seen;
+        if (gameview_frame(&gv, &gw, &gh, &gp) && g_gv_gameplay && ((vdp_reg[18] & 0x80) || rd8(0xFF8010u)) && !(vdp_reg[17] & 0x1F) && !g_gv_win_top_seen) {
+            int wv = rd8(0xFF8010u) ? 184 : (vdp_reg[18] & 0x1F) * 8;
+            const uint32_t *v = vdp_framebuffer();
+            unsigned long bad = 0;
+            int split = rd8(0xFF8010u) != 0, y, x, half;
+            g_gv_view_strict = 1;
+            for (half = 0; half < (split ? 2 : 1); half++) {
+                int top = split ? half * 112 : 0, h = split ? 112 : 224;
+                int y0 = split ? (half ? 120 : 0) : 0, y1 = split ? (half ? wv - 1 : 104) : wv - 1;   /* (row 183: the status bar H-interrupt cuts sprites there) */
+                gameview_render_view(half, (int16_t)rd16(half ? 0xFF8006u : 0xFF8002u), (int16_t)rd16(half ? 0xFF8008u : 0xFF8004u),
+                                     half, h, vbuf + top * 320, 320, h, 320, !split);
+                for (y = y0; y < y1; y++)
+                    for (x = 0; x < 320; x++)
+                        if ((vbuf[y * 320 + x] & 0xFFFFFF) != (v[y * VDP_FB_PITCH + x] & 0xFFFFFF)) bad++;
+            }
+            {
+                if (bad && saved < 30) {
+                    char path[512];
+                    snprintf(path, sizeof path, "%s_%u_view.ppm", getenv("TJE_VIEWCHECK"), frame);
+                    save_ppm(path, vbuf, 320, 224, 320);
+                    snprintf(path, sizeof path, "%s_%u_vdp.ppm", getenv("TJE_VIEWCHECK"), frame);
+                    save_ppm(path, v, 320, 224, VDP_FB_PITCH);
+                    saved++;
+                }
+            }
+            g_gv_view_strict = 0;
+            if (split) frames_split++; else frames_1p++;
+            if (bad) { bad_frames++; bad_px += bad; fprintf(stderr, "viewcheck: frame %u: %lu pixels differ%s\n", frame, bad, split ? " (split)" : ""); }
+        }
+        if (frame + 1 == max_frames)
+            fprintf(stderr, "viewcheck: %u frames (%u split), %u differ (%lu pixels)\n", frames_1p + frames_split, frames_split, bad_frames, bad_px);
+    }
     if (getenv("TJE_GV_SYNC")) {
         extern FILE *g_gv_sync_log;
         if (!g_gv_sync_log) g_gv_sync_log = fopen(getenv("TJE_GV_SYNC"), "w");
