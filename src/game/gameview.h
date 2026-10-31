@@ -34,4 +34,8 @@ void gameview_sat_dma(void);
 int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int screen_h,
                          uint32_t *out, int w, int h, int pitch, int band);
 
+/* (tests) split screen: is half k (0 top, 1 bottom) shown as the VDP draws it this
+ * frame (under its player's menu, held while falling, or the split being set up)? */
+int gameview_split_half_shown_as_vdp(int k);
+
 #endif

@@ -344,7 +344,11 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
     viewdiag_frame(pixels, width, height, pitch);
     if (getenv("TJE_GV_REASONS")) {
         const uint32_t *g_; int a_, b_, c_;
-        if (!gameview_frame(&g_, &a_, &b_, &c_)) fprintf(stderr, "frame %u: not drawn, reason %d\n", frame, g_gameview_reason);
+        extern int g_gv_split_menu;
+        g_gv_split_menu = 0;
+        if (gameview_frame(&g_, &a_, &b_, &c_) && g_gv_split_menu)
+            fprintf(stderr, "frame %u: split, menu over half %d\n", frame, g_gv_split_menu);
+        else if (!gameview_frame(&g_, &a_, &b_, &c_)) fprintf(stderr, "frame %u: not drawn, reason %d%s (win %02X)\n", frame, g_gameview_reason, rd8(0xFF8010u) ? " split" : "", vdp_reg[18]);
     }
     if (gvcheck) {
         const uint32_t *gv;
@@ -401,6 +405,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             int split = rd8(0xFF8010u) != 0, y, x, half;
             g_gv_view_strict = 1;
             for (half = 0; half < (split ? 2 : 1); half++) {
+                if (split && gameview_split_half_shown_as_vdp(half)) continue;
                 int top = split ? half * 112 : 0, h = split ? 112 : 224;
                 int y0 = split ? (half ? 120 : 0) : 0, y1 = split ? (half ? wv - 1 : 104) : wv - 1;   /* (row 183: the status bar H-interrupt cuts sprites there) */
                 gameview_render_view(half, (int16_t)rd16(half ? 0xFF8006u : 0xFF8002u), (int16_t)rd16(half ? 0xFF8008u : 0xFF8004u),

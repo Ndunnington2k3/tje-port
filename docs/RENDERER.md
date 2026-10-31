@@ -346,3 +346,21 @@ shorter than 224 are clipped (the window rows and the status bar are pasted clip
 - VDP line rendering during gameplay: needed only for the present list, hold mode and tests.
   Remove before the PSP / 3DS work.
 - Debug-only loggers (TJE_GV_BLINK/FLICKER/SYNC, --view-log, SAT_TRACE): cost nothing unless on.
+
+### Split screen: every state of a half (Oct 31)
+
+Each half of the split picture is drawn by `split_half()` in one of four ways, never falling back
+to 4:3:
+
+- **Live:** that player's view.
+- **Menu** (the player's present list / shop: the window plane over that half, set by VBlank
+  `$920E` for ToeJam, HBlankJSR `$928E` at line 112 for Earl, both for both): the view, with the
+  window's lines as the VDP drew them (with their sprites) pasted where the original half is;
+  plain filler rows of the window are left out (the level shows there). No mini-HUD.
+- **Held** (plane A no longer shows the floor layout: falling): the last view drawn of that half,
+  moved with the camera, with the VDP's half pasted in the middle (minus its level number / life
+  bar rows: the held picture has them in its corners). Up to 600 frames.
+- **Blank** (whole screen window: the split being set up): the VDP's halves on their own colour.
+
+The VDP's band across the middle (lines 104-119) is never pasted: the divider is ours. The other
+half is unaffected. viewcheck skips halves shown as the VDP draws them.

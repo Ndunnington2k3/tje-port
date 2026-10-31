@@ -1043,6 +1043,9 @@ void gameview_set_size(int w, int h)
 static int frame_was_gameplay;   /* the last frame was gameplay */
 static int layout_switched;      /* the floor layout became another floor's while plane A still shows this one */
 static int frame_setup_checks(void);
+static int half_held[2];     /* split: this half's plane A no longer shows its floor (falling) */
+static int split_blank;      /* split: the whole screen is the window (the split being set up) */
+static int views_wide(void);
 
 static int frame_setup(void)
 {
@@ -1065,7 +1068,14 @@ static int frame_setup_checks(void)
         if (vdp_reg[18] & 0x80) { win_from = wv; win_to = VDP_HEIGHT; }
         else { win_from = 0; win_to = wv; }
     }
-    if (win_from == 0 && win_to >= VDP_HEIGHT) { g_gameview_reason = 4; return 0; }
+    split_blank = 0;
+    if (win_from == 0 && win_to >= VDP_HEIGHT) {
+        /* (in split play with the per-player views: the split being set up, the
+         * halves blank but for the players; each half shown as the VDP draws it) */
+        extern int g_in_game;
+        if (!(g_in_game && rd8(SPLIT_SCREEN) && views_wide())) { g_gameview_reason = 4; return 0; }
+        split_blank = 1;
+    }
     /* only while the game is being played: the main game loop has started, and
      * the status bar is up (window rows), or the screen is split, or this is the
      * last floor (no status bar there). Cutscenes in space can otherwise look like
@@ -1230,6 +1240,13 @@ static int holding;   /* frame_ok 4: the outside kept from the last gameplay fra
  * sprite-table entries down the list (its icons), so they are only right line by
  * line. */
 static uint32_t top_window_lines[VDP_HEIGHT][320];
+/* In split screen a player's menu (present list, shops...) is the window plane over
+ * that player's half: how many lines of each half were window this frame. */
+static int half_window_lines[2];
+static int view_skip_half_hud;   /* the view being drawn is under its player's menu */
+int g_gv_split_menu;              /* (tests) halves under a menu in the last split picture: bit 0 top, bit 1 bottom */
+static int split_half_covered(int k) { return half_window_lines[k] >= VDP_HEIGHT / 2 - 16; }
+int gameview_split_half_shown_as_vdp(int k) { return split_half_covered(k) || half_held[k] || split_blank; }
 static int after_gameplay;   /* gameplay was on screen, and the display has not been off since */
 
 static void draw_band(int line)
@@ -1536,7 +1553,8 @@ static void hold_line(int line)
     if (r >= 0 && r < pic_h && !band_row[r]) {
         const uint32_t *src = vdp_framebuffer() + (size_t)line * VDP_FB_PITCH;
         uint32_t *o = picture + (size_t)r * GAMEVIEW_MAX_W;
-        for (x = 0; x < 320; x++) o[x + off_x] = src[x];
+        for (x = 0; x < 320; x++)
+            if (x + off_x >= 0 && x + off_x < pic_w) o[x + off_x] = src[x];
     }
 }
 
@@ -1571,6 +1589,8 @@ void gameview_line(int line)
         int w, h;
         display_on_at_top = (vdp_reg[1] & 0x40) != 0;
         g_gv_win_top_seen = 0;
+        half_window_lines[0] = half_window_lines[1] = 0;
+        half_held[0] = half_held[1] = 0;
         if (snap_age < 1000) snap_age++;
         g_gv_snap_age = snap_age;
         present_wanted_view(&w, &h);
@@ -1665,10 +1685,15 @@ void gameview_line(int line)
     /* At the last line of each half: does plane A (whichever the game points the
      * VDP at by then; split screen switches planes a line into the lower half)
      * show this floor here? */
-    if (nregions == 2 && line == r->bottom - 1 && !plane_shows_level(r, win_from, win_to)) {
+    if (nregions == 2 && line == r->bottom - 1 && !split_blank && !split_half_covered(r == &region[1]) &&
+        !plane_shows_level(r, win_from, win_to)) {
+        /* (wider, with the views: that half is held, the VDP's half in the middle) */
+        if (views_wide()) half_held[r == &region[1]] = 1;
+        else {
         frame_ok = 0;
         g_gameview_reason = 5 + (r == &region[1]);
         return;
+        }
     }
     if ((line & 31) == 0) find_object_sprites();    /* (the game rewrites the sprite table during the frame) */
     /* window rows now (the game moves the window during the frame when the
@@ -1676,11 +1701,14 @@ void gameview_line(int line)
     wv = (vdp_reg[18] & 0x1F) * 8;
     in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;
     if (!(vdp_reg[18] & 0x80) && wv) g_gv_win_top_seen = 1;
+    if (in_window && nregions == 2) half_window_lines[line >= VDP_HEIGHT / 2]++;
+    if ((in_window || nregions == 2) && line < VDP_HEIGHT) {
+        if (nregions == 2 || !(vdp_reg[18] & 0x80))   /* (split: every line, for held halves) */
+            memcpy(top_window_lines[line], vdp_framebuffer() + (size_t)line * VDP_FB_PITCH, sizeof top_window_lines[0]);
+    }
     /* (in a wider picture, filler rows of the window are not kept: level there) */
     if (in_window && (pic_w != 320 || pic_h != VDP_HEIGHT) && window_row_filler(line / 8)) in_window = 0;
     if (in_window) draw_band(line);
-    if (in_window && !(vdp_reg[18] & 0x80) && line < VDP_HEIGHT)
-        memcpy(top_window_lines[line], vdp_framebuffer() + (size_t)line * VDP_FB_PITCH, sizeof top_window_lines[0]);
     if (pic_w == 320 && pic_h == VDP_HEIGHT) {
         if (!in_window) draw_row(line, line, 1);
     } else {
@@ -2073,7 +2101,7 @@ int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int scr
     r.level = rd8(player ? EARLS_LEVEL : TOEJAMS_LEVEL);
     view_collect(r.level, cam_x, cam_y, -ox, -oy, w - ox, h - oy);
     if (band) view_band(-ox, -oy, w - ox, h - oy);
-    else if (screen_h == VDP_HEIGHT / 2 && game_cam >= 0) view_half_hud(game_cam ? VDP_HEIGHT / 2 : 0, -ox, -oy, w - ox, h - oy);
+    else if (screen_h == VDP_HEIGHT / 2 && game_cam >= 0 && !view_skip_half_hud) view_half_hud(game_cam ? VDP_HEIGHT / 2 : 0, -ox, -oy, w - ox, h - oy);
     for (y = 0; y < h; y++) {
         int sy = y - oy;
         uint32_t *o = out + (size_t)y * pitch;
@@ -2125,12 +2153,101 @@ static void render_status_bar(uint32_t *out, int pitch, int from, int to)
 
 /* One 320-pixel row of the original screen into picture row r, centred and
  * clipped to the picture (which may be narrower or shorter than 320x224). */
-static void paste_centred_row(int r, const uint32_t *src)
+static void paste_centred_row_in(int r, const uint32_t *src, int r_from, int r_to)
 {
     int ox = (pic_w - 320) / 2, x0 = ox < 0 ? -ox : 0, n = 320 - x0;
-    if (r < 0 || r >= pic_h) return;
+    if (r < r_from || r >= r_to || r < 0 || r >= pic_h) return;
     if (n > pic_w) n = pic_w;
     memcpy(picture + (size_t)r * GAMEVIEW_MAX_W + (ox < 0 ? 0 : ox), src + x0, sizeof(uint32_t) * (size_t)n);
+}
+
+static void paste_centred_row(int r, const uint32_t *src) { paste_centred_row_in(r, src, 0, pic_h); }
+
+/* Split screen: a half under its player's menu shows the menu (the window lines as
+ * the VDP drew them, with its sprites) where the original half is in the view, and
+ * that player's level around it, as the present list does in one-player play. */
+static void paste_split_menu(int k, int area_top, int area_h)
+{
+    int line, first = k * (VDP_HEIGHT / 2), oy = (area_h - VDP_HEIGHT / 2) / 2;
+    for (line = first; line < first + VDP_HEIGHT / 2; line++)
+        if (!window_row_filler(line / 8))   /* (plain rows of the window: the level shows there) */
+            paste_centred_row_in(area_top + oy + line - first, top_window_lines[line], area_top, area_top + area_h);
+}
+
+static int views_wide(void)
+{
+    return g_gv_use_views && (want_w != 320 || want_h != VDP_HEIGHT);
+}
+
+/* One half of the split picture (k: 0 ToeJam's, 1 Earl's) into picture rows
+ * area_top.. area_top+area_h-1:
+ *  - the player's view, with the player's menu over it if open;
+ *  - held (the half's plane A shows something the floor layout no longer does:
+ *    falling): the last view drawn of this half around the VDP's half, moved with
+ *    the camera if it moves;
+ *  - blank (the split being set up): the VDP's half on its own colour. */
+static uint32_t held_pic[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+static struct { int ok, cam_x, cam_y, top, h, w, frames; } held_half[2];
+
+static void split_half(int k, int area_top, int area_h)
+{
+    uint32_t *dst = picture + (size_t)area_top * GAMEVIEW_MAX_W;
+    int first = k * (VDP_HEIGHT / 2), oy = (area_h - VDP_HEIGHT / 2) / 2, x, y, line;
+    if (!split_blank && !half_held[k]) {
+        view_skip_half_hud = split_half_covered(k);
+        gameview_render_view(k, region[k].cam_x, region[k].cam_y, k, VDP_HEIGHT / 2, dst, pic_w, area_h,
+                             GAMEVIEW_MAX_W, 0);
+        if (view_skip_half_hud) paste_split_menu(k, area_top, area_h);
+        view_skip_half_hud = 0;
+        for (y = 0; y < area_h; y++)
+            memcpy(held_pic + (size_t)(area_top + y) * GAMEVIEW_MAX_W, dst + (size_t)y * GAMEVIEW_MAX_W,
+                   sizeof(uint32_t) * (size_t)pic_w);
+        held_half[k].ok = 1;
+        held_half[k].cam_x = region[k].cam_x;
+        held_half[k].cam_y = region[k].cam_y;
+        held_half[k].top = area_top;
+        held_half[k].h = area_h;
+        held_half[k].w = pic_w;
+        held_half[k].frames = 0;
+        return;
+    }
+    if (!split_blank && held_half[k].ok && held_half[k].top == area_top && held_half[k].h == area_h &&
+        held_half[k].w == pic_w && held_half[k].frames++ < 600) {
+        int dx = region[k].cam_x - held_half[k].cam_x, dy = region[k].cam_y - held_half[k].cam_y;
+        uint32_t fill = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+        for (y = 0; y < area_h; y++) {
+            uint32_t *o = dst + (size_t)y * GAMEVIEW_MAX_W;
+            int sy = y + dy;
+            for (x = 0; x < pic_w; x++) {
+                int sx = x + dx;
+                o[x] = (sy >= 0 && sy < area_h && sx >= 0 && sx < pic_w)
+                     ? held_pic[(size_t)(area_top + sy) * GAMEVIEW_MAX_W + (size_t)sx] : fill;
+            }
+        }
+    } else {
+        /* (the colour the VDP's half shows at its left edge, half way down) */
+        uint32_t fill = top_window_lines[first + VDP_HEIGHT / 4][0];
+        for (y = 0; y < area_h; y++)
+            for (x = 0; x < pic_w; x++) dst[(size_t)y * GAMEVIEW_MAX_W + x] = fill;
+    }
+    /* the VDP's half, without the band across the middle (the divider is ours), and
+     * when held, without the rows of its level number / life bar (the held picture
+     * has them in its corners already) */
+    {
+        int skip_to = first;
+        if (!split_blank) {
+            uint32_t base = (uint32_t)(vdp_reg[5] & 0x7E) << 9;
+            int e;
+            for (e = 11; e <= 22; e++) {
+                const uint8_t *en = &vdp_vram[(base + (uint32_t)e * 8) & 0xFFFF];
+                int sy = (((en[0] << 8) | en[1]) & 0x3FF) - 128, vs = (en[2] & 3) + 1;
+                if (sy >= first && sy < first + VDP_HEIGHT / 4 && sy + vs * 8 > skip_to) skip_to = sy + vs * 8;
+            }
+        }
+        for (line = skip_to; line < first + VDP_HEIGHT / 2; line++)
+            if (line < VDP_HEIGHT / 2 - 8 || line >= VDP_HEIGHT / 2 + 8)
+                paste_centred_row_in(area_top + oy + line - first, top_window_lines[line], area_top, area_top + area_h);
+    }
 }
 
 /* The gameplay picture of this frame drawn with the per-player views (one view, or
@@ -2163,10 +2280,9 @@ static void render_views_picture(void)
         /* split screen: ToeJam's half above Earl's, the divider band between */
         int half = (pic_h - 8) / 2, k, x;
         uint32_t *div;
-        gameview_render_view(0, region[0].cam_x, region[0].cam_y, 0, VDP_HEIGHT / 2, picture, pic_w, half,
-                             GAMEVIEW_MAX_W, 0);
-        gameview_render_view(1, region[1].cam_x, region[1].cam_y, 1, VDP_HEIGHT / 2,
-                             picture + (size_t)(half + 8) * GAMEVIEW_MAX_W, pic_w, pic_h - half - 8, GAMEVIEW_MAX_W, 0);
+        g_gv_split_menu = split_half_covered(0) | split_half_covered(1) << 1;
+        split_half(0, 0, half);
+        split_half(1, half + 8, pic_h - half - 8);
         /* the divider: the game's band tile, repeated across */
         div = picture + (size_t)half * GAMEVIEW_MAX_W;
         {
