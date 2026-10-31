@@ -13,6 +13,7 @@
  * still works as it always did.
  */
 #include "game.h"
+#include "platform/platform.h"
 #include "save.h"
 #include "menu.h"
 #include "core/vdp.h"
@@ -317,6 +318,19 @@ static void cheat(uint32_t p0, uint32_t p1)
  * pause-screen button code is checked on the game's own controls. */
 static uint32_t prev_buttons;
 static uint32_t prev_raw = PAD_START, prev_menu = MENU_OK;   /* the last frame's game pads and menu input */
+static int pause_backs = 1;    /* the Pause button means "back" here */
+
+/* Is the Pause button bound to a key that chooses on menus (Enter, Space)? Then
+ * on this menu it only chooses, as Escape only goes back. */
+static int pause_on_confirm_key(void)
+{
+    static const char *const confirm[] = {"Return", "Space", "Keypad Enter", "Enter"};
+    int p, i;
+    for (p = 0; p < 2; p++)
+        for (i = 0; i < 4; i++)
+            if (!strcmp(plat_binding(p, 7, PLAT_BIND_KEY), confirm[i])) return 1;
+    return 0;
+}
 static int menu_player;
 
 static uint32_t menu_input(void)
@@ -339,7 +353,7 @@ static uint32_t menu_input(void)
         /* (only a fresh press counts: when the Pause button is also bound to Enter
          * or controller Start, letting go of both can drop "choose" a frame before
          * the Pause button, which must not read as "back" and answer "no") */
-        if (((p0 | p1) & PAD_START) && !(prev_raw & PAD_START) &&
+        if (pause_backs && ((p0 | p1) & PAD_START) && !(prev_raw & PAD_START) &&
             !(g_menu_pad & MENU_OK) && !(prev_menu & MENU_OK)) now |= PAD_BACK;
     }
     prev_raw = p0 | p1;
@@ -526,6 +540,7 @@ void f_01DBD8_GamePaused(void)
     prev_buttons = PAD_START | PAD_BACK;  /* Escape may still be held: it paused the game */
     prev_raw = PAD_START;
     prev_menu = MENU_OK | MENU_BACK;
+    pause_backs = !pause_on_confirm_key();
     pause_menu();
 
     /* take the sign away and carry on */
