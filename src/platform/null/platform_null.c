@@ -323,8 +323,10 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         else {
             unsigned long bad = 0;
             int x, y;
+            extern int g_gv_kept;
             gv_frames++;
             if (gw != 320 || gh != VDP_HEIGHT) goto gv_done;   /* a wider view: nothing to compare */
+            if (g_gv_kept) goto gv_done;                       /* the last picture kept (clean transitions) */
             const uint32_t *v = vdp_framebuffer();     /* the VDP's own picture */
             for (y = 0; y < gh; y++)
                 for (x = 0; x < gw; x++)

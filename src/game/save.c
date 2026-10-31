@@ -4,6 +4,7 @@
  */
 #include "game.h"
 #include "save.h"
+#include "menu.h"
 #include "settings.h"
 #include "world.h"
 #include "core/ser.h"
@@ -191,6 +192,9 @@ int g_in_game;   /* the main game loop has started (reset with the machine) */
 void f_0014E6_InGameLoop(void)
 {
     g_in_game = 1;
+    /* (a game loaded from a port menu, or quit to the menu from the pause menu,
+     * restarts the machine without returning from that menu: Escape pauses again) */
+    g_port_menu_active = 0;
     if (post_load_pending) {
         post_load_pending = 0;
         after_load();
@@ -484,5 +488,6 @@ void save_quit_to_menu(void)
 {
     g_boot_to_menu = 1;
     g_in_game = 0;
+    g_port_menu_active = 0;
     genesis_restart_boot();
 }

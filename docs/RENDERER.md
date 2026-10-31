@@ -142,6 +142,17 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
   60 frames.
 - Straight after gameplay, until the display is next switched off, a screen that is not gameplay
   (the screen splitting, a floor being set up) stays 4:3 instead of being extended outwards.
+- Drawing order outside the original screen is the game's (LOC_0000C690): objects sorted by Y,
+  lower on the screen in front, those with $2F bit 7 (food, flat on the ground: LOC_00014FFE) behind
+  the rest, the second list ($FFD93C) after. Floor items drawn from their records are put in the
+  same order as the objects they would be, and every piece and hardware sprite of an object gets a
+  rank, so a piece and an object's hardware sprite overlap the right way round too.
+- An object whose shadow reaches under the status bar or past the screen edges (Cupid flying high)
+  is drawn from its frame data with its shadow, as the game cuts the shadow sprite there.
+- The present list / shop box (window from the top) stays where the original has it, so sprites it
+  half covers (the hint sign) stay next to it; the status bar keeps to the bottom edge.
+- Clean transitions: a frame where the display is switched off part way down (the old scene on top,
+  black below: falling to the next floor) shows the last picture instead.
 - `--view-log` (PC and headless) logs objects and items missing for one or two frames and keeps the
   last 120 frames (picture, RAM, VRAM); F12 on PC saves them (`tje_captureN.bin`), read with
   `tools/viewcap.py`.

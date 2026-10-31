@@ -316,6 +316,7 @@ static void cheat(uint32_t p0, uint32_t p1)
  * PAD_UP..PAD_RIGHT, PAD_START = choose, PAD_BACK = back. The original
  * pause-screen button code is checked on the game's own controls. */
 static uint32_t prev_buttons;
+static uint32_t prev_raw = PAD_START, prev_menu = MENU_OK;   /* the last frame's game pads and menu input */
 static int menu_player;
 
 static uint32_t menu_input(void)
@@ -335,8 +336,14 @@ static uint32_t menu_input(void)
         /* The player's Pause button closes the menu (or backs out of a question),
          * as Start unpauses in the original. When it is also a menu "choose"
          * input (Enter, controller Start), choosing wins. */
-        if (((p0 | p1) & PAD_START) && !(g_menu_pad & MENU_OK)) now |= PAD_BACK;
+        /* (only a fresh press counts: when the Pause button is also bound to Enter
+         * or controller Start, letting go of both can drop "choose" a frame before
+         * the Pause button, which must not read as "back" and answer "no") */
+        if (((p0 | p1) & PAD_START) && !(prev_raw & PAD_START) &&
+            !(g_menu_pad & MENU_OK) && !(prev_menu & MENU_OK)) now |= PAD_BACK;
     }
+    prev_raw = p0 | p1;
+    prev_menu = g_binding_active ? 0 : g_menu_pad;
     pressed = now & ~prev_buttons;
     prev_buttons = now;
     return pressed;
@@ -517,6 +524,8 @@ void f_01DBD8_GamePaused(void)
     cheat_step = 0;
     menu_player = player;
     prev_buttons = PAD_START | PAD_BACK;  /* Escape may still be held: it paused the game */
+    prev_raw = PAD_START;
+    prev_menu = MENU_OK | MENU_BACK;
     pause_menu();
 
     /* take the sign away and carry on */
