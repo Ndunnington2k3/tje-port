@@ -306,6 +306,10 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     int i;
     viewdiag_frame(pixels, width, height, pitch);
+    if (getenv("TJE_GV_REASONS")) {
+        const uint32_t *g_; int a_, b_, c_;
+        if (!gameview_frame(&g_, &a_, &b_, &c_)) fprintf(stderr, "frame %u: not drawn, reason %d\n", frame, g_gameview_reason);
+    }
     if (gvcheck) {
         const uint32_t *gv;
         int gw, gh, gp;

@@ -133,6 +133,15 @@ plane), and the status bar until it is redrawn natively (step 4). Those keep 4:3
   frame until the game's next pass, a whole 30 fps step. On the original that happens just out of
   sight; here the item vanished for two frames each time it crossed that band (the flicker the
   user caught with F12 on the first island). Meanwhile the item is drawn from its record.
+- Falling to the floor below: the game switches the floor number and layout as the fall starts,
+  while the screen still shows the floor being left for about a second. The layout no longer
+  matches plane A, so this used to fall back to 4:3 (or worse, to the extended-screen mode with a
+  made-up border). Now, while the camera stays put, the picture around the original screen is held
+  as it was and the original screen is the VDP's (`frame_ok` 4, `hold_line`). A plane A that
+  differs from the layout in a few blocks only (ground caving in) still counts as gameplay for up to
+  60 frames.
+- Straight after gameplay, until the display is next switched off, a screen that is not gameplay
+  (the screen splitting, a floor being set up) stays 4:3 instead of being extended outwards.
 - `--view-log` (PC and headless) logs objects and items missing for one or two frames and keeps the
   last 120 frames (picture, RAM, VRAM); F12 on PC saves them (`tje_captureN.bin`), read with
   `tools/viewcap.py`.

@@ -18,6 +18,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define TOEJAM_CAMERA_XPOS  0xFF8002u   /* camera copies the planes were scrolled to */
 #define TOEJAM_CAMERA_YPOS  0xFF8004u
@@ -100,6 +101,8 @@ typedef struct {
 
 /* Does plane A in VRAM hold this floor where the camera is? (If not, the screen is
  * showing something else: the map, a cutscene, a transition...) */
+static int plane_match;   /* the last plane_shows_level: percent of the samples matching */
+
 static int plane_shows_level(const Region *r, int skip_from, int skip_to)
 {
     static const int psz[4] = {32, 64, 32, 128};
@@ -117,6 +120,7 @@ static int plane_shows_level(const Region *r, int skip_from, int skip_to)
             total++;
             if (v == level_cell(r->tiles, r->level, cx, cy)) match++;
         }
+    plane_match = total > 0 ? match * 100 / total : 0;
     return total > 0 && match * 10 >= total * 9;
 }
 
@@ -736,7 +740,17 @@ void gameview_set_size(int w, int h)
 }
 
 /* At line 0: is the screen showing gameplay, and where are the cameras? */
+static int frame_was_gameplay;   /* the last frame was gameplay */
+static int frame_setup_checks(void);
+
 static int frame_setup(void)
+{
+    int ok = frame_setup_checks();
+    frame_was_gameplay = ok;
+    return ok;
+}
+
+static int frame_setup_checks(void)
 {
     if (!vdp_live_picture()) { g_gameview_reason = 1; return 0; }
     if (vdp_width() != 320) { g_gameview_reason = 2; return 0; }
@@ -789,7 +803,24 @@ static int frame_setup(void)
         pic_w = want_w;
         pic_h = want_h;
     }
-    if (nregions == 1 && !plane_shows_level(&region[0], win_from, win_to)) { g_gameview_reason = 5; return 0; }
+    /* Does plane A show this floor? (Tells gameplay from screens that only look
+     * like it.) While the game is changing the floor (ground falling away, a hole
+     * opening) the layout runs ahead of plane A for a few frames: if gameplay was
+     * on screen just before, from about here, it still is. */
+    {
+        static int grace, last_x, last_y, last_level;
+        int same_place = frame_was_gameplay && region[0].level == last_level &&
+                         abs(region[0].cam_x - last_x) < 32 && abs(region[0].cam_y - last_y) < 32;
+        last_x = region[0].cam_x;
+        last_y = region[0].cam_y;
+        last_level = region[0].level;
+        if (nregions == 1 && !plane_shows_level(&region[0], win_from, win_to)) {
+            /* (a few blocks changed, not a different floor altogether) */
+            if (!same_place || plane_match < 60 || ++grace > 60) { g_gameview_reason = 5; return 0; }
+        } else {
+            grace = 0;
+        }
+    }
     /* the status bar's last row: filler rows under it show the level instead */
     hud_end = VDP_HEIGHT;
     if (win_to == VDP_HEIGHT && win_from > 0 && (pic_w != 320 || pic_h != VDP_HEIGHT))
@@ -863,6 +894,9 @@ static int window_row_filler(int row)
 
 /* A window line (status bar, present list) as the VDP drew it, kept at the top
  * or bottom edge of the picture, centred. */
+static int holding;   /* frame_ok 4: the outside kept from the last gameplay frame */
+static int after_gameplay;   /* gameplay was on screen, and the display has not been off since */
+
 static void draw_band(int line)
 {
     int r = line < VDP_HEIGHT / 2 ? line : pic_h - hud_end + line;
@@ -871,7 +905,7 @@ static void draw_band(int line)
     int x;
     if (r < 0 || r >= pic_h) return;
     o = picture + (size_t)r * GAMEVIEW_MAX_W;
-    if (pic_w != 320) {
+    if (pic_w != 320 && !holding) {
         /* the picture outside the bar: the level, as on the rows around it */
         draw_row(r, r - off_y, 0);
     }
@@ -1152,10 +1186,30 @@ static int build_extended_screen(void)
     return 1;
 }
 
+static void hold_line(int line)
+{
+    int r = line + off_y, x, wv, in_window;
+    if (line < 0 || line >= VDP_HEIGHT) return;
+    if (!vdp_live_picture() || vdp_width() != 320 || (vdp_reg[17] & 0x1F)) { frame_ok = 0; holding = 0; return; }
+    wv = (vdp_reg[18] & 0x1F) * 8;
+    in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;
+    if (in_window && window_row_filler(line / 8)) return;
+    if (in_window) { draw_band(line); return; }
+    if (r >= 0 && r < pic_h && !band_row[r]) {
+        const uint32_t *src = vdp_framebuffer() + (size_t)line * VDP_FB_PITCH;
+        uint32_t *o = picture + (size_t)r * GAMEVIEW_MAX_W;
+        for (x = 0; x < 320; x++) o[x + off_x] = src[x];
+    }
+}
+
 void gameview_line(int line)
 {
     const Region *r;
     int y, in_window, wv;
+    if (frame_ok == 4 && line != 0) {                 /* gameplay, the outside held */
+        hold_line(line);
+        return;
+    }
     if (frame_ok == 3 && line != 0) {                 /* another screen, wider */
         if (line < 0 || line >= VDP_HEIGHT) return;
         if (!vdp_live_picture() || vdp_width() != 320) { frame_ok = 0; return; }
@@ -1181,7 +1235,32 @@ void gameview_line(int line)
         g_gv_snap_age = snap_age;
         present_wanted_view(&w, &h);
         gameview_set_size(w, h);
-        frame_ok = frame_setup();
+        {
+            static int held, held_x, held_y, prev_ok;
+            int was = prev_ok;
+            frame_ok = frame_setup();
+            holding = 0;
+            /* Gameplay goes on, but plane A shows something the floor layout no
+             * longer does (falling to the floor below: the floor number and layout
+             * change before the screen does). The camera stays put meanwhile: keep
+             * the picture around the original screen as it was, and the original
+             * screen as the VDP draws it. */
+            if (frame_ok) { held = 0; held_x = region[0].cam_x; held_y = region[0].cam_y; }
+            else if (g_gameview_reason == 5 && (was == 1 || was == 4) && held < 600 &&
+                     region[0].cam_x == held_x && region[0].cam_y == held_y &&
+                     pic_w == last_w && pic_h == last_h && (pic_w != 320 || pic_h != VDP_HEIGHT)) {
+                frame_ok = 4;
+                holding = 1;
+                held++;
+            }
+            prev_ok = frame_ok;
+            /* straight after gameplay, until the display is next switched off: the
+             * screen is gameplay changing (splitting, a floor being set up), not a
+             * screen of its own to be carried outwards */
+            if (frame_ok == 1 || frame_ok == 4) after_gameplay = 1;
+            else if (!vdp_live_picture()) after_gameplay = 0;
+            if (frame_ok == 4) { hold_line(0); return; }
+        }
         if (!frame_ok && g_gameview_extend_screen && vdp_live_picture() && vdp_width() == 320 &&
             !(vdp_reg[17] & 0x1F) && !(vdp_reg[18] & 0x1F) && (want_w != 320 || want_h != VDP_HEIGHT)) {
             pic_w = want_w;
@@ -1200,7 +1279,11 @@ void gameview_line(int line)
          * like more of the floor still to uncover; the menus' starry sky goes
          * around it instead, or nothing if it has not been seen yet) */
         map_mode = g_in_game && (vdp_reg[17] & 0x1F);
+        /* (a gameplay screen that is not quite gameplay yet, with the status bar
+         * up: a floor being set up, the screen splitting. Its edges are the level,
+         * not a border: it stays 4:3 for those frames) */
         if (!frame_ok && g_options.extend_screens && vdp_live_picture() && vdp_width() == 320 &&
+            !(g_in_game && !map_mode && ((vdp_reg[18] & 0x1F) || after_gameplay)) &&
             (!map_mode || have_stars) && (want_w != 320 || want_h != VDP_HEIGHT)) {
             pic_w = want_w;
             pic_h = want_h;
@@ -1269,7 +1352,7 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
         last_ok = 0;
         return 0;
     }
-    if (frame_ok == 2 || frame_ok == 3) {
+    if (frame_ok == 2 || frame_ok == 3 || frame_ok == 4) {
         last_ok = 1;
         last_w = pic_w;
         last_h = pic_h;
