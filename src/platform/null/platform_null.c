@@ -33,6 +33,7 @@
 #include "gfx/gfx_soft.h"
 #include "gfx/present.h"
 #include "game/gameview.h"
+#include "game/viewdiag.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -159,6 +160,10 @@ int plat_init(int argc, char **argv)
                 present_init(gfx_soft_init());
             else
                 window_w = window_h = 0;
+        } else if (!strcmp(argv[i], "--view-log") && i + 1 < argc) {
+            char cap[600];
+            snprintf(cap, sizeof cap, "%s_capture", argv[i + 1]);
+            viewdiag_open(argv[++i], cap);
         } else if (!strcmp(argv[i], "--random") && i + 1 < argc) {
             random_seed = (unsigned)atoi(argv[++i]) * 2654435761u + 1;
         } else if (argv[i][0] != '-') rom_path = argv[i];
@@ -300,6 +305,7 @@ static void save_ppm(const char *path, const uint32_t *px, int w, int h, int pit
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     int i;
+    viewdiag_frame(pixels, width, height, pitch);
     if (gvcheck) {
         const uint32_t *gv;
         int gw, gh, gp;

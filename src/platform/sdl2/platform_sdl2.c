@@ -7,6 +7,8 @@
  * Start = Pause. All of these can be rebound (Who screen -> Options -> Controls). Menus use fixed
  * controls (plat_menu_input): Enter/A choose, Escape/B go back.
  * --input-log writes what the keyboard and controllers send to tje_input.log.
+ * --view-log writes one-frame drop-outs of the wider view to tje_view.log and
+ * keeps the last two seconds of frames: F12 saves them (tje_captureN.bin).
  * F11 / Alt+Enter toggles fullscreen. Escape (or a controller's Back button) is
  * PAD_BACK: "back" on the port's menus, Start (pause) during play. --mute disables sound.
  */
@@ -16,6 +18,7 @@
 #include "gfx/present.h"
 #include "gfx/view.h"
 #include "gfx_sdlrender.h"
+#include "game/viewdiag.h"
 
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
@@ -137,6 +140,12 @@ int plat_init(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--state")) i++;  /* handled in main.c */
         else if (!strcmp(argv[i], "--mute")) audio_on = 0;
+        else if (!strcmp(argv[i], "--view-log")) {
+            char path[1100], cap[1100];
+            snprintf(path, sizeof path, "%stje_view.log", plat_data_dir());
+            snprintf(cap, sizeof cap, "%stje_capture", plat_data_dir());
+            viewdiag_open(path, cap);
+        }
         else if (!strcmp(argv[i], "--input-log")) {
             char path[1100];
             snprintf(path, sizeof path, "%stje_input.log", plat_data_dir());
@@ -213,6 +222,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     present_set_frame(pixels, width, height, pitch);
     draw_and_show();
+    viewdiag_frame(pixels, width, height, pitch);
 
     if (!vsync_ok) {
         /* NTSC Genesis runs at ~59.92 fps */
@@ -560,6 +570,13 @@ int plat_poll(uint16_t pad[2])
                 (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
                 Uint32 fs = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
                 SDL_SetWindowFullscreen(window, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+            }
+            if (e.key.keysym.sym == SDLK_F12 && viewdiag_active()) {
+                static int n;
+                char title[64];
+                viewdiag_capture("F12");
+                snprintf(title, sizeof title, "ToeJam & Earl - capture %d saved", ++n);
+                SDL_SetWindowTitle(window, title);
             }
         }
         if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_CONTROLLERDEVICEREMOVED) open_pads();

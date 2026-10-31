@@ -189,6 +189,8 @@ static void plane_row(uint8_t *buf, int off, int x_from, int x_to, int screen_y,
 
 static uint8_t ram_snap[0x10000];
 static int snap_age = 1000;          /* frames since the copy was taken */
+int g_gv_snap_age;                   /* (tests) */
+int g_gv_gameplay;                   /* (tests) this frame is the gameplay view */
 
 static inline uint32_t ob8(uint32_t a)
 {
@@ -614,7 +616,8 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
             vx = (((sp[6] << 8) | sp[7]) & 0x1FF) - 128;
             mx = (int)(ob16(0xFFB65Au + (uint32_t)slot * 8 + 6) & 0x1FF) - 128;
             my = (int)(ob16(0xFFB65Au + (uint32_t)slot * 8) & 0x3FF) - 128;
-            fprintf(g_gv_sync_log, "obj %d ram %d,%d vram %d %d ramsat %d %d\n", e, ex, ey, vx - ex, vy - ey, mx - ex, my - ey);
+            fprintf(g_gv_sync_log, "obj %d ram %d,%d vram %d %d ramsat %d %d prio %d %d pal %d %d flip %d %d\n", e, ex, ey, vx - ex, vy - ey, mx - ex, my - ey,
+                    (attr >> 15) & 1, sp[4] >> 7, ob8(pc + 5) & 3, (sp[4] >> 5) & 3, (attr >> 11) & 1, (sp[4] >> 3) & 1);
         }
     }
     nsh = 0;
@@ -1165,6 +1168,7 @@ void gameview_line(int line)
     if (line == 0) {
         int w, h;
         if (snap_age < 1000) snap_age++;
+        g_gv_snap_age = snap_age;
         present_wanted_view(&w, &h);
         gameview_set_size(w, h);
         frame_ok = frame_setup();
@@ -1242,6 +1246,7 @@ void gameview_line(int line)
 
 int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
 {
+    g_gv_gameplay = 0;
     if (!frame_ok) {
         /* while the VDP keeps its last picture (clean transitions), keep ours */
         if (last_ok && vdp_frozen()) {
@@ -1271,6 +1276,7 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
         g_gameview_reason = 8;
         return 0;
     }
+    g_gv_gameplay = 1;
     last_ok = 1;
     last_w = pic_w;
     last_h = pic_h;
