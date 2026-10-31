@@ -213,20 +213,64 @@ screen, split when it splits); network play shows each player a view centred on 
 (drawing only, the game's logic unchanged); the game's own shared status bar; for network play a
 device draws only its own player's view. Split layout in one window: the original's (stacked).
 
-### How the game draws split screen (audit so far)
+### Audit: how the game draws a frame (Oct 31)
 
-- `VHBLANK_FLAG_1` ($FF8010) = split. ToeJam's half uses plane A at $A000 and his camera; at line
-  112 the H-interrupt (HBlankJSR) points plane A at $C000 (Earl's plane, streamed separately by
-  UpdateLandAroundPlayer) and sets the scroll to Earl's camera (V scroll minus $70); plane B scrolls
-  at half speed per half. Each half is 320x112; the status bar (window plane) is shared.
-- Objects have hardware sprites per camera: $30.. for camera 0, $3C.. for camera 1, flags $2F
-  bit 1 / bit 2; the on-screen test (LOC_0000BDB8) uses 112 lines when split. Earthling wake-up
-  (LoadInEarthlings) counts Earl's camera only when split.
-- Sprites that are no object's: written into the sprite table copy ($FFB65A) by the status bar and
-  present-list code (LOC_0000AA3A..LOC_0000B93C), ReducePresentTimer / LOC_00015956 (present
-  icons), LOC_0001FBE0 and LOC_0003B4A8, SetupPlayer, Process2FEntityBit0 and the object code.
-  Measured over random play: several kinds show up in the gameplay area too (text, signs), at
-  positions not tied to an object. Each has to be identified and reproduced per view.
+Frame pipeline (all in the main loop, `LOC_0000CC62` "DrewLevelOnScreenRoutineB" and callees):
+- The main loop runs at 30 passes a second (InGameLoop alternates two kinds of pass). Objects move
+  on one pass; the sprite table copy at $FFB65A (80 x 8 bytes) is DMA'd to VRAM $F800 at VBlank
+  every other frame. In between, RAM is half updated, which is why the view reads a RAM snapshot
+  taken at that DMA (`gameview_sat_dma`).
+- Animation (`LOC_0000CCAC`..): per object, $28 counts down from $27; the next entry of the
+  animation list $1A (bit 7 = flip, $FF loop, $FE stop) picks a frame from the table at $1E; $22
+  is set. **VRAM budget:** objects that have sprites add their pattern size $2B to a per-pass total
+  and stop animating for this pass once it would pass $70; objects with no sprites ($4A = 0) always
+  animate. (Logic; unchanged by any view.)
+- Graphics: `LOC_0000C900` unpacks the frame into the object's VRAM pattern slot, once per camera
+  that shows it ($2F bit 1 = camera 0, bit 2 = camera 1). Patterns are per camera.
+- Order: `LOC_0000C690` builds the list at $FFD938 linked by $5A: objects 0-25 (0-39 on the last
+  floor), sorted by Y (lower in front), those with $2F bit 7 after all others.
+- Sprite table: `LOC_0000C222` walks that list and writes each object's hardware sprites, first for
+  camera 0 (slots $30.., shadow $48, position minus TOEJAM_CAMERA_NEW) then camera 1 (slots $3C..,
+  shadow $49, minus EARL_CAMERA_NEW). Attached objects ($4D bit 3) take their position and priority
+  from the object in $56 plus offsets $57-$59 here (`LOC_0000C150`). Hidden ($4D bit 6) objects
+  are written off screen (`LOC_0000D5F2`).
+- While a player is paused (VBLANK_FLAG_1 + player), only objects 26-39 are processed (the second
+  list, $FFD93C, built in SetupPlayer: the pause sign and the present-list icons) and written by
+  `LOC_0000CE3C`.
+
+Sprite table layout (SetupPlayer): entry 0 is the head; entries 1-10 are a fixed band of ten 32x8
+sprites at Y 108 across the screen (tile $5A9, every other one flipped): the split-screen divider,
+and the line of text the game shows in the middle of the screen (hints and messages) when not split;
+entries 11-23 are chained for the status bar; objects' sprites are allocated from the rest.
+
+Split screen (`VHBLANK_FLAG_1` $FF8010): ToeJam's half shows plane A at $A000 with his camera;
+HBlankJSR at line 112 switches plane A to $C000 (Earl's, streamed separately by
+UpdateLandAroundPlayer) and the scroll to Earl's camera (V minus $70), plane B at half speed in each
+half. The status bar (window) is shared. The on-screen test (`LOC_0000BDB8`) uses 112 lines;
+LoadInEarthlings counts Earl's camera only while split.
+
+Sprites that are not objects' (measured over random play on six floors, with the writer traced):
+- status bar icons (entries 11-23; `LOC_0000B608`/`LOC_0000B93C` and the HUD routines
+  `LOC_0000AA3A`..`LOC_0000B408`), at the status bar, or under the present list when it is open;
+- the present-list icons (objects 26-39, pause/present screens);
+- the band at Y 108 (divider / message text);
+- a few short effects at fixed screen places (tiles $2A8-$340, from `LOC_0000CDAA`/`LOC_0000CE30`
+  paths) still to identify.
+None of these is tied to a world position: per view they belong to that view's screen (the band,
+messages) or to the status bar.
+
+Parity of frame-data drawing against the hardware sprites (`TJE_GV_PIECES=1 --gvcheck`, everything
+drawn from frame data at 320x224): differences left are a one-line cut at row 183 where the game
+trims sprites at the status bar, the elevator's base, and speech-bubble offsets.
+
+What a per-view renderer needs from this:
+1. Everything from frame data (no hardware sprites): close the three differences above.
+2. Per view: its camera (game camera 0/1, or a private one for network play), its floor, plane B
+   parallax at half speed from its camera, and the screen-space sprites of its half (band/messages
+   at its centre line, pause sign).
+3. The status bar drawn from the window plane's tiles in VRAM, plus its icon sprites (entries
+   11-23), as one unit, once per window.
+4. Split screen: each half is a view; the divider band is drawn between them by us.
 
 ### Plan
 

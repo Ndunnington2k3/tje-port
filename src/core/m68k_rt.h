@@ -95,10 +95,18 @@ static inline uint32_t rd32(uint32_t a)
     return (rd16(a) << 16) | rd16(a + 2);
 }
 
+#ifdef TJE_SAT_TRACE
+/* (audit builds) who writes the sprite table copy at $FFB65A */
+void sat_trace_write(uint32_t a);
+#define SAT_TRACE(a) do { if (((a) & 0xFFFFu) >= 0xB65Au && ((a) & 0xFFFFu) < 0xB8DAu) sat_trace_write(a); } while (0)
+#else
+#define SAT_TRACE(a) do { } while (0)
+#endif
+
 static inline void wr8(uint32_t a, uint32_t v)
 {
     a &= 0xFFFFFFu;
-    if (a >= 0xE00000u) { g_ram[a & 0xFFFFu] = (uint8_t)v; return; }
+    if (a >= 0xE00000u) { SAT_TRACE(a); g_ram[a & 0xFFFFu] = (uint8_t)v; return; }
     if (a < 0x400000u) return; /* ROM */
     io_wr8(a, v & 0xFFu);
 }
@@ -107,6 +115,7 @@ static inline void wr16(uint32_t a, uint32_t v)
 {
     a &= 0xFFFFFFu;
     if (a >= 0xE00000u) {
+        SAT_TRACE(a);
         g_ram[a & 0xFFFFu] = (uint8_t)(v >> 8);
         g_ram[(a + 1) & 0xFFFFu] = (uint8_t)v;
         return;
@@ -120,6 +129,7 @@ static inline void wr32(uint32_t a, uint32_t v)
     a &= 0xFFFFFFu;
     if (a >= 0xE00000u && (a & 0xFFFFu) <= 0xFFFCu) {
         uint8_t *p = g_ram + (a & 0xFFFFu);
+        SAT_TRACE(a);
         p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
         p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
         return;

@@ -286,6 +286,24 @@ void plat_message(const char *title, const char *text)
     fprintf(stderr, "%s: %s\n", title, text);
 }
 
+#ifdef TJE_SAT_TRACE
+/* (audit builds) for each sprite-table entry: the return addresses on the 68000
+ * stack when it was last written (who wrote it) */
+uint32_t g_sat_writer[80][4];
+void sat_trace_write(uint32_t a)
+{
+    int e = (int)(((a & 0xFFFFu) - 0xB65Au) / 8), n = 0;
+    uint32_t sp = R.a[7];
+    int k;
+    if (e < 0 || e >= 80) return;
+    for (k = 0; k < 64 && n < 4; k++, sp += 2) {
+        uint32_t v = rd32(sp);
+        if (v >= 0x200 && v < 0x80000 && !(v & 1)) g_sat_writer[e][n++] = v;
+    }
+    while (n < 4) g_sat_writer[e][n++] = 0;
+}
+#endif
+
 static void save_ppm(const char *path, const uint32_t *px, int w, int h, int pitch)
 {
     FILE *f = fopen(path, "wb");

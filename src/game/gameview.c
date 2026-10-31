@@ -255,7 +255,16 @@ static void find_object_sprites(void)
             int idx = link;
             link = sp[3] & 0x7F;
             if (!object_sprite[idx % 80] && idx && sy > -32 && sy < 224 && sx > -32 && sx < 320)
+            {
+#ifdef TJE_SAT_TRACE
+                extern uint32_t g_sat_writer[80][4];
+                fprintf(g_gv_sync_log, "nonobj %d at %d,%d size %X tile %04X by %05X %05X %05X %05X\n", idx, sx, sy, sp[2],
+                        (sp[4] << 8) | sp[5], g_sat_writer[idx % 80][0], g_sat_writer[idx % 80][1],
+                        g_sat_writer[idx % 80][2], g_sat_writer[idx % 80][3]);
+#else
                 fprintf(g_gv_sync_log, "nonobj %d at %d,%d size %X tile %04X\n", idx, sx, sy, sp[2], (sp[4] << 8) | sp[5]);
+#endif
+            }
         } while (link && ++count < 80);
     }
 }
