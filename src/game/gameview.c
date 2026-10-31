@@ -222,12 +222,18 @@ static inline uint32_t ob32(uint32_t a)
  * as opposed to the status bar and other screen furniture. */
 FILE *g_gv_sync_log;           /* (tests) */
 static uint8_t object_sprite[80];
+static uint8_t sat_linked[80];   /* entries linked in the sprite table the game last sent */
 /* Hardware sprites not to draw: those of objects drawn from their frame data
  * instead (because part of them is where a hardware sprite cannot go). */
 static uint8_t sat_suppressed[80];
 #define RANK_FRONT   (-1)        /* sprites that are not objects' (status bar icons...) */
 #define RANK_SHADOW  10000       /* shadows: behind every object */
 static int cur_rank;                  /* rank of the pieces being added */
+static int cur_cam;                   /* which of the game's cameras the view is drawn for (0, 1) */
+#define CAM_BIT    (cur_cam ? 4 : 2)          /* $2F: has sprites on this camera */
+#define CAM_SLOTS  (cur_cam ? 0x3Cu : 0x30u)  /* its hardware sprites on this camera */
+#define CAM_SHADOW (cur_cam ? 0x49u : 0x48u)  /* its shadow sprite on this camera */
+static int clip_top = -(1 << 20), clip_bottom = 1 << 20;   /* rows the pieces being added may cover (split halves) */
 static int sprite_rank[80];           /* rank of each hardware sprite (by its object) */
 
 static void find_object_sprites(void)
@@ -328,6 +334,7 @@ static void sprite_row(uint8_t *buf, int off, int x_from, int x_to, int y, int w
 typedef struct {
     int x, y, w, h;          /* original-screen position and size in pixels */
     int rank;                /* drawing order: lower in front (the game's order) */
+    int cy0, cy1;            /* rows it may cover (its half of a split screen) */
     uint8_t px[PIECE_MAX_PX];
 } Piece;
 
@@ -437,11 +444,36 @@ static void add_frame(uint32_t o, uint32_t fr, int x, int y, int z, int attr, in
         if (cw < 1 || cw > 4 || ch < 1 || ch > 4) continue;
         p = &pieces[npieces];
         p->rank = cur_rank;
+        p->cy0 = clip_top;
+        p->cy1 = clip_bottom;
         p->x = x + dx;
         p->y = y + dy - z;
         p->w = cw * 8;
         p->h = ch * 8;
         if (p->x + p->w <= x0 || p->x >= x1 || p->y + p->h <= y0 || p->y >= y1) continue;
+        /* An object the game shows on this camera: its graphics as the game has
+         * them in VRAM (the game writes some itself, as speech-bubble text, puts in
+         * its effects, and uploads a new animation frame's graphics up to a few
+         * frames late); otherwise the frame data from ROM. */
+        if (o && (ob8(o + 0x2F) & CAM_BIT) && (ob8(o + 0x4A) || (!cur_cam && sat_linked[ob8(o + CAM_SLOTS) % 80]))) {
+            int slot = ob8(o + CAM_SLOTS + (uint32_t)i) % 80;
+            uint32_t ent = 0xFFB65Au + (uint32_t)slot * 8;
+            int ssz = ob8(ent + 2), sattr = (int)ob16(ent + 4);
+            if (slot && ((ssz >> 2) & 3) + 1 == cw && (ssz & 3) + 1 == ch) {
+                for (py = 0; py < p->h; py++) {
+                    int row = (sattr & 0x1000) ? p->h - 1 - py : py, c;
+                    for (c = 0; c < cw; c++) {
+                        int colx = (sattr & 0x0800) ? (cw - 1 - c) : c;
+                        uint32_t tile = ((uint32_t)sattr & 0x7FF) + (uint32_t)(colx * ch + (row >> 3));
+                        uint8_t t8[8];
+                        tile_row(t8, (((uint32_t)sattr & 0xF800) & ~0x1000u) | (tile & 0x7FF), row & 7);
+                        for (px = 0; px < 8; px++) p->px[py * p->w + c * 8 + px] = (t8[px] & PIX_OPAQUE) ? t8[px] : 0;
+                    }
+                }
+                npieces++;
+                continue;
+            }
+        }
         unpack(ob32(pc + 6), flags, cw * ch, data);
         /* in water (below ground level, players only): the rows under the
          * waterline are taken away, the first with a wavy edge; a piece wholly
@@ -521,15 +553,26 @@ static void learn_shadows(void)
     }
 }
 
-static void add_shadow(int cls, int x, int y, int x0, int y0, int x1, int y1)
+static void add_shadow(int cls, int x, int y, int x0, int y0, int x1, int y1, int own_size, uint32_t own_attr)
 {
     Piece *p;
-    int hs, vs, px, py;
-    if (cls <= 0 || cls >= SHADOW_CLASSES || !shadow_tpl[cls].known || npieces >= MAX_PIECES) return;
-    hs = ((shadow_tpl[cls].size >> 2) & 3) + 1;
-    vs = (shadow_tpl[cls].size & 3) + 1;
+    int hs, vs, px, py, size;
+    uint32_t sattr;
+    if (own_size >= 0) {            /* the object's own shadow sprite (the game picks its size) */
+        size = own_size;
+        sattr = own_attr;
+    } else {
+        if (cls <= 0 || cls >= SHADOW_CLASSES || !shadow_tpl[cls].known) return;
+        size = shadow_tpl[cls].size;
+        sattr = shadow_tpl[cls].attr;
+    }
+    if (npieces >= MAX_PIECES) return;
+    hs = ((size >> 2) & 3) + 1;
+    vs = (size & 3) + 1;
     p = &pieces[npieces];
     p->rank = RANK_SHADOW;
+    p->cy0 = clip_top;
+    p->cy1 = clip_bottom;
     p->w = hs * 8;
     p->h = vs * 8;
     p->x = x - (hs * 4);
@@ -538,7 +581,7 @@ static void add_shadow(int cls, int x, int y, int x0, int y0, int x1, int y1)
     for (py = 0; py < p->h; py++) {
         int c;
         for (c = 0; c < hs; c++) {
-            uint32_t attr = shadow_tpl[cls].attr;
+            uint32_t attr = sattr;
             int row = (attr & 0x1000) ? p->h - 1 - py : py;
             int colx = (attr & 0x0800) ? (hs - 1 - c) : c;
             uint32_t tile = (attr & 0x7FF) + (uint32_t)(colx * vs + (row >> 3));
@@ -568,7 +611,8 @@ static uint32_t item_frame(int type)
     return ob32(list);
 }
 
-static struct { int cls, x, y; } sh[NUM_OBJECTS + 100];
+static int pic_w, pic_h;   /* (defined with the picture, below) */
+static struct { int cls, x, y, size; uint32_t attr; } sh[NUM_OBJECTS + 100];
 static int nsh;
 
 /* Everything to be drawn from frame data or by its hardware sprites, put in the
@@ -587,6 +631,18 @@ static Draw draws[NUM_OBJECTS + 100];
 static int ndraws;
 
 static int frame_has_pieces(uint32_t fr, int x, int y, int z, int attr, int x0, int y0, int x1, int y1);
+
+/* Where the game itself puts an object on its screen when it writes the sprite
+ * table (LOC_0000C222: world minus its NEW camera; attached objects already
+ * moved by LOC_0000C150): to turn the table's positions into offsets. */
+static int game_screen_x(uint32_t o)
+{
+    return (int16_t)ob16(o) - (int16_t)ob16(cur_cam ? 0xFF803Au : 0xFF8036u);
+}
+static int game_screen_y(uint32_t o)
+{
+    return (int16_t)ob16(o + 2) - (int16_t)ob16(cur_cam ? 0xFF803Cu : 0xFF8038u);
+}
 
 static void queue_draw(uint32_t o, uint32_t fr, int x, int y, int z, int attr, int group, int world_y, int item,
                        int shadow)
@@ -645,11 +701,12 @@ static void add_items(const Region *r, uint32_t list, int count, int telephones,
          * of it is outside the original screen (it may get its object a frame later,
          * or none if the game has run out) */
         if (near && !frame_leaves_screen(fr, x, y, 0, 0x8000, game_bottom)) continue;
+        if (g_gameview_test_pieces && pic_w == 320 && pic_h == VDP_HEIGHT) continue;   /* (tests: as the game shows) */
         /* drawn later in the game's order: as an object it would be sorted by Y,
          * food (types $40-$50, flat on the ground) behind the rest (LOC_00014FFE
          * sets $2F bit 7 for those) */
         queue_draw(0, fr, x, y, 0, 0x8000, (!telephones && type >= 0x40 && type < 0x51) ? 1 : 0,
-                   (int16_t)ob16(a + 6), rec, (!telephones && type >= 0x51) ? 2 : 1);
+                   (int16_t)ob16(a + 6), rec, 0);   /* (no shadow: as objects they get no $2F bit 6) */
         if (frame_has_pieces(fr, x, y, 0, 0x8000, x0, y0, x1, y1)) g_gv_item_drawn[rec] = 1;
     }
 }
@@ -658,6 +715,22 @@ static void add_items(const Region *r, uint32_t list, int count, int telephones,
  * area x0..x1, y0..y1) without hardware sprites of its own: objects off the
  * original screen, objects partly where hardware sprites cannot go, items. */
 static uint8_t in_main_list[NUM_OBJECTS];
+
+static int nregions;   /* 2: split screen (the regions are set up below) */
+
+/* A player blinking (after being hit: $4D bit 4): every VBlank the game hides one
+ * player's sprites in the VDP's sprite table (LOC_0000D132, alternating players),
+ * until the next upload of the table brings them back. Is this player hidden
+ * now? (Read from the sprite table the VDP has, where the game writes it.) */
+static int player_blinked_out(uint32_t o)
+{
+    uint32_t base = (uint32_t)(vdp_reg[5] & 0x7E) << 9;
+    int idx = (int)((o - OBJECTS) / OBJECT_SIZE), slot;
+    if (idx > 1 || !(rd8(o + 0x4D) & 0x10)) return 0;   /* (as LOC_0000D132 sees it, at VBlank) */
+    slot = ob8(o + ((ob8(o + 0x2F) & 2) ? 0x30u : 0x3Cu)) % 80;
+    if (!slot) return 0;
+    return ((((uint32_t)vdp_vram[(base + (uint32_t)slot * 8) & 0xFFFF] << 8) | vdp_vram[(base + (uint32_t)slot * 8 + 1) & 0xFFFF]) & 0x3FF) == 1;
+}
 
 /* Does an object's shadow reach where the game cuts its sprites (under the
  * status bar, past the screen edges)? A flying object (Cupid) can be well
@@ -687,7 +760,7 @@ static int frame_has_pieces(uint32_t fr, int x, int y, int z, int attr, int x0, 
     return 0;
 }
 
-static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int y1, int game_bottom)
+static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int y1, int game_bottom, int first)
 {
     uint32_t order[NUM_OBJECTS];
     uint8_t listed[NUM_OBJECTS];
@@ -695,7 +768,7 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
     /* in the game's drawing order (LOC_0000C4DA): the object lists at $FFD938 and
      * $FFD93C, linked through $5A; front first */
     memset(listed, 0, sizeof listed);
-    memset(sat_suppressed, 0, sizeof sat_suppressed);
+    if (first) memset(sat_suppressed, 0, sizeof sat_suppressed);
     memset(in_main_list, 0, sizeof in_main_list);
     for (k = 0; k < 2; k++) {
         uint32_t o = ob32(k ? 0xFFD93Cu : 0xFFD938u);
@@ -709,6 +782,16 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
     for (e = 0; e < NUM_OBJECTS; e++)
         if (!listed[e]) order[norder++] = OBJECTS + (uint32_t)e * OBJECT_SIZE;
     learn_shadows();
+    {
+        /* the entries linked in the sprite table the game last sent (camera 0's
+         * chain; the split screen's second chain is set at its H-interrupt) */
+        int link = 0, count = 0;
+        memset(sat_linked, 0, sizeof sat_linked);
+        do {
+            link = ob8(0xFFB65Au + (uint32_t)link * 8 + 3) & 0x7F;
+            if (link && link < 80) sat_linked[link] = 1;
+        } while (link && link < 80 && ++count < 80);
+    }
     if (g_gv_sync_log) {
         /* (tests) where the VDP's sprite table (VRAM) puts each object's first
          * sprite, against where its frame data in RAM would put it */
@@ -730,13 +813,32 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
             my = (int)(ob16(0xFFB65Au + (uint32_t)slot * 8) & 0x3FF) - 128;
             fprintf(g_gv_sync_log, "obj %d ram %d,%d vram %d %d ramsat %d %d prio %d %d pal %d %d flip %d %d\n", e, ex, ey, vx - ex, vy - ey, mx - ex, my - ey,
                     (attr >> 15) & 1, sp[4] >> 7, ob8(pc + 5) & 3, (sp[4] >> 5) & 3, (attr >> 11) & 1, (sp[4] >> 3) & 1);
+            {
+                int i, n = ob8(fr);
+                for (i = 1; i < n && i < 12; i++) {
+                    uint32_t pc2 = fr + 4 + (uint32_t)i * 10;
+                    int slot2 = ob8(o + 0x30 + (uint32_t)i) % 80;
+                    const uint8_t *s2 = &vdp_vram[(base + (uint32_t)slot2 * 8) & 0xFFFF];
+                    int ex2 = (int16_t)ob16(o) - r->cam_x + (int8_t)ob8(pc2 + ((attr & 0x0800) ? 4 : 2));
+                    int ey2 = (int16_t)ob16(o + 2) - r->cam_y + (int8_t)ob8(pc2 + 3) - (int16_t)ob16(o + 4);
+                    int vy2 = (((s2[0] << 8) | s2[1]) & 0x3FF) - 128, vx2 = (((s2[6] << 8) | s2[7]) & 0x1FF) - 128;
+                    int vs2 = (s2[2] & 3) + 1, hs2 = ((s2[2] >> 2) & 3) + 1;
+                    if (vx2 != ex2 || vy2 != ey2 || vs2 != ob8(pc2 + 1) || hs2 != ob8(pc2))
+                        fprintf(g_gv_sync_log, "piece obj %d #%d frame %06X expect %d,%d %dx%d vram %d,%d %dx%d\n", e, i, fr, ex2, ey2,
+                                ob8(pc2), ob8(pc2 + 1), vx2, vy2, hs2, vs2);
+                }
+            }
         }
     }
     nsh = 0;
     ndraws = 0;
-    g_gv_drawn_mask = 0;
-    npieces = 0;
-    for (k = 0; k < 80; k++) sprite_rank[k] = RANK_FRONT;
+    if (first) {
+        g_gv_drawn_mask = 0;
+        npieces = 0;
+        for (k = 0; k < 80; k++) sprite_rank[k] = RANK_FRONT;
+    }
+    clip_top = nregions == 2 ? r->top : -(1 << 20);
+    clip_bottom = nregions == 2 ? r->bottom : (1 << 20);
     for (k = 0; k < norder; k++) {
         uint32_t o = order[k], fr;
         int ox_, oy_, z, attr;
@@ -744,19 +846,31 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
         if (!(ob8(o + 0x2F) & 1)) continue;                /* exists */
         if ((int)ob8(o + 0x4C) != r->level) continue;
         if (ob8(o + 0x4D) & 0x40) continue;                /* hidden */
+        if (player_blinked_out(o)) continue;
         fr = ob32(o + 0x22);
         attr = (int)ob16(o + 0x2C);
         z = (int16_t)ob16(o + 4);
         ox_ = (int16_t)ob16(o) - r->cam_x;
         oy_ = (int16_t)ob16(o + 2) - r->cam_y + r->top;
-        if (ob8(o + 0x2F) & 2) {                           /* has sprites on camera 0 */
+        if ((ob8(o + 0x4D) & 0x08) && (int8_t)ob8(o + 0x56) >= 0) {
+            /* attached to another object (speech bubbles): where LOC_0000C150 puts it
+             * when it writes the sprites, the other object plus offsets $57-$59 */
+            uint32_t par = OBJECTS + (uint32_t)(ob8(o + 0x56) % NUM_OBJECTS) * OBJECT_SIZE;
+            ox_ = (int16_t)ob16(par) + (int8_t)ob8(o + 0x57) - r->cam_x;
+            oy_ = (int16_t)ob16(par + 2) + (int8_t)ob8(o + 0x58) - r->cam_y + r->top;
+            z = (int16_t)ob16(par + 4) + (int8_t)ob8(o + 0x59);
+        }
+        if (ob8(o + 0x2F) & CAM_BIT) {                     /* has sprites on this camera */
             int i, n;
             int leaves = frame_leaves_screen(fr, ox_, oy_, z, attr, game_bottom) ||
                          shadow_leaves_screen(ob8(o + 0x2E), ox_, oy_, game_bottom);
             /* no sprites yet: wholly inside, the game is not showing it; partly
              * outside, it has just come onto the game's screen and gets its sprites
              * a frame later (drawn, or it would blink at the old screen edge) */
-            if (!ob8(o + 0x4A) && (!leaves || g_gameview_test_pieces)) continue;
+            /* (the game shows what its sprite table links: a new object can still
+             * have $4A = 0 while its entries are already in the table it sent) */
+            int shown = ob8(o + 0x4A) || (!cur_cam && sat_linked[ob8(o + CAM_SLOTS) % 80]);
+            if (!shown && (!leaves || g_gameview_test_pieces)) continue;
             if (!g_gameview_test_pieces && !leaves) {
                 g_gv_drawn_mask |= 1ull << ((o - OBJECTS) / OBJECT_SIZE);   /* (drawn by its sprites) */
                 queue_draw(o, fr, ox_, oy_, z, attr, group, (int16_t)ob16(o + 2), -1, 0);
@@ -765,20 +879,28 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
             }
             /* drawn from its frame data instead of its sprites */
             n = (fr >= 0x200 && fr < 0x400000) ? ob8(fr) : 0;
-            for (i = 0; i < n && i < 12; i++) sat_suppressed[ob8(o + 0x30 + (uint32_t)i) % 80] = 1;
-            if (ob8(o + 0x48)) sat_suppressed[ob8(o + 0x48) % 80] = 1;     /* its shadow: drawn below */
+            for (i = 0; i < n && i < 12; i++) sat_suppressed[ob8(o + CAM_SLOTS + (uint32_t)i) % 80] = 1;
+            if (ob8(o + CAM_SHADOW)) sat_suppressed[ob8(o + CAM_SHADOW) % 80] = 1;     /* its shadow: drawn below */
             sat_suppressed[0] = 0;
+        } else if (g_gameview_test_pieces && pic_w == 320 && pic_h == VDP_HEIGHT) {
+            continue;   /* (tests at the original size: only what the game shows, to compare the drawing) */
         } else if (on_game_screen(o, r) && !frame_leaves_screen(fr, ox_, oy_, z, attr, game_bottom)) {
             /* wholly where the original screen shows gameplay, yet no sprites: the
              * game is not showing it. (Partly outside, draw it: the game may simply
              * not have given it sprites yet, or have run out of them.) */
             continue;
         }
-        if (z > 0xE0 || z < -0xE0) continue;
+        /* (too high or low: the game hides its sprites, LOC_0000C222, but keeps
+         * its shadow) */
+        if (z > 0xE0 || z < -0xE0) fr = 0;
         if (ox_ < x0 - 96 || ox_ > x1 + 96 || oy_ < y0 - 96 || oy_ > y1 + 160) continue;
         if (frame_has_pieces(fr, ox_, oy_, z, attr, x0, y0, x1, y1))
             g_gv_drawn_mask |= 1ull << ((o - OBJECTS) / OBJECT_SIZE);
-        queue_draw(o, fr, ox_, oy_, z, attr, group, (int16_t)ob16(o + 2), -1, ob8(o + 0x2E));
+        /* (a shadow only for objects the game gives one: $2F bit 6) */
+        queue_draw(o, fr, ox_, oy_, z, attr, group, (int16_t)ob16(o + 2), -1,
+                   !(ob8(o + 0x2F) & 0x40) ? 0 :
+                   /* (with sprites: once the game has given it its shadow sprite) */
+                   ((ob8(o + 0x2F) & CAM_BIT) && !ob8(o + CAM_SHADOW)) ? 0 : ob8(o + 0x2E));
     }
     add_items(r, LEVEL_ITEMS, 64, 0, x0, y0, x1, y1, game_bottom);
     add_items(r, DROPPED_PRESENTS, 32, 0, x0, y0, x1, y1, game_bottom);
@@ -791,8 +913,8 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
         cur_rank = k;
         if (d->sat) {
             int i, n = (d->fr >= 0x200 && d->fr < 0x400000) ? ob8(d->fr) : 0;
-            for (i = 0; i < n && i < 12; i++) sprite_rank[ob8(d->o + 0x30 + (uint32_t)i) % 80] = k;
-            if (ob8(d->o + 0x48)) sprite_rank[ob8(d->o + 0x48) % 80] = RANK_SHADOW;
+            for (i = 0; i < n && i < 12; i++) sprite_rank[ob8(d->o + CAM_SLOTS + (uint32_t)i) % 80] = k;
+            if (ob8(d->o + CAM_SHADOW)) sprite_rank[ob8(d->o + CAM_SHADOW) % 80] = RANK_SHADOW;
             continue;
         }
         if (npieces >= MAX_PIECES) break;
@@ -801,27 +923,57 @@ static void find_offscreen_objects(const Region *r, int x0, int y0, int x1, int 
             sh[nsh].cls = d->shadow;
             sh[nsh].x = d->x;
             sh[nsh].y = d->y;
+            sh[nsh].size = -1;
+            if (d->o && (ob8(d->o + 0x2F) & CAM_BIT) && ob8(d->o + CAM_SHADOW)) {
+                /* its own shadow sprite: the size and place the game gave it,
+                 * relative to the object */
+                uint32_t ent = 0xFFB65Au + (uint32_t)(ob8(d->o + CAM_SHADOW) % 80) * 8;
+                int ex = (int)(ob16(ent + 6) & 0x1FF) - 128, ey = (int)(ob16(ent) & 0x3FF) - 128;
+                int hs = ((ob8(ent + 2) >> 2) & 3) + 1;
+                sh[nsh].size = ob8(ent + 2);
+                sh[nsh].attr = ob16(ent + 4);
+                /* (add_shadow places it at x - width/2, y - 4: express the game's
+                 * place that way; the game's camera is this view's here) */
+                if (ex > -128 && ey > -128) {
+                    sh[nsh].x = ex + hs * 4 + (d->x - game_screen_x(d->o));
+                    sh[nsh].y = ey + 4 + (d->y - game_screen_y(d->o)) - (cur_cam ? 0x70 : 0);   /* (camera 1's entries are 112 lower) */
+                }
+            }
             nsh++;
         }
     }
     /* shadows behind everything (the game links them after the objects) */
-    for (k = 0; k < nsh; k++) add_shadow(sh[k].cls, sh[k].x, sh[k].y, x0, y0, x1, y1);
+    for (k = 0; k < nsh; k++) add_shadow(sh[k].cls, sh[k].x, sh[k].y, x0, y0, x1, y1, sh[k].size, sh[k].attr);
     if (npieces > g_gv_max_pieces) g_gv_max_pieces = npieces;
 }
 
 void gameview_sat_dma(void)
 {
+    if (g_gv_sync_log) fprintf(g_gv_sync_log, "satdma at line %d\n", vdp_current_line());
     memcpy(ram_snap, g_ram, sizeof ram_snap);
     snap_age = 0;
+}
+
+/* Has the status bar's H-interrupt cut the objects out of the sprite chain
+ * (entry 23 linked straight to the last entry, 79)? */
+static int hud_unlinked(void)
+{
+    uint32_t base = (uint32_t)(vdp_reg[5] & 0x7E) << 9;
+    return (vdp_vram[(base + 23 * 8 + 3) & 0xFFFF] & 0x7F) == 79;
 }
 
 static void pieces_row(uint8_t *buf, int off, int x_from, int x_to, int y)
 {
     int i, x;
+    /* (tests at the original size: from the status bar's line the game unlinks
+     * the objects' hardware sprites, LOC_0000CFEE at its H-interrupt; do the same
+     * to compare) */
+    if (g_gameview_test_pieces && pic_w == 320 && pic_h == VDP_HEIGHT && hud_unlinked()) return;
+
     for (i = 0; i < npieces; i++) {
         const Piece *p = &pieces[i];
         const uint8_t *src;
-        if (y < p->y || y >= p->y + p->h) continue;
+        if (y < p->y || y >= p->y + p->h || y < p->cy0 || y >= p->cy1) continue;
         src = p->px + (y - p->y) * p->w;
         for (x = 0; x < p->w; x++) {
             int sx = p->x + x;
@@ -854,7 +1006,7 @@ static int off_x, off_y;                 /* where the original screen's (0, 0) i
 static int frame_ok;                     /* every line so far drawn here */
 int g_gameview_reason;                   /* why the last frame was not drawn here (tests) */
 static Region region[2];
-static int nregions, win_from, win_to;   /* rows covered by the window plane at line 0 */
+static int win_from, win_to;   /* rows covered by the window plane at line 0 */
 
 void gameview_set_size(int w, int h)
 {
@@ -1435,9 +1587,19 @@ void gameview_line(int line)
             find_object_sprites();
             /* (at the original size, exactly the original picture: objects off its
              * screen are not drawn, even the few pixels of them that would reach in) */
-            if (pic_w != 320 || pic_h != VDP_HEIGHT || g_gameview_test_pieces)
-                find_offscreen_objects(&region[0], -off_x, -off_y, pic_w - off_x, pic_h - off_y,
-                                       win_from > 0 ? win_from : VDP_HEIGHT);
+            if (pic_w != 320 || pic_h != VDP_HEIGHT || g_gameview_test_pieces) {
+                int bottom = win_from > 0 ? win_from : VDP_HEIGHT;
+                cur_cam = 0;
+                if (nregions == 2) {
+                    /* (split screen: each half with its camera's objects, kept to its rows) */
+                    find_offscreen_objects(&region[0], 0, 0, 320, region[0].bottom, region[0].bottom, 1);
+                    cur_cam = 1;
+                    find_offscreen_objects(&region[1], 0, region[1].top, 320, region[1].bottom, bottom, 0);
+                    cur_cam = 0;
+                } else {
+                    find_offscreen_objects(&region[0], -off_x, -off_y, pic_w - off_x, pic_h - off_y, bottom, 1);
+                }
+            }
             else {
                 npieces = 0;
                 memset(sat_suppressed, 0, sizeof sat_suppressed);

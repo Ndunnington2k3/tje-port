@@ -240,9 +240,9 @@ Frame pipeline (all in the main loop, `LOC_0000CC62` "DrewLevelOnScreenRoutineB"
 
 Sprite table layout (SetupPlayer): entry 0 is the head; entries 1-10 are a fixed band of ten 32x8
 sprites at Y 108 across the screen (tile $5A9, every other one flipped): the split-screen divider,
-and (to confirm) the hint/message box the game shows in the middle of the screen when not split;
-entries 11-23 are chained after it (status bar icons: to confirm); objects' sprites are allocated
-from the rest.
+and the hint/message box the game shows in the middle of the screen when not split (seen at Y 108
+in one-player play); entries 11-23 are the status bar icons (written by the status-bar routines,
+`LOC_0000B868` etc., also during the frame); objects' sprites are allocated from the rest.
 
 Split screen (`VHBLANK_FLAG_1` $FF8010): ToeJam's half shows plane A at $A000 with his camera;
 HBlankJSR at line 112 switches plane A to $C000 (Earl's, streamed separately by
@@ -255,14 +255,44 @@ Sprites that are not objects' (measured over random play on six floors, with the
   `LOC_0000AA3A`..`LOC_0000B408`), at the status bar, or under the present list when it is open;
 - the present-list icons (objects 26-39, pause/present screens);
 - the band at Y 108 (divider / message text);
-- a few short effects at fixed screen places (tiles $2A8-$340, from `LOC_0000CDAA`/`LOC_0000CE30`
-  paths) still to identify.
+- the present-list and present-opening icons (tiles $2A8-$358): objects 26-39 of the second list
+  ($FFD93C), written by the object code (`LOC_0000CC62` -> `LOC_0000CE3C`) while a player is paused
+  or the list is open; they have no $2F camera bits, so they are not counted as objects' sprites.
 None of these is tied to a world position: per view they belong to that view's screen (the band,
 messages) or to the status bar.
 
-Parity of frame-data drawing against the hardware sprites (`TJE_GV_PIECES=1 --gvcheck`, everything
-drawn from frame data at 320x224): differences left are a one-line cut at row 183 where the game
-trims sprites at the status bar, the elevator's base, and speech-bubble offsets.
+More of the game's drawing, found while closing the differences (Oct 31):
+- At the status bar's line (H-interrupt, register 10 = $B6) `LOC_0000CFEE` relinks sprite-table
+  entry 23 straight to entry 79, cutting every object's sprite out below it; in split screen the
+  H-interrupt at line 112 (`LOC_0000D002`/`LOC_0000D02E`) switches the chain to camera 1's sprites.
+  The VBlank restores the chain (`LOC_0000CF9A`).
+- Blinking players ($4D bit 4, after a hit): at each VBlank `LOC_0000D132` writes Y = 1 into one
+  player's sprites in VRAM (alternating players) until the next table upload.
+- Some graphics exist only in VRAM: speech-bubble text is written there by the game, effects
+  (wading, flashing) are applied there, and a new animation frame's graphics can arrive a few frames
+  after $22 changes (upload budget). So an object the game shows on a camera is drawn from its
+  graphics in VRAM (tile, palette, flip from its own sprite-table entries); only objects the game
+  has not given sprites use the frame data in ROM.
+- An object the game has just created can have $4A = 0 while its entries are already linked in the
+  table it sent: shown.
+- Attached objects (speech bubbles, $4D bit 3) are placed as `LOC_0000C150` does: the object in $56
+  plus offsets $57-$59.
+- Shadows: only for objects with $2F bit 6; size and place from the object's own shadow entry ($48 /
+  $49) when it has one (the game varies it, e.g. with height); objects too high or low (|Z| > $E0)
+  keep their shadow without their sprites. Floor items get no shadow.
+
+Parity (`TJE_GV_PIECES=1 --gvcheck`: every object drawn by the view instead of the hardware sprites,
+compared with the VDP; at 320x224 only what the game shows, and its status-bar cut, so the drawing
+itself is compared). Random play on eight floors plus a 2-player run with split screen:
+
+| | frames | split | differing frames | pixels |
+|---|---|---|---|---|
+| before (one-frame snapshot only) | ~27,000 | 0 | 3,500+ | 1,000,000+ |
+| now | 29,817 | 2,554 | 64 | 30,000 |
+
+The 64 left are single moments: an animation frame whose graphics the game uploads late on a frame
+our snapshot already has, a present thrown with a bounce, a yes/no prompt's first frame, the first
+frame after a state load (no snapshot yet). Split screen: 918 split frames, 2 differing (64 px).
 
 What a per-view renderer needs from this:
 1. Everything from frame data (no hardware sprites): close the three differences above.

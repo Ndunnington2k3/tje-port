@@ -44,6 +44,7 @@
 static const char *rom_path = "tje.bin";
 static unsigned max_frames = 600;
 static unsigned frame;
+static unsigned gv_split_frames;
 static struct { unsigned frame; char path[256]; } shots[MAX_EVENTS];
 static int nshots;
 static struct { unsigned frame; char path[256]; } dumps[MAX_EVENTS];
@@ -182,8 +183,8 @@ void plat_shutdown(void)
     }
     if (gvcheck) {
         int r;
-        fprintf(stderr, "gvcheck: %u gameplay frames drawn, %u differ (%lu pixels)\n",
-                gv_frames, gv_bad_frames, gv_bad_pixels);
+        fprintf(stderr, "gvcheck: %u gameplay frames drawn (%u split), %u differ (%lu pixels)\n",
+                gv_frames, gv_split_frames, gv_bad_frames, gv_bad_pixels);
         fprintf(stderr, "gvcheck: not drawn:");
         for (r = 0; r < 16; r++) if (gv_reasons[r]) fprintf(stderr, " [%d] %u", r, gv_reasons[r]);
         fprintf(stderr, "\n");
@@ -304,6 +305,23 @@ void sat_trace_write(uint32_t a)
 }
 #endif
 
+#ifdef TJE_SAT_TRACE
+void sat_vram_write(uint32_t a, uint32_t v, int line, int vblank)
+{
+    static FILE *f;
+    uint32_t sp = R.a[7], ret[3] = {0, 0, 0};
+    int k, n = 0;
+    if (!getenv("TJE_SAT_VRAM")) return;
+    if (!f) f = fopen(getenv("TJE_SAT_VRAM"), "w");
+    for (k = 0; k < 64 && n < 3; k++, sp += 2) {
+        uint32_t w = rd32(sp);
+        if (w >= 0x200 && w < 0x80000 && !(w & 1)) ret[n++] = w;
+    }
+    fprintf(f, "frame %u line %d vbl %d entry %d +%d = %04X by %05X %05X %05X\n", frame, line, vblank, (int)((a & 0x3FF) / 8),
+            (int)(a & 7), v, ret[0], ret[1], ret[2]);
+}
+#endif
+
 static void save_ppm(const char *path, const uint32_t *px, int w, int h, int pitch)
 {
     FILE *f = fopen(path, "wb");
@@ -343,6 +361,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             int x, y;
             extern int g_gv_kept;
             gv_frames++;
+            if (rd8(0xFF8010u)) gv_split_frames++;
             if (gw != 320 || gh != VDP_HEIGHT) goto gv_done;   /* a wider view: nothing to compare */
             if (g_gv_kept) goto gv_done;                       /* the last picture kept (clean transitions) */
             const uint32_t *v = vdp_framebuffer();     /* the VDP's own picture */

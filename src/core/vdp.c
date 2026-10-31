@@ -4,6 +4,10 @@
 #include "ser.h"
 
 #include <string.h>
+#ifdef TJE_SAT_TRACE
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 
 uint8_t vdp_vram[0x10000];
 uint16_t vdp_cram[64];
@@ -186,7 +190,15 @@ static void vram_write16(uint32_t a, uint32_t v)
 static void port_write(uint32_t v)
 {
     switch (code & 0x0F) {
-    case 1: vram_write16(addr, v); break;
+    case 1:
+#ifdef TJE_SAT_TRACE
+        {
+            extern void sat_vram_write(uint32_t a, uint32_t v, int line, int vblank);
+            if (addr >= ((uint32_t)(vdp_reg[5] & 0x7F) << 9) && addr < ((uint32_t)(vdp_reg[5] & 0x7F) << 9) + 640)
+                sat_vram_write(addr, v, cur_line, vblank_flag);
+        }
+#endif
+        vram_write16(addr, v); break;
     case 3: {
         int i = (addr >> 1) & 0x3F;
         vdp_cram[i] = (uint16_t)(v & 0x0EEE);
@@ -425,6 +437,10 @@ static void render_sprites(uint8_t *out, int line, int width)
         int sx = (((s[6] << 8) | s[7]) & 0x1FF) - 128;
         link = s[3] & 0x7F;
         if (line >= sy && line < sy + vs * 8) {
+#ifdef TJE_SAT_TRACE
+            if (getenv("GVDBGLINE") && line == atoi(getenv("GVDBGLINE")))
+                fprintf(stderr, "VDPline %d: entry %d at %d,%d %dx%d attr %04X onl %d masked %d budget %d\n", line, (int)(s - &vdp_vram[base]) / 8, sx, sy, hs, vs, attr, onl, masked, dotbudget);
+#endif
             if (sx == -128 && onl > 0) masked = 1;
             onl++;
             if (onl > perline) break;
