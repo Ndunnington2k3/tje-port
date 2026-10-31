@@ -240,8 +240,9 @@ Frame pipeline (all in the main loop, `LOC_0000CC62` "DrewLevelOnScreenRoutineB"
 
 Sprite table layout (SetupPlayer): entry 0 is the head; entries 1-10 are a fixed band of ten 32x8
 sprites at Y 108 across the screen (tile $5A9, every other one flipped): the split-screen divider,
-and the line of text the game shows in the middle of the screen (hints and messages) when not split;
-entries 11-23 are chained for the status bar; objects' sprites are allocated from the rest.
+and (to confirm) the hint/message box the game shows in the middle of the screen when not split;
+entries 11-23 are chained after it (status bar icons: to confirm); objects' sprites are allocated
+from the rest.
 
 Split screen (`VHBLANK_FLAG_1` $FF8010): ToeJam's half shows plane A at $A000 with his camera;
 HBlankJSR at line 112 switches plane A to $C000 (Earl's, streamed separately by
