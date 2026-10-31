@@ -335,3 +335,14 @@ Checked by `TJE_VIEWCHECK=prefix` (null platform): the view at 320x224 (or each 
 against the VDP's gameplay rows. Result: frame 0 after a state load and a handful of transient
 frames differ; split 3 of 918. `--gvcheck` at 320x224 stays at 0. Pictures narrower than 320 or
 shorter than 224 are clipped (the window rows and the status bar are pasted clipped).
+
+### Leftovers to remove later (noted Oct 31; not urgent, user's call)
+
+- Wide gameplay frames still run the old line-by-line path in full before the views overwrite it
+  (~0.57 ms/frame at 480x272, ~22%). Keep from it only: the floor-layout copy at line 0, the
+  present-list line capture, split plane A check (reason 5/6), hold mode.
+- ~400 lines used only by that path (find_offscreen_objects, sprite_row / find_object_sprites,
+  wide parts of draw_row); 320x224 could be shown straight from the VDP instead.
+- VDP line rendering during gameplay: needed only for the present list, hold mode and tests.
+  Remove before the PSP / 3DS work.
+- Debug-only loggers (TJE_GV_BLINK/FLICKER/SYNC, --view-log, SAT_TRACE): cost nothing unless on.
