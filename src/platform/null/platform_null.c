@@ -53,7 +53,7 @@ static struct { unsigned frame; char path[256]; } dumps[MAX_EVENTS];
 static int ndumps;
 static struct { unsigned frame; char path[256]; } vdumps[MAX_EVENTS];
 static int nvdumps;
-static struct { unsigned frame, len; uint16_t buttons; } presses[MAX_EVENTS];
+static struct { unsigned frame, len; uint16_t buttons; int pad; } presses[MAX_EVENTS];
 static int npresses;
 static unsigned random_seed;
 static uint16_t random_buttons;
@@ -108,9 +108,10 @@ int plat_init(int argc, char **argv)
             shots[nshots].frame = (unsigned)atoi(a);
             snprintf(shots[nshots].path, sizeof shots[nshots].path, "%s", c + 1);
             nshots++;
-        } else if (!strcmp(argv[i], "--press") && i + 1 < argc && npresses < MAX_EVENTS) {
+        } else if ((!strcmp(argv[i], "--press") || !strcmp(argv[i], "--press2")) && i + 1 < argc && npresses < MAX_EVENTS) {
             unsigned f = 0, n = 0;
             char btn[32] = {0};
+            presses[npresses].pad = argv[i][7] == '2';   /* (--press2: player 2's pad) */
             if (sscanf(argv[++i], "%u:%u:%31s", &f, &n, btn) == 3) {
                 presses[npresses].frame = f;
                 presses[npresses].len = n;
@@ -349,6 +350,11 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
     int i;
     viewdiag_frame(pixels, width, height, pitch);
     if (getenv("TJE_GV_REASONS")) {
+        static int last_split = -1;
+        if ((int)rd8(0xFF8010u) != last_split) {
+            fprintf(stderr, "frame %u: split %d\n", frame, rd8(0xFF8010u));
+            last_split = (int)rd8(0xFF8010u);
+        }
         const uint32_t *g_; int a_, b_, c_;
         extern int g_gv_split_menu;
         g_gv_split_menu = 0;
@@ -684,7 +690,7 @@ int plat_poll(uint16_t pad[2])
             }
         }
     for (i = 0; i < npresses; i++)
-        if (frame >= presses[i].frame && frame < presses[i].frame + presses[i].len) pad[0] |= presses[i].buttons;
+        if (frame >= presses[i].frame && frame < presses[i].frame + presses[i].len) pad[presses[i].pad] |= presses[i].buttons;
     if (capturing) pad[0] = pad[1] = 0;   /* as SDL: nothing reaches the game while capturing */
     return frame < max_frames;
 }

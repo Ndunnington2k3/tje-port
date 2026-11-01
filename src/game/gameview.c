@@ -2529,18 +2529,57 @@ int gameview_map_open(int player) { return map_open[player & 1]; }
 
 /* (called with each frame's input) A player's Map button in two-window play:
  * opens or closes their map here instead of the game's. */
+/* The soft pause (two-window mode): Start opens a menu in that player's window; the
+ * game goes on (the other player plays on, this one's character waits). */
+static struct { int open, sel, ask; } soft_pause[2];
+
+int gameview_soft_pause_open(int player) { return soft_pause[player & 1].open; }
+
 void gameview_map_input(uint16_t pad[2])
 {
     static uint16_t prev[2];
     extern int g_in_game;
-    int p, playing = g_gv_windows && g_in_game && g_gv_gameplay && rd8(TOEJAMS_LEVEL) != FINAL_LEVEL;
+    /* (from game memory and the input only: both machines of a network game decide
+     * the same) */
+    int p, playing = g_gv_windows && g_in_game && rd8(TOEJAMS_LEVEL) != FINAL_LEVEL;
     for (p = 0; p < 2; p++) {
         uint16_t now = pad[p], down = (uint16_t)(now & ~prev[p]);
         prev[p] = now;
-        if (!playing || !player_in_game(p)) { map_open[p] = 0; continue; }
+        if (!playing || !player_in_game(p)) { map_open[p] = 0; soft_pause[p].open = 0; continue; }
+        if (soft_pause[p].open) {
+            int n = 2;
+            if (down & PAD_UP) soft_pause[p].sel = (soft_pause[p].sel + n - 1) % n;
+            if (down & PAD_DOWN) soft_pause[p].sel = (soft_pause[p].sel + 1) % n;
+            if (down & PAD_B) {
+                if (soft_pause[p].ask) soft_pause[p].ask = 0, soft_pause[p].sel = 1;
+                else soft_pause[p].open = 0;
+            } else if (down & (PAD_A | PAD_C | PAD_START)) {
+                if (!soft_pause[p].ask) {
+                    if (soft_pause[p].sel == 0) soft_pause[p].open = 0;          /* resume */
+                    else { soft_pause[p].ask = 1; soft_pause[p].sel = 0; }       /* quit? no / yes */
+                } else if (soft_pause[p].sel == 1) {
+                    extern void save_quit_to_menu(void);
+                    soft_pause[0].open = soft_pause[1].open = 0;
+                    map_open[0] = map_open[1] = 0;
+                    save_quit_to_menu();   /* (network play: leaving the game) */
+                } else { soft_pause[p].ask = 0; soft_pause[p].sel = 1; }
+            }
+            pad[p] = 0;   /* (the character waits) */
+            continue;
+        }
+        if (down & PAD_START) {
+            /* (never the game's pause: it would stop both players) */
+            soft_pause[p].open = 1;
+            soft_pause[p].sel = 0;
+            soft_pause[p].ask = 0;
+            map_open[p] = 0;
+            pad[p] = 0;
+            continue;
+        }
+        pad[p] &= (uint16_t)~PAD_START;
         if (map_open[p]) {
             if (down & (PAD_C | PAD_B)) map_open[p] = 0;
-            pad[p] &= (uint16_t)PAD_START;   /* (the character waits; Start still pauses) */
+            pad[p] = 0;   /* (the character waits) */
             continue;
         }
         if (!rd8(MENU_FLAG(p))) {
@@ -2742,71 +2781,149 @@ static void render_map(int win, int p, uint32_t *out, int w, int h)
     }
 }
 
+/* The soft pause's box: the status bar's frame and font (tiles the game keeps in
+ * VRAM during play), in the middle of the original screen. */
+static void draw_soft_pause(uint32_t *out, int w, int h, int p)
+{
+    enum { SPW = 20, SPH = 7 };
+    static uint16_t box[SPH][SPW];
+    static const char *items[2][2] = {{"resume", "quit to menu"}, {"no", "yes"}};
+    int r, c, x0 = (w - SPW * 8) / 2, y0 = (h - SPH * 8) / 2, k;
+    uint32_t frame = 0xA82FCu;
+    for (r = 0; r < SPH; r++)
+        for (c = 0; c < SPW; c++) {
+            int src_row = r == 0 ? 0 : r == SPH - 1 ? 3 : (r & 1) ? 1 : 2;
+            int src_col = c == 0 ? 0 : c == SPW - 1 ? 39 : (r == 0 || r == SPH - 1) ? 1 + (c - 1) % 38 : -1;
+            int b = src_col < 0 ? 0 : (int)rd8(frame + (uint32_t)(src_row * 40 + src_col)), t = b & 0x3F;
+            if (b & 0x40) t |= 0x0800;
+            if (b & 0x80) t |= 0x1000;
+            box[r][c] = (uint16_t)(t + 0x8580);
+        }
+    {
+        const char *title = soft_pause[p].ask ? "quit to menu?" : (p ? "earl - paused" : "toejam - paused");
+        for (k = 0; title[k] && k < SPW - 2; k++) {
+            int ch = title[k], t = ch == ' ' ? 0 : ch == '-' ? 0x22 : ch == '?' ? 0x1B : ch - 'a' + 1;
+            box[1][(SPW - (int)strlen(title)) / 2 + k] = (uint16_t)(0x85B4 + t);
+        }
+        for (r = 0; r < 2; r++) {
+            const char *it = items[soft_pause[p].ask][r];
+            int col = 5;
+            if (soft_pause[p].sel == r) {
+                box[3 + r][3] = (uint16_t)(0x85B4 + 0x22);   /* (the choice: "-") */
+            }
+            for (k = 0; it[k] && col + k < SPW - 1; k++) {
+                int ch = it[k], t = ch == ' ' ? 0 : ch - 'a' + 1;
+                box[3 + r][col + k] = (uint16_t)(0x85B4 + t);
+            }
+        }
+    }
+    for (r = 0; r < SPH * 8; r++) {
+        int y = y0 + r;
+        if (y < 0 || y >= h) continue;
+        for (c = 0; c < SPW; c++) {
+            uint8_t t8[8];
+            tile_row(t8, box[r >> 3][c], r & 7);
+            for (k = 0; k < 8; k++) {
+                int x = x0 + c * 8 + k;
+                if (x < 0 || x >= w) continue;
+                out[(size_t)y * GAMEVIEW_MAX_W + x] = (t8[k] & PIX_OPAQUE) ? vdp_palette_rgb(t8[k] & 0x3F)
+                                                                         : vdp_palette_rgb(vdp_reg[7] & 0x3F);
+            }
+        }
+    }
+}
+
+#define ELEVATOR_FLAG_OF(p) (0xFFDA6Au + (uint32_t)(p))
+
 int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int *pitch)
 {
     uint32_t *out;
-    static int between[2];   /* frames of the game's screen switching while play goes on */
+    static int frozen_for[2];               /* frames this window has kept its picture */
+    static int cam_ok[2], cam_level[2], wait_live[2];
+    static int32_t cam_fx[2], cam_fy[2];    /* the window's camera, 1/256 pixel */
     extern int g_in_game;
-    int p = player, cam_x, cam_y, ox, oy, line, split, held, menu, menu_from, menu_to, live;
+    int p = player, cam_x, cam_y, ox, oy, line, split, menu, menu_from, menu_to, live, i, changed = 0, tx, ty;
+    uint32_t lt;
     if (!g_gv_windows || w < 2 || h < 2) return 0;
     if (w > GAMEVIEW_MAX_W) w = GAMEVIEW_MAX_W;
     if (h > GAMEVIEW_MAX_H) h = GAMEVIEW_MAX_H;
     if (!player_in_game(p)) p = !p;   /* (one player: both windows show them) */
+    out = win_pic[player];
+    /* What to show, from game memory (two-window mode never splits the screen, and
+     * the game's own split and join no longer redraw its planes, so the VDP's
+     * planes say nothing here):
+     *  - the player riding an elevator: the ride, as the game shows it;
+     *  - the player changing floors (falling), or the display off: the window's
+     *    last picture, until the player is on the floor the game shows again;
+     *  - else the player's view. */
+    if (!g_in_game || !player_in_game(p) || (rd8(ELEVATOR_FLAG_OF(p)) & 1)) {   /* (1, 3: riding; 2: standing in it) */ frozen_for[player] = 0; cam_ok[player] = 0; return 0; }
     live = g_gv_gameplay && frame_ok == 1;
-    if (live) between[player] = 0;
-    else {
-        /* The screen splitting or joining again: the game blanks the display for
-         * a few frames and sets the split up (the halves black but for the
-         * players). Each window has nothing to switch: it goes on showing its
-         * player, drawn from memory, on the same floor. (Anything else that is
-         * not gameplay, a fall to another floor, an elevator ride, shows the
-         * usual picture.) */
-        int i, changed = 0;
-        uint32_t lt = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
-        if (!(g_in_game && player_in_game(p) && win_last[player].ok && win_last[player].w == w && win_last[player].h == h &&
-              g_gameview_reason != 3 && ++between[player] < 600))
-            return 0;
+    split = rd8(SPLIT_SCREEN) != 0;
+    lt = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+    if (win_last[player].ok)
         for (i = 0; i < (int)sizeof win_layout[0]; i++) changed += rd8(lt + (uint32_t)i) != win_layout[player][i];
-        if (win_last[player].level != (int)rd8(LEVEL_OF(p)) || changed > 48) {
-            /* (this player is changing floors, falling: their picture stays as it
-             * was until they are on the new one) */
+    {
+        /* (switching: the player's floor is not the one last drawn - a fall, the
+         * floor layout changing before the screen does; the window waits for the
+         * game to show the new floor) */
+        int switching = win_last[player].ok && (win_last[player].level != (int)rd8(LEVEL_OF(p)) || changed > 48), draw;
+        static uint8_t prev_layout[2][988];
+        static int stable[2];
+        /* the layout steady for a few frames with the display on: the new floor is up */
+        {
+            int same = 1;
+            for (i = 0; i < 988; i++) {
+                uint8_t b = (uint8_t)rd8(lt + (uint32_t)i);
+                if (b != prev_layout[player][i]) { same = 0; prev_layout[player][i] = b; }
+            }
+            stable[player] = same ? stable[player] + 1 : 0;
+        }
+        if (switching && !wait_live[player]) wait_live[player] = 1;
+        else if (wait_live[player] && (live || (vdp_live_picture() && stable[player] >= 8))) wait_live[player] = 0;
+        draw = !wait_live[player];
+        if (!draw && getenv("TJE_WIN_DBG")) fprintf(stderr, "window %d: holding (switching %d, live %d, stable %d)\n", player, switching, live, stable[player]);
+        if (!draw) {
+            if (!win_last[player].ok || win_last[player].w != w || win_last[player].h != h || ++frozen_for[player] > 600 ||
+                g_gameview_reason == 3)
+                return 0;
             *pixels = win_pic[player];
             *pitch = GAMEVIEW_MAX_W;
             return 1;
         }
+    }
+    if (!live)
         for (i = 0; i < (int)sizeof layout_copy[0]; i++) {
             layout_copy[0][i] = (uint8_t)rd8(TOEJAM_LEVEL_TILES + (uint32_t)i);
             layout_copy[1][i] = (uint8_t)rd8(EARL_LEVEL_TILES + (uint32_t)i);
         }
-    }
-    split = live ? nregions == 2 : rd8(SPLIT_SCREEN) != 0;
-    out = win_pic[player];
+    frozen_for[player] = 0;
     /* the camera: the player 160 px across and 128 down the original screen, kept
-     * inside the floor as the game keeps its own (8..$938 across, 8..$618 down) */
-    cam_x = (int16_t)ob16(PLAYER_OBJ(p)) - 160;
-    cam_y = (int16_t)ob16(PLAYER_OBJ(p) + 2) - 128;
-    if (cam_x < 8) cam_x = 8;
-    if (cam_x > 0x938) cam_x = 0x938;
-    if (cam_y < 8) cam_y = 8;
-    if (cam_y > 0x618) cam_y = 0x618;
+     * inside the floor as the game keeps its own (8..$938 across, 8..$618 down),
+     * following smoothly: the players' positions change in steps (4 pixels every
+     * 8 frames walking), the game's camera glides (1-2 pixels a step); this one
+     * closes an eighth of the distance each frame */
+    tx = (int16_t)ob16(PLAYER_OBJ(p)) - 160;
+    ty = (int16_t)ob16(PLAYER_OBJ(p) + 2) - 128;
+    if (tx < 8) tx = 8;
+    if (tx > 0x938) tx = 0x938;
+    if (ty < 8) ty = 8;
+    if (ty > 0x618) ty = 0x618;
+    if (!cam_ok[player] || cam_level[player] != (int)rd8(LEVEL_OF(p)) ||
+        abs(tx - (cam_fx[player] >> 8)) > 256 || abs(ty - (cam_fy[player] >> 8)) > 256) {
+        cam_fx[player] = tx * 256;
+        cam_fy[player] = ty * 256;
+        cam_ok[player] = 1;
+        cam_level[player] = (int)rd8(LEVEL_OF(p));
+    } else {
+        cam_fx[player] += (tx * 256 - cam_fx[player]) / 8;
+        cam_fy[player] += (ty * 256 - cam_fy[player]) / 8;
+    }
+    cam_x = (cam_fx[player] + 128) >> 8;
+    cam_y = (cam_fy[player] + 128) >> 8;
     ox = (w - 320) / 2;
     oy = (h - VDP_HEIGHT) / 2;
     if (map_open[p] && p == player) {
         render_map(player, p, out, w, h);
-        *pixels = out;
-        *pitch = GAMEVIEW_MAX_W;
-        return 1;
-    }
-    held = live && split && half_held[p] && !split_blank;
-    if (held && win_last[player].ok && win_last[player].w == w && win_last[player].h == h) {
-        /* (falling, or the split being set up: the picture as it was, the game's
-         * half of this player where it lies in the world) */
-        int gx = region[p].cam_x, gy = region[p].cam_y, first = p * (VDP_HEIGHT / 2);
-        cam_x = win_last[player].cam_x;
-        cam_y = win_last[player].cam_y;
-        for (line = first; line < first + VDP_HEIGHT / 2; line++)
-            if (line < VDP_HEIGHT / 2 - 8 || line >= VDP_HEIGHT / 2 + 8)
-                paste_line(out, w, h, gy + (line - first) - cam_y + oy, gx - cam_x + ox, line, 0, h);
         *pixels = out;
         *pitch = GAMEVIEW_MAX_W;
         return 1;
@@ -2852,6 +2969,7 @@ int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int
             if (h - n + line >= 0)
                 memcpy(out + (size_t)(h - n + line) * GAMEVIEW_MAX_W + xd, bar[line] + xs, sizeof(uint32_t) * (size_t)cnt);
     }
+    if (soft_pause[p].open && p == player) draw_soft_pause(out, w, h, p);
     *pixels = out;
     *pitch = GAMEVIEW_MAX_W;
     return 1;

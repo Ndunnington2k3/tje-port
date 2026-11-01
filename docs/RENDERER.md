@@ -382,10 +382,22 @@ During play `gameview_window_frame(player, w, h)` draws each window from game me
   vacation" only for a player not in the game) and the status sprites (entries 11-22, their tiles
   as the game keeps them) placed where $AB9E/$AD6A/$B0AC/$B570 put them on the bar; the level
   number is the window's player's. `TJE_BARCHECK=prefix` compares it with the VDP's bar.
-- **No split-screen transition:** while the game blanks the display to split or join the screen
-  (and on its set-up frames), each window goes on drawing its player from memory; a player changing
-  floors (falling) keeps their window's last picture until they are on the new floor. A half held
-  while split (falling) shows the VDP's half where it lies in the world.
+- **No split-screen transition at all:** the game still splits and joins its cameras (that decides
+  which earthlings wake, who shares a present...), but LOC_00000C2E / D7E / EE6 are run as if the
+  display were off (src/game/transitions.c), so they skip the display-off, VBlank waits and plane
+  redraws: no pause, no stutter, the state changes at once. The windows ignore the VDP's planes
+  (now stale after a split or join) and draw from memory; a player whose floor changes (falling)
+  keeps their window's last picture until the new floor is up (the game shows it, or the display is
+  on and the layout steady for 8 frames). Riding an elevator (ELEVATOR_FLAG 1 or 3): the usual
+  picture.
+- **Camera:** follows the player smoothly (an eighth of the distance each frame): players move in
+  steps (4 px every 8 frames walking) and a camera locked to them made the picture judder at a
+  fraction of the frame rate; the game's own camera glides the same way.
+- **Soft pause:** Start (or Escape / Back) never reaches the game in this mode: it opens a menu in
+  that player's window (resume / quit to menu, with a confirmation; network play: leave), the game
+  goes on and that player's character waits. Map and pause decisions use only game memory and the
+  input, so every machine of a network game decides the same (two-window RAM is identical at any
+  window size).
 - **No vsync** with two windows on one machine (swap interval 0 set in each window, as WGL keeps
   it per window): both windows at full speed, paced by the timer.
 - **Map without pausing:** the Map button (C) never reaches the game in this mode
