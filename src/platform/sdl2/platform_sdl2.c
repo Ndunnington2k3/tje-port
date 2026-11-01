@@ -127,7 +127,12 @@ static int SDLCALL resize_watch(void *data, SDL_Event *e)
 static int open_window(void)
 {
     int w, h, vsync = 0, x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED, x2 = 0;
-    const char *title = two_windows ? "ToeJam & Earl - ToeJam" : "ToeJam & Earl";
+#ifdef TJE_BUILD_ID
+#define BUILD_TAG " (" TJE_BUILD_ID ")"
+#else
+#define BUILD_TAG ""
+#endif
+    const char *title = two_windows ? "ToeJam & Earl - ToeJam" BUILD_TAG : "ToeJam & Earl" BUILD_TAG;
     first_window_size(&w, &h);
     if (two_windows) {
         /* side by side, each about 45% of the screen's width */
@@ -148,7 +153,7 @@ static int open_window(void)
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     window = SDL_CreateWindow(title, x, y, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
     if (window && two_windows)
-        window2 = SDL_CreateWindow("ToeJam & Earl - Earl", two_windows && x2 ? x2 : SDL_WINDOWPOS_CENTERED, y, w, h,
+        window2 = SDL_CreateWindow("ToeJam & Earl - Earl" BUILD_TAG, two_windows && x2 ? x2 : SDL_WINDOWPOS_CENTERED, y, w, h,
                                    SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
     if (window && (!two_windows || window2) && !getenv("TJE_NO_GL")) {
         gl_context = SDL_GL_CreateContext(window);
@@ -166,7 +171,7 @@ static int open_window(void)
         window2 = NULL;
         window = SDL_CreateWindow(title, x, y, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
         if (window && two_windows)
-            window2 = SDL_CreateWindow("ToeJam & Earl - Earl", x2 ? x2 : SDL_WINDOWPOS_CENTERED, y, w, h,
+            window2 = SDL_CreateWindow("ToeJam & Earl - Earl" BUILD_TAG, x2 ? x2 : SDL_WINDOWPOS_CENTERED, y, w, h,
                                        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
         if (!window) {
             fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
