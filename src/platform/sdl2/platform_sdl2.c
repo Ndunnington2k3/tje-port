@@ -34,6 +34,10 @@ static SDL_Renderer *renderer;      /* only when OpenGL is not available */
 static SDL_Window *window2;         /* --two-windows: player 2's window (window is player 1's) */
 static SDL_Renderer *renderer2;
 static int two_windows;
+/* --perf (or F10): where each frame's time goes, in the window title */
+static int perf_on;
+static Uint64 perf_t[6], perf_last_end, perf_frames, perf_window_start;
+enum { PERF_GAME, PERF_VIEW, PERF_DRAW, PERF_SWAP, PERF_WAIT, PERF_ALL };
 static SDL_GLContext gl_context;
 static const GfxBackend *gfx;
 static const char *rom_path = "tje.bin";
@@ -91,11 +95,16 @@ static void draw_window(int k)
 {
     int w, h;
     if (k && !window2) return;
+    Uint64 a, b, c;
     use_window(k);
     target_size(k, &w, &h);
+    a = SDL_GetPerformanceCounter();
     present_draw(w, h);
+    b = SDL_GetPerformanceCounter();
     if (gl_context) SDL_GL_SwapWindow(k ? window2 : window);
     else SDL_RenderPresent(k ? renderer2 : renderer);
+    c = SDL_GetPerformanceCounter();
+    if (perf_on) { perf_t[PERF_DRAW] += b - a; perf_t[PERF_SWAP] += c - b; }
     if (k) use_window(0);
 }
 
@@ -218,6 +227,7 @@ int plat_init(int argc, char **argv)
         if (!strcmp(argv[i], "--state")) i++;  /* handled in main.c */
         else if (!strcmp(argv[i], "--mute")) audio_on = 0;
         else if (!strcmp(argv[i], "--two-windows")) two_windows = 1;
+        else if (!strcmp(argv[i], "--perf")) perf_on = 1;
         else if (!strcmp(argv[i], "--view-log")) {
             char path[1100], cap[1100];
             snprintf(path, sizeof path, "%stje_view.log", plat_data_dir());
@@ -298,17 +308,42 @@ void plat_message(const char *title, const char *text)
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title, text, window);
 }
 
+
+static double perf_ms(Uint64 t) { return (double)t * 1000.0 / (double)SDL_GetPerformanceFrequency(); }
+
+static void perf_report(void)
+{
+    char title[256];
+    double n = perf_frames ? (double)perf_frames : 1.0;
+    double secs = perf_ms(SDL_GetPerformanceCounter() - perf_window_start) / 1000.0;
+    snprintf(title, sizeof title, "%.1f fps | game %.1f ms, views %.1f, draw %.1f, swap %.1f, wait %.1f",
+             secs > 0 ? perf_frames / secs : 0.0, perf_ms(perf_t[PERF_GAME]) / n, perf_ms(perf_t[PERF_VIEW]) / n,
+             perf_ms(perf_t[PERF_DRAW]) / n, perf_ms(perf_t[PERF_SWAP]) / n, perf_ms(perf_t[PERF_WAIT]) / n);
+    SDL_SetWindowTitle(window, title);
+    if (window2) SDL_SetWindowTitle(window2, title);
+    fprintf(stderr, "%s\n", title);
+    memset(perf_t, 0, sizeof perf_t);
+    perf_frames = 0;
+    perf_window_start = SDL_GetPerformanceCounter();
+}
+
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
+    Uint64 t0 = SDL_GetPerformanceCounter(), t1;
+    if (perf_on && perf_last_end) perf_t[PERF_GAME] += t0 - perf_last_end;
     if (window2) {
         /* each window: its player's own picture during play, else the same one */
         int k;
         for (k = 0; k < 2; k++) {
             const uint32_t *px;
             int w, h, pp;
+            int got;
             use_window(k);
             present_wanted_view_of(k, &w, &h);
-            if (gameview_window_frame(k, w, h, &px, &pp)) {
+            t1 = SDL_GetPerformanceCounter();
+            got = gameview_window_frame(k, w, h, &px, &pp);
+            if (perf_on) perf_t[PERF_VIEW] += SDL_GetPerformanceCounter() - t1;
+            if (got) {
                 if (w > GAMEVIEW_MAX_W) w = GAMEVIEW_MAX_W;
                 if (h > GAMEVIEW_MAX_H) h = GAMEVIEW_MAX_H;
                 present_set_frame(px, w, h, pp);
@@ -323,6 +358,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         draw_and_show();
     }
     viewdiag_frame(pixels, width, height, pitch);
+    t1 = SDL_GetPerformanceCounter();
 
     if (!vsync_ok) {
         /* NTSC Genesis runs at ~59.92 fps */
@@ -337,6 +373,11 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         } else if (now - next_frame_time > frame * 4) {
             next_frame_time = now;  /* fell far behind: resync */
         }
+    }
+    if (perf_on) {
+        perf_last_end = SDL_GetPerformanceCounter();
+        perf_t[PERF_WAIT] += perf_last_end - t1;
+        if (++perf_frames >= 60) perf_report();
     }
 }
 
@@ -672,6 +713,17 @@ int plat_poll(uint16_t pad[2])
                 SDL_Window *wnd = window_index(e.key.windowID) ? window2 : window;
                 Uint32 fs = SDL_GetWindowFlags(wnd) & SDL_WINDOW_FULLSCREEN_DESKTOP;
                 SDL_SetWindowFullscreen(wnd, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+            }
+            if (e.key.keysym.sym == SDLK_F10) {
+                perf_on = !perf_on;
+                perf_last_end = 0;
+                memset(perf_t, 0, sizeof perf_t);
+                perf_frames = 0;
+                perf_window_start = SDL_GetPerformanceCounter();
+                if (!perf_on) {
+                    SDL_SetWindowTitle(window, two_windows ? "ToeJam & Earl - ToeJam" : "ToeJam & Earl");
+                    if (window2) SDL_SetWindowTitle(window2, "ToeJam & Earl - Earl");
+                }
             }
             if (e.key.keysym.sym == SDLK_F12 && viewdiag_active()) {
                 static int n;

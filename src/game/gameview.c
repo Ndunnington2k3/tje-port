@@ -1766,7 +1766,8 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
     /* wider than the original: the per-player views (the lines drawn during the
      * frame are only kept for the original size, where they are checked against
      * the VDP) */
-    if (g_gv_use_views && (pic_w != 320 || pic_h != VDP_HEIGHT) && !views_done) {
+    /* (two windows: each window draws its own picture; this one is not shown) */
+    if (g_gv_use_views && (pic_w != 320 || pic_h != VDP_HEIGHT) && !views_done && !g_gv_windows) {
         render_views_picture();
         views_done = 1;   /* (gameview_frame may be asked more than once a frame) */
     }
