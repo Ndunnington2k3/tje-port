@@ -34,6 +34,16 @@ void gameview_sat_dma(void);
 int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int screen_h,
                          uint32_t *out, int w, int h, int pitch, int band);
 
+/* Two-window mode (network play): the platform sets g_gv_windows, and after each
+ * gameview_frame asks for each player's own picture at its window's size (game
+ * pixels). 0: not a gameplay frame (show the usual picture in both windows). */
+extern int g_gv_windows;
+int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int *pitch);
+/* Two-window mode: a player's Map button opens a map in their window and the game
+ * goes on (called with each frame's input, before the game reads it). */
+void gameview_map_input(uint16_t pad[2]);
+int gameview_map_open(int player);
+
 /* (tests) split screen: is half k (0 top, 1 bottom) shown as the VDP draws it this
  * frame (under its player's menu, held while falling, or the split being set up)? */
 int gameview_split_half_shown_as_vdp(int k);

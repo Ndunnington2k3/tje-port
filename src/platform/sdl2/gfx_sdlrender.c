@@ -15,6 +15,9 @@ struct GfxTex {
 
 static SDL_Renderer *ren;
 
+/* (two windows: one renderer each; textures belong to the renderer they were made with) */
+void gfx_sdlrender_use(SDL_Renderer *r) { ren = r; }
+
 static GfxTex *tex_create(int w, int h)
 {
     GfxTex *t = (GfxTex *)calloc(1, sizeof *t);

@@ -153,6 +153,8 @@ int vdp_live_picture(void)
     return !freeze_frames && (vdp_reg[1] & 0x40) && (!clean_transitions || frame_visible);
 }
 
+uint32_t vdp_color_rgb(uint16_t c) { return genesis_rgb(c); }
+
 uint32_t vdp_palette_rgb(int i)
 {
     return palette_rgb[i & 0x3F];

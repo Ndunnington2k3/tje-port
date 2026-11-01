@@ -11,7 +11,13 @@
 #include <stdint.h>
 #include "gfx/gfx.h"
 
+#define PRESENT_TARGETS 2
+
 void present_init(const GfxBackend *backend);
+
+/* Which window the calls below are about (0 = the main one; two-window mode:
+ * 1 = player 2's). Each keeps its own frame and size. */
+void present_select(int target);
 void present_shutdown(void);
 
 /* Hand over the frame the video model made (0x00RRGGBB pixels). */
@@ -24,6 +30,7 @@ void present_draw(int win_w, int win_h);
 
 /* The size (game pixels) a gameplay view should have to fill the window that
  * present_draw last drew into (view_layout_expand). 320x224 until then. */
-void present_wanted_view(int *w, int *h);
+void present_wanted_view(int *w, int *h);         /* (always the main window's) */
+void present_wanted_view_of(int target, int *w, int *h);
 
 #endif

@@ -147,6 +147,7 @@ void game_input_hook(uint16_t pad[2])
     if (g_port_menu_active) return;
     for (p = 0; p < 2; p++)
         if (pad[p] & PAD_BACK) pad[p] |= PAD_START;   /* Escape / controller Back pauses */
+    gameview_map_input(pad);                          /* (two windows: the map that does not pause) */
 }
 
 void menu_add_rom_items(Menu *m, uint32_t table, int count, int row_shift)

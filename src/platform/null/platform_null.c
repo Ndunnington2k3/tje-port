@@ -34,6 +34,7 @@
 #include "gfx/present.h"
 #include "game/gameview.h"
 #include "game/viewdiag.h"
+extern int g_gv_gameplay;
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,7 @@ static unsigned frame;
 static unsigned gv_split_frames;
 static struct { unsigned frame; char path[256]; } shots[MAX_EVENTS];
 static int nshots;
+static int tw_w, tw_h;   /* --two-windows */
 static struct { unsigned frame; char path[256]; } dumps[MAX_EVENTS];
 static int ndumps;
 static struct { unsigned frame; char path[256]; } vdumps[MAX_EVENTS];
@@ -165,6 +167,10 @@ int plat_init(int argc, char **argv)
             char cap[600];
             snprintf(cap, sizeof cap, "%s_capture", argv[i + 1]);
             viewdiag_open(argv[++i], cap);
+        } else if (!strcmp(argv[i], "--two-windows") && i + 1 < argc) {
+            /* each player's own picture as well, views of WxH game pixels; --shot
+             * also saves them (path.p1.ppm, path.p2.ppm) */
+            if (sscanf(argv[++i], "%dx%d", &tw_w, &tw_h) == 2) g_gv_windows = 1;
         } else if (!strcmp(argv[i], "--random") && i + 1 < argc) {
             random_seed = (unsigned)atoi(argv[++i]) * 2654435761u + 1;
         } else if (argv[i][0] != '-') rom_path = argv[i];
@@ -525,6 +531,45 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
                         (int16_t)rd16(0xFFA25Cu + (uint32_t)e * 0x80) - (int16_t)rd16(0xFF8004u),
                         rd8(0xFFA289u + (uint32_t)e * 0x80), rd8(0xFFA2A4u + (uint32_t)e * 0x80),
                         rd32(0xFFA27Cu + (uint32_t)e * 0x80));
+        }
+    }
+    if (getenv("TJE_BARCHECK") && g_gv_gameplay && !rd8(0xFF8010u) && (vdp_reg[18] & 0x80) &&
+        (vdp_reg[18] & 0x1F) * 8 <= 184 && !rd8(0xFF9364u) && !rd8(0xFF9365u)) {
+        /* (tests) the status bar built from game memory against the VDP's */
+        extern int gameview_test_bar(uint32_t (*out)[320], int own);
+        static uint32_t bar[40][320];
+        static unsigned checked, bad_frames;
+        const uint32_t *v = vdp_framebuffer();
+        int n = gameview_test_bar(bar, 0), y, x;
+        unsigned long bad = 0;
+        for (y = 0; y < n; y++)
+            for (x = 0; x < 320; x++)
+                if ((bar[y][x] & 0xFFFFFF) != (v[(184 + y) * VDP_FB_PITCH + x] & 0xFFFFFF)) bad++;
+        checked++;
+        if (bad) {
+            if (bad_frames++ < 5) {
+                char path[300];
+                snprintf(path, sizeof path, "%s_%u_bar.ppm", getenv("TJE_BARCHECK"), frame);
+                save_ppm(path, &bar[0][0], 320, n, 320);
+                snprintf(path, sizeof path, "%s_%u_vdp.ppm", getenv("TJE_BARCHECK"), frame);
+                save_ppm(path, v + 184 * VDP_FB_PITCH, 320, n, VDP_FB_PITCH);
+            }
+            fprintf(stderr, "barcheck: frame %u: %lu pixels differ\n", frame, bad);
+        }
+        if (frame + 1 == max_frames) fprintf(stderr, "barcheck: %u frames, %u differ\n", checked, bad_frames);
+    }
+    if (g_gv_windows) {
+        int k;
+        for (k = 0; k < 2; k++) {
+            const uint32_t *px;
+            int pp;
+            if (!gameview_window_frame(k, tw_w, tw_h, &px, &pp)) continue;
+            for (i = 0; i < nshots; i++)
+                if (shots[i].frame == frame) {
+                    char path[300];
+                    snprintf(path, sizeof path, "%s.p%d.ppm", shots[i].path, k + 1);
+                    save_ppm(path, px, tw_w, tw_h, pp);
+                }
         }
     }
     if (window_w > 0) {

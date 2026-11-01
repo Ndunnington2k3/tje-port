@@ -9,7 +9,9 @@
  * --input-log writes what the keyboard and controllers send to tje_input.log.
  * --view-log writes one-frame drop-outs of the wider view to tje_view.log and
  * keeps the last two seconds of frames: F12 saves them (tje_captureN.bin).
- * F11 / Alt+Enter toggles fullscreen. Escape (or a controller's Back button) is
+ * --two-windows: one window per player, each with that player's own view (the mode
+ * network play will use; testable in local two-player play).
+ * F11 / Alt+Enter toggles fullscreen (of the window in front). Escape (or a controller's Back button) is
  * PAD_BACK: "back" on the port's menus, Start (pause) during play. --mute disables sound.
  */
 #include "platform/platform.h"
@@ -19,6 +21,7 @@
 #include "gfx/view.h"
 #include "gfx_sdlrender.h"
 #include "game/viewdiag.h"
+#include "game/gameview.h"
 
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
@@ -28,6 +31,9 @@
 
 static SDL_Window *window;
 static SDL_Renderer *renderer;      /* only when OpenGL is not available */
+static SDL_Window *window2;         /* --two-windows: player 2's window (window is player 1's) */
+static SDL_Renderer *renderer2;
+static int two_windows;
 static SDL_GLContext gl_context;
 static const GfxBackend *gfx;
 static const char *rom_path = "tje.bin";
@@ -55,19 +61,43 @@ static void first_window_size(int *w, int *h)
 
 static void *gl_proc(const char *name) { return SDL_GL_GetProcAddress(name); }
 
-static void target_size(int *w, int *h)
+/* Make window k (0, or 1 in two-window mode) the one drawn to next. */
+static void use_window(int k)
 {
-    if (gl_context) SDL_GL_GetDrawableSize(window, w, h);
-    else SDL_GetRendererOutputSize(renderer, w, h);
+    SDL_Window *wnd = k ? window2 : window;
+    present_select(k);
+    if (gl_context) SDL_GL_MakeCurrent(wnd, gl_context);   /* (one context for both: the textures are shared) */
+    else gfx_sdlrender_use(k ? renderer2 : renderer);
+}
+
+static void target_size(int k, int *w, int *h)
+{
+    if (gl_context) SDL_GL_GetDrawableSize(k ? window2 : window, w, h);
+    else SDL_GetRendererOutputSize(k ? renderer2 : renderer, w, h);
+}
+
+static void draw_window(int k)
+{
+    int w, h;
+    if (k && !window2) return;
+    use_window(k);
+    target_size(k, &w, &h);
+    present_draw(w, h);
+    if (gl_context) SDL_GL_SwapWindow(k ? window2 : window);
+    else SDL_RenderPresent(k ? renderer2 : renderer);
+    if (k) use_window(0);
 }
 
 static void draw_and_show(void)
 {
-    int w, h;
-    target_size(&w, &h);
-    present_draw(w, h);
-    if (gl_context) SDL_GL_SwapWindow(window);
-    else SDL_RenderPresent(renderer);
+    draw_window(0);
+    if (window2) draw_window(1);
+}
+
+static int window_index(Uint32 id)
+{
+    SDL_Window *w = SDL_GetWindowFromID(id);
+    return w && w == window2 ? 1 : 0;
 }
 
 /* Windows stops the program while a window edge is being dragged, but SDL still
@@ -76,34 +106,57 @@ static void draw_and_show(void)
 static int SDLCALL resize_watch(void *data, SDL_Event *e)
 {
     (void)data;
-    if (e->type == SDL_WINDOWEVENT && SDL_GetWindowFromID(e->window.windowID) == window &&
+    if (e->type == SDL_WINDOWEVENT && SDL_GetWindowFromID(e->window.windowID) &&
         (e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e->window.event == SDL_WINDOWEVENT_EXPOSED))
-        draw_and_show();
+        draw_window(window_index(e->window.windowID));
     return 0;
 }
 
 /* OpenGL 2.1 if possible, else SDL's own renderer (Direct3D etc.). */
 static int open_window(void)
 {
-    int w, h, vsync = 0;
+    int w, h, vsync = 0, x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED, x2 = 0;
+    const char *title = two_windows ? "ToeJam & Earl - ToeJam" : "ToeJam & Earl";
     first_window_size(&w, &h);
+    if (two_windows) {
+        /* side by side, each about 45% of the screen's width */
+        SDL_Rect r;
+        if (SDL_GetDisplayUsableBounds(0, &r) == 0) {
+            int s = r.w * 9 / 20 / VIEW_BASE_W, sy = r.h * 4 / 5 / VIEW_BASE_H;
+            if (sy < s) s = sy;
+            if (s < 1) s = 1;
+            w = VIEW_BASE_W * s;
+            h = VIEW_BASE_H * s;
+            x = r.x + (r.w - 2 * w - 16) / 2;
+            y = r.y + (r.h - h) / 2;
+            x2 = x + w + 16;
+        }
+    }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    window = SDL_CreateWindow("ToeJam & Earl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h,
-                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (window && !getenv("TJE_NO_GL")) {
+    window = SDL_CreateWindow(title, x, y, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (window && two_windows)
+        window2 = SDL_CreateWindow("ToeJam & Earl - Earl", two_windows && x2 ? x2 : SDL_WINDOWPOS_CENTERED, y, w, h,
+                                   SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (window && (!two_windows || window2) && !getenv("TJE_NO_GL")) {
         gl_context = SDL_GL_CreateContext(window);
         if (gl_context) {
             gfx = gfx_gl_init(gl_proc);
             if (!gfx) { SDL_GL_DeleteContext(gl_context); gl_context = NULL; }
-            else vsync = SDL_GL_SetSwapInterval(1) == 0;
+            /* (two windows: no vsync, or each window's swap would wait for its own
+             * refresh and halve the speed; paced by the timer instead) */
+            else vsync = SDL_GL_SetSwapInterval(two_windows ? 0 : 1) == 0 && !two_windows;
         }
     }
     if (!gfx) {
         if (window) SDL_DestroyWindow(window);
-        window = SDL_CreateWindow("ToeJam & Earl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h,
-                                  SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        if (window2) SDL_DestroyWindow(window2);
+        window2 = NULL;
+        window = SDL_CreateWindow(title, x, y, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        if (window && two_windows)
+            window2 = SDL_CreateWindow("ToeJam & Earl - Earl", x2 ? x2 : SDL_WINDOWPOS_CENTERED, y, w, h,
+                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
         if (!window) {
             fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
             return 1;
@@ -119,10 +172,18 @@ static int open_window(void)
             vsync = SDL_GetRendererInfo(renderer, &info) == 0 && (info.flags & SDL_RENDERER_PRESENTVSYNC);
         }
         gfx = gfx_sdlrender_init(renderer);
+        if (window2) {
+            renderer2 = SDL_CreateRenderer(window2, -1, SDL_RENDERER_ACCELERATED);
+            if (!renderer2) renderer2 = SDL_CreateRenderer(window2, -1, 0);
+            if (!renderer2) { SDL_DestroyWindow(window2); window2 = NULL; }
+            vsync = 0;   /* (paced by the timer: see above) */
+        }
     }
     present_init(gfx);
     fprintf(stderr, "Drawing with %s\n", gfx->name);
     SDL_SetWindowMinimumSize(window, 160, 112);
+    if (window2) SDL_SetWindowMinimumSize(window2, 160, 112);
+    g_gv_windows = window2 != NULL;
     /* only trust vsync for pacing on ~60 Hz displays */
     vsync_ok = vsync;
     {
@@ -140,6 +201,7 @@ int plat_init(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--state")) i++;  /* handled in main.c */
         else if (!strcmp(argv[i], "--mute")) audio_on = 0;
+        else if (!strcmp(argv[i], "--two-windows")) two_windows = 1;
         else if (!strcmp(argv[i], "--view-log")) {
             char path[1100], cap[1100];
             snprintf(path, sizeof path, "%stje_view.log", plat_data_dir());
@@ -193,7 +255,9 @@ void plat_shutdown(void)
     SDL_DelEventWatch(resize_watch, NULL);
     present_shutdown();
     if (gl_context) SDL_GL_DeleteContext(gl_context);
+    if (renderer2) SDL_DestroyRenderer(renderer2);
     if (renderer) SDL_DestroyRenderer(renderer);
+    if (window2) SDL_DestroyWindow(window2);
     if (window) SDL_DestroyWindow(window);
     SDL_Quit();
 }
@@ -220,8 +284,28 @@ void plat_message(const char *title, const char *text)
 
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
-    present_set_frame(pixels, width, height, pitch);
-    draw_and_show();
+    if (window2) {
+        /* each window: its player's own picture during play, else the same one */
+        int k;
+        for (k = 0; k < 2; k++) {
+            const uint32_t *px;
+            int w, h, pp;
+            use_window(k);
+            present_wanted_view_of(k, &w, &h);
+            if (gameview_window_frame(k, w, h, &px, &pp)) {
+                if (w > GAMEVIEW_MAX_W) w = GAMEVIEW_MAX_W;
+                if (h > GAMEVIEW_MAX_H) h = GAMEVIEW_MAX_H;
+                present_set_frame(px, w, h, pp);
+            } else {
+                present_set_frame(pixels, width, height, pitch);
+            }
+            draw_window(k);
+        }
+        use_window(0);
+    } else {
+        present_set_frame(pixels, width, height, pitch);
+        draw_and_show();
+    }
     viewdiag_frame(pixels, width, height, pitch);
 
     if (!vsync_ok) {
@@ -563,13 +647,15 @@ int plat_poll(uint16_t pad[2])
     const Uint8 *k;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return 0;
+        if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_CLOSE) return 0;   /* (either window) */
         if (input_log) log_event(&e);
         if (capturing) { capture_event(&e); if (e.type == SDL_KEYDOWN) continue; }
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             if (e.key.keysym.sym == SDLK_F11 ||
                 (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {
-                Uint32 fs = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
-                SDL_SetWindowFullscreen(window, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                SDL_Window *wnd = window_index(e.key.windowID) ? window2 : window;
+                Uint32 fs = SDL_GetWindowFlags(wnd) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+                SDL_SetWindowFullscreen(wnd, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
             }
             if (e.key.keysym.sym == SDLK_F12 && viewdiag_active()) {
                 static int n;

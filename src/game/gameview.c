@@ -1243,6 +1243,9 @@ static uint32_t top_window_lines[VDP_HEIGHT][320];
 /* In split screen a player's menu (present list, shops...) is the window plane over
  * that player's half: how many lines of each half were window this frame. */
 static int half_window_lines[2];
+static uint8_t line_window[VDP_HEIGHT];   /* each line this frame: 0 not window, 1 window from the top, 2 from the bottom */
+int g_gv_windows;                          /* each player in a window of their own (gameview_window_frame) */
+static int views_done;                     /* the views' picture is drawn for this frame */
 static int view_skip_half_hud;   /* the view being drawn is under its player's menu */
 int g_gv_split_menu;              /* (tests) halves under a menu in the last split picture: bit 0 top, bit 1 bottom */
 static int split_half_covered(int k) { return half_window_lines[k] >= VDP_HEIGHT / 2 - 16; }
@@ -1590,6 +1593,8 @@ void gameview_line(int line)
         display_on_at_top = (vdp_reg[1] & 0x40) != 0;
         g_gv_win_top_seen = 0;
         half_window_lines[0] = half_window_lines[1] = 0;
+        memset(line_window, 0, sizeof line_window);
+        views_done = 0;
         half_held[0] = half_held[1] = 0;
         if (snap_age < 1000) snap_age++;
         g_gv_snap_age = snap_age;
@@ -1701,9 +1706,11 @@ void gameview_line(int line)
     wv = (vdp_reg[18] & 0x1F) * 8;
     in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;
     if (!(vdp_reg[18] & 0x80) && wv) g_gv_win_top_seen = 1;
-    if (in_window && nregions == 2) half_window_lines[line >= VDP_HEIGHT / 2]++;
-    if ((in_window || nregions == 2) && line < VDP_HEIGHT) {
-        if (nregions == 2 || !(vdp_reg[18] & 0x80))   /* (split: every line, for held halves) */
+    if (in_window) half_window_lines[line >= VDP_HEIGHT / 2]++;
+    if (line < VDP_HEIGHT) line_window[line] = (uint8_t)(in_window ? 1 + ((vdp_reg[18] & 0x80) != 0) : 0);
+    if ((in_window || nregions == 2 || g_gv_windows) && line < VDP_HEIGHT) {
+        /* (split and two windows: every line, for held halves, menus and the bar) */
+        if (nregions == 2 || g_gv_windows || !(vdp_reg[18] & 0x80))
             memcpy(top_window_lines[line], vdp_framebuffer() + (size_t)line * VDP_FB_PITCH, sizeof top_window_lines[0]);
     }
     /* (in a wider picture, filler rows of the window are not kept: level there) */
@@ -1759,7 +1766,10 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
     /* wider than the original: the per-player views (the lines drawn during the
      * frame are only kept for the original size, where they are checked against
      * the VDP) */
-    if (g_gv_use_views && (pic_w != 320 || pic_h != VDP_HEIGHT)) render_views_picture();
+    if (g_gv_use_views && (pic_w != 320 || pic_h != VDP_HEIGHT) && !views_done) {
+        render_views_picture();
+        views_done = 1;   /* (gameview_frame may be asked more than once a frame) */
+    }
     last_ok = 1;
     last_w = pic_w;
     last_h = pic_h;
@@ -2304,3 +2314,512 @@ static void render_views_picture(void)
     }
     layout_copy_on = 0;
 }
+
+/* ==== One window per player (two-window mode; network play) ========================
+ * Each player's own view, at any size, around a camera of its own that follows that
+ * player as the one-player game's camera does (the player 160 px from the left of
+ * the original screen and 128 down), whether the game has the players together or
+ * split. Drawing only: the game keeps its own cameras. On top, like one-player play:
+ * the player's menu (present list, shops) where the present list goes, and the
+ * status bar at the bottom (the game's shared one) while the game shows it; in
+ * split play, that player's level number and life bar in the top corners. */
+static uint32_t win_pic[2][GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+static struct { int ok, w, h, cam_x, cam_y; } win_last[2];
+
+#define PLAYER_OBJ(p)   (0xFFA25Au + (uint32_t)(p) * 0x80u)
+#define PLAYER_LIVES(p) (0xFFA248u + (uint32_t)(p))
+#define MENU_FLAG(p)    (0xFF9364u + (uint32_t)(p))   /* VBLANK_FLAG_1 / HBLANK_FLAG_1: that player's menu is open */
+
+static int player_in_game(int p) { return (int8_t)rd8(PLAYER_LIVES(p)) >= 0; }
+
+/* Window row r (of out, w x h) gets original-screen row `line` as the VDP drew it,
+ * with its x 0 at column x0; rows outside [r_from, r_to) are left alone. */
+static void paste_line(uint32_t *out, int w, int h, int r, int x0, int line, int r_from, int r_to)
+{
+    int xs = x0 < 0 ? -x0 : 0, xd = x0 < 0 ? 0 : x0, n = 320 - xs;
+    if (r < r_from || r >= r_to || r < 0 || r >= h || line < 0 || line >= VDP_HEIGHT) return;
+    if (xd + n > w) n = w - xd;
+    if (n > 0) memcpy(out + (size_t)r * GAMEVIEW_MAX_W + xd, top_window_lines[line] + xs, sizeof(uint32_t) * (size_t)n);
+}
+
+/* ---- the two-player status bar, built from game memory --------------------------
+ * The bar the game draws while the players share the screen (DrawHUD, $B62A,
+ * $AB9E, $AD6A, $B0AC, $B570), built here for any moment, split screen included
+ * (where the game shows small per-half displays instead): the window rows 23-27
+ * (frame from ROM $A82FC, rank names), and the status sprites (entries 11-22 of the
+ * game's sprite table, their tiles as the game keeps them) where the game puts them
+ * on the bar. The level number is the window's own player's. */
+#define BAR_TOP     184                 /* original-screen line of window row 23 */
+#define BAR_H       40
+#define SPRITE_TABLE    0xFFB65Au       /* the game's copy of the sprite table */
+#define PROMOTION(p)    (0xFFA250u + (uint32_t)(p))
+#define ACTIVE_PRESENT(p) (0xFFDE50u + (uint32_t)(p))
+#define LEVEL_OF(p)     ((p) ? EARLS_LEVEL : TOEJAMS_LEVEL)
+
+static uint16_t bar_map[5][40];
+
+/* $9E0E: a character's font tile (+$85B4); codes 1-6 are runs of tiles */
+static void bar_text(int row, int col, uint32_t str)
+{
+    static const uint8_t runs[7][4] = {{0}, {1, 0x2E}, {3, 0x2F, 0x30, 0x31}, {2, 0x32, 0x33},
+                                       {2, 0x34, 0x35}, {3, 0x36, 0x37, 0x38}, {2, 0x39, 0x3A}};
+    int n = 0;
+    for (;; str++) {
+        int c = rd8(str), t, k;
+        if (!c || n > 40) break;
+        if (c >= 1 && c <= 6) {
+            for (k = 0; k < runs[c][0]; k++)
+                if (col < 40) bar_map[row][col++] = (uint16_t)(0x85B4 + runs[c][1 + k]);
+            continue;
+        }
+        if (c >= 'a' && c <= 'z') t = c - 'a' + 1;
+        else if (c >= 'A' && c <= 'Z') t = c - 'A' + 1;
+        else if (c >= '0' && c <= '9') t = c - '0' + 0x24;
+        else if (c == '.') t = 0x1F;
+        else if (c == ',') t = 0x20;
+        else if (c == '\'' || c == ':') t = 0x21;
+        else if (c == '-') t = 0x22;
+        else if (c == '!') t = 0x23;
+        else if (c == '?') t = 0x1B;
+        else t = 0;
+        if (col < 40) bar_map[row][col++] = (uint16_t)(0x85B4 + t);
+        n++;
+    }
+}
+
+static void bar_text_c(int row, int col, const char *str)
+{
+    for (; *str && col < 40; str++, col++) {
+        int c = *str, t = c == ' ' ? 0 : c - 'a' + 1;
+        bar_map[row][col] = (uint16_t)(0x85B4 + t);
+    }
+}
+
+/* One status sprite onto the bar's lines: game sprite-table entry e, placed at
+ * sprite coordinates (x, y) (128 = the screen's left / top edge). */
+static struct { int x, y, on; } bar_spr[23];
+static void bar_put(int e, int x, int y) { bar_spr[e].x = x; bar_spr[e].y = y; bar_spr[e].on = 1; }
+
+static void bar_sprite(uint8_t (*buf)[320], int e, int x, int y)
+{
+    uint32_t en = SPRITE_TABLE + (uint32_t)e * 8;
+    int size = (int)ob8(en + 2), attr = (int)ob16(en + 4);
+    int hs = ((size >> 2) & 3) + 1, vs = (size & 3) + 1, py, px, c;
+    int sx = x - 128, sy = y - 128 - BAR_TOP;
+    for (py = 0; py < vs * 8; py++) {
+        int line = sy + py, row = (attr & 0x1000) ? vs * 8 - 1 - py : py;
+        if (line < 0 || line >= BAR_H) continue;
+        for (c = 0; c < hs; c++) {
+            int colx = (attr & 0x0800) ? hs - 1 - c : c;
+            uint32_t tile = ((uint32_t)attr & 0x7FF) + (uint32_t)(colx * vs + (row >> 3));
+            uint8_t t8[8];
+            tile_row(t8, (((uint32_t)attr & 0xF800) & ~0x1000u) | (tile & 0x7FF), row & 7);
+            for (px = 0; px < 8; px++) {
+                int bx = sx + c * 8 + px;
+                if (bx >= 0 && bx < 320 && (t8[px] & PIX_OPAQUE)) buf[line][bx] = t8[px];
+            }
+        }
+    }
+}
+
+/* The bar into out (320 x BAR_H, 0x00RRGGBB) for the window of player `own`.
+ * Returns the number of lines to show (the last row of the window is plain). */
+static int build_bar(uint32_t (*out)[320], int own)
+{
+    static uint8_t px[BAR_H][320];
+    int row, col, p, line, x;
+    uint32_t frame = 0xA82FCu;
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 40; col++) {
+            int b = (int)rd8(frame + (uint32_t)(row * 40 + col)), t = b & 0x3F;
+            if (b & 0x40) t |= 0x0800;
+            if (b & 0x80) t |= 0x1000;
+            bar_map[row][col] = (uint16_t)(t + 0x8580);
+        }
+    for (col = 0; col < 40; col++) bar_map[4][col] = 0xC580;
+    /* $B62A: the rank names, or "on vacation" for a player not in the game */
+    for (p = 0; p < 2; p++) {
+        int in = player_in_game(p), other = player_in_game(!p);
+        if (in) bar_text(1, p ? 32 : 11, rd32(0xA9F82u + 4u * (uint32_t)rd8(PROMOTION(p))));
+        else if (other) {
+            bar_text_c(1, p ? 30 : 9, " on");
+            bar_text_c(2, p ? 29 : 8, "vacation");
+        }
+    }
+    for (line = 0; line < BAR_H; line++)
+        for (x = 0; x < 320; x++) {
+            uint8_t t8[8];
+            if ((x & 7) == 0) tile_row(t8, bar_map[line >> 3][x >> 3], line & 7);
+            px[line][x] = t8[x & 7];
+        }
+    /* the status sprites where the game puts them on the bar */
+    memset(bar_spr, 0, sizeof bar_spr);
+    for (p = 0; p < 2; p++) {
+        int lives, lv, icon, dx, dy;
+        uint32_t fr;
+        if (!player_in_game(p)) continue;
+        /* $B0AC: life bar (two sprites) */
+        bar_put(p ? 17 : 15, p ? 0x14A : 0xA0, 0x14D);
+        bar_put(p ? 18 : 16, (p ? 0x14A : 0xA0) + 0x20, 0x14D);
+        /* $B570: lives (stars) */
+        lives = (int8_t)rd8(PLAYER_LIVES(p));
+        bar_put(p ? 20 : 19, p ? 0x18E : 0xE4, 0x14A - (lives < 5 ? 3 : 0));
+        /* $AD6A: the head, or the present in use */
+        icon = (int)rd8(ACTIVE_PRESENT(p));
+        icon = icon == 0xFF ? p : icon + 2;
+        fr = rd32(0xABA14u + 4u * (uint32_t)icon);
+        dx = (int8_t)rd8(fr + 2);
+        dy = (int8_t)rd8(fr + 3);
+        /* (hidden by the game: the present in use blinking as it runs out; in split
+         * screen the head is hidden by design, shown here) */
+        if (!(ob16(SPRITE_TABLE + (uint32_t)(p ? 22 : 21) * 8) == 1 && (rd8(ACTIVE_PRESENT(p)) != 0xFF || !rd8(SPLIT_SCREEN))))
+            bar_put(p ? 22 : 21, (p ? 0x132 : 0x88) + dx, 0x141 + dy);
+        /* $AB9E: the level number (this window's player's) */
+        if (p == own) {
+            lv = (int)rd8(LEVEL_OF(p));
+            if (lv / 10) {
+                bar_put(p ? 13 : 11, 0x114 + 8, 0x141);
+                bar_put(p ? 14 : 12, 0x114, 0x141);
+            } else {
+                bar_put(p ? 13 : 11, 0x114 + 4, 0x141);
+            }
+        }
+    }
+    for (p = 22; p >= 11; p--)   /* (lower entries in front, as on the VDP) */
+        if (bar_spr[p].on) bar_sprite(px, p, bar_spr[p].x, bar_spr[p].y);
+    for (line = 0; line < BAR_H; line++)
+        for (x = 0; x < 320; x++)
+            out[line][x] = (px[line][x] & PIX_OPAQUE) ? vdp_palette_rgb(px[line][x] & 0x3F)
+                                                    : vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    return BAR_H - 8;
+}
+
+/* ---- the map, without pausing (two-window mode) ------------------------------------
+ * The game's map screen (DrawGameMap) stops the game while it is up. With a window
+ * per player, a player's Map button opens this map in their window instead and the
+ * game goes on (that player's character waits). Drawn from game memory as
+ * LoadMapIntoVRAM / DisplayMap / LoadMapCharacters / LoadMapElevator /
+ * LoadMapShipPiece draw it: the floor at 1/8 size from the map tiles in ROM, the
+ * squares nobody has uncovered yet in purple, the players, the elevator and a ship
+ * piece; the markers move every few frames. (The original's random "?" hints are not
+ * made here: they change the game's state.) */
+#define MAP_TILES       0xA4780u        /* ROM: the map's tiles (loaded at tile 1) */
+#define MAP_PALETTES    0x98168u        /* ROM: MapWater_Pal, MapSpace_Pal, StarryBackground_Pal */
+#define MAP_UNCOVERED   0xFF91ECu       /* 7 bytes a floor: one per row of 8 squares (320 x 256) */
+#define MAP_HINTED      0xFF92A2u
+#define MAP_SQUARE      0xA6BA0u        /* ROM: the 5x4 tiles of an unvisited square (+$C112) */
+#define ICON_TOEJAM     0xA9DE8u
+#define ICON_EARL       0xA9E08u
+#define ICON_ELEVATOR   0xA9E28u
+#define ICON_SHIP       0xA9E48u
+#define VBLANK_COUNTER  0xFF800Eu
+#define ELEVATOR_LOCATION 0xFFDA4Au
+#define ELEVATOR_FLAG   0xFFDA6Au
+#define EARTHLINGS_IN_LEVEL 0xFFDE72u
+#define EARTHLING_LOAD_FLAG 0xFFE1AAu
+#define EARTHLING_LEVEL 0xFFE1ACu
+
+static int map_open[2];
+static unsigned map_tick;
+static struct { int on, x, y; } map_marks[2][4];   /* per window: ToeJam, Earl, elevator, ship piece */
+
+int gameview_map_open(int player) { return map_open[player & 1]; }
+
+/* (called with each frame's input) A player's Map button in two-window play:
+ * opens or closes their map here instead of the game's. */
+void gameview_map_input(uint16_t pad[2])
+{
+    static uint16_t prev[2];
+    extern int g_in_game;
+    int p, playing = g_gv_windows && g_in_game && g_gv_gameplay && rd8(TOEJAMS_LEVEL) != FINAL_LEVEL;
+    for (p = 0; p < 2; p++) {
+        uint16_t now = pad[p], down = (uint16_t)(now & ~prev[p]);
+        prev[p] = now;
+        if (!playing || !player_in_game(p)) { map_open[p] = 0; continue; }
+        if (map_open[p]) {
+            if (down & (PAD_C | PAD_B)) map_open[p] = 0;
+            pad[p] &= (uint16_t)PAD_START;   /* (the character waits; Start still pauses) */
+            continue;
+        }
+        if (!rd8(MENU_FLAG(p))) {
+            if (down & PAD_C) {
+                map_open[p] = 1;
+                map_tick = 0;
+            }
+            pad[p] &= (uint16_t)~PAD_C;   /* (never the game's map: it would stop the game) */
+        }
+    }
+}
+
+static int div8(int v) { return v >= 0 ? v >> 3 : -((-v) >> 3); }
+
+static void map_marks_update(int win, int p, int level)
+{
+    int q, e;
+    memset(map_marks[win], 0, sizeof map_marks[win]);
+    for (q = 0; q < 2; q++) {
+        int ef = (int)rd8(ELEVATOR_FLAG + (uint32_t)q);
+        if (!player_in_game(q) || (int)rd8(PLAYER_OBJ(q) + 0x4C) != level) continue;
+        if (ef && !((ef - 1) & 1)) continue;   /* ($8356: riding the elevator) */
+        map_marks[win][q].on = 1;
+        map_marks[win][q].x = div8((int16_t)rd16(PLAYER_OBJ(q)) - 0x80) + 2;
+        map_marks[win][q].y = div8((int16_t)rd16(PLAYER_OBJ(q) + 2) - 0x40);
+    }
+    for (q = 0; q < 2; q++) {
+        uint32_t el = ELEVATOR_LOCATION + (uint32_t)q * 16;
+        if ((int)rd8(el + 4) != level || rd8(el + 5) == 0x0D) continue;
+        map_marks[win][2].on = 1;
+        map_marks[win][2].x = div8((int16_t)rd16(el) - 0x80) + 2;
+        map_marks[win][2].y = div8((int16_t)rd16(el + 2) - 0x40);
+        break;
+    }
+    for (q = 0; q < 2; q++) {
+        uint32_t base = EARTHLINGS_IN_LEVEL + (uint32_t)q * 0x168;
+        if (!rd8(EARTHLING_LOAD_FLAG + (uint32_t)q) || (int)rd8(EARTHLING_LEVEL + (uint32_t)q) != level) continue;
+        if (!rd8(base)) e = 0;
+        else if (rd8(base + 0x12)) continue;
+        else e = 1;
+        map_marks[win][3].on = 1;
+        map_marks[win][3].x = div8((int16_t)rd16(base + (uint32_t)e * 18 + 6) - 0x80) - 2;
+        map_marks[win][3].y = div8((int16_t)rd16(base + (uint32_t)e * 18 + 8) - 0x40);
+        break;
+    }
+    (void)p;
+}
+
+/* a pixel row of a tile kept in ROM (map tiles and icons): colour indices 0-15 */
+static void rom_tile_row(uint8_t out[8], uint32_t tile_addr, int row, int hflip, int vflip)
+{
+    int i;
+    if (vflip) row = 7 - row;
+    for (i = 0; i < 8; i++) {
+        int px = hflip ? 7 - i : i;
+        uint32_t b = rd8(tile_addr + (uint32_t)row * 4 + (uint32_t)(px >> 1));
+        out[i] = (uint8_t)((px & 1) ? (b & 15) : (b >> 4));
+    }
+}
+
+/* a pixel row of a tile on the map screen: tiles 1-$121 are the map's (from ROM),
+ * the rest are what VRAM keeps during play (the frame, stars) */
+static void map_tile_row(uint8_t out[8], uint16_t e, int row)
+{
+    int tile = e & 0x7FF, i;
+    if (tile >= 1 && tile <= 0x121) {
+        rom_tile_row(out, MAP_TILES + (uint32_t)(tile - 1) * 32, row, (e & 0x800) != 0, (e & 0x1000) != 0);
+        return;
+    }
+    tile_row(out, e, row);
+    for (i = 0; i < 8; i++) out[i] = (out[i] & PIX_OPAQUE) ? (out[i] & 15) : 0;
+}
+
+static uint32_t map_hash(uint32_t v) { v ^= v >> 16; v *= 0x7FEB352Du; v ^= v >> 15; v *= 0x846CA68Bu; return v ^ (v >> 16); }
+
+static void render_map(int win, int p, uint32_t *out, int w, int h)
+{
+    static uint16_t map[28][40], pb[30][42];
+    uint32_t pal[4][16], tiles = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+    int level = (int)rd8(LEVEL_OF(p)), ox = (w - 320) / 2, oy = (h - VDP_HEIGHT) / 2;
+    int row, col, x, y, k, sq_x, sq_y;
+    for (k = 0; k < 48; k++) pal[k >> 4][k & 15] = vdp_color_rgb((uint16_t)rd16(MAP_PALETTES + (uint32_t)k * 2));
+    for (k = 0; k < 16; k++) pal[3][k] = vdp_palette_rgb(48 + k);
+    /* plane B ($78A8): the starry frame from ROM $A7E9C, the floor one 2-tile cell per
+     * 128 x 64 block on it, and a few fixed tiles ($7804) */
+    memset(pb, 0, sizeof pb);
+    for (row = 0; row < 28; row++)
+        for (col = 0; col < 40; col++) {
+            int b = (int)rd8(0xA7E9Cu + (uint32_t)((row <= 0x1A ? row : row - 1) * 40 + col)), e = b & 0x3F;
+            if (b & 0x40) e |= 0x0800;
+            if (b & 0x80) e |= 0x1000;
+            pb[row + 1][col + 1] = (uint16_t)(e + 0x4580);
+        }
+    for (row = 0; row < 26; row++)
+        for (col = 0; col < 19; col++) {
+            int v = (int)rd16(tiles + (uint32_t)(row * 19 + col) * 2), id = v & 0xFF, b7 = id & 0x80, pl = 0, a, bb;
+            uint16_t *cell = &pb[row + 2][2 + col * 2];
+            if (id == 0x22) {
+                /* (open space: a scattering of stars, at random in the game; fixed here) */
+                for (k = 0; k < 2; k++) {
+                    uint32_t r = map_hash((uint32_t)(level * 4096 + row * 64 + col * 2 + k));
+                    int n = 0, lim = 0x100, rr = (int)(r & 0x3FF);
+                    while (rr <= lim && n < 8) { lim -= 0x20; n++; }
+                    cell[k] = (uint16_t)(n ? 0x422B + (int)((r >> 12) & 0x1800) + n - 1 : 0x2045);
+                }
+                continue;
+            }
+            id &= 0x7F;
+            a = id * 2 + 1;
+            bb = id * 2 + 2;
+            if (id < 0x40) pl = 1;
+            else if (id > 0x65) pl = (int)rd8(0x98408u + (uint32_t)(id - 0x66));
+            if (rd8(0xFF91EAu) && (rd8(0xFF8D3Eu + (uint32_t)(row * 19 + col)) & 15)) pl = 3;
+            a |= (pl << 13) & 0xE000;
+            bb |= (pl << 13) & 0xE000;
+            if (b7) { cell[0] = (uint16_t)(bb | 0x800); cell[1] = (uint16_t)(a | 0x800); }
+            else { cell[0] = (uint16_t)a; cell[1] = (uint16_t)bb; }
+        }
+    {
+        static const struct { uint8_t r, c; uint16_t e; } fixed[] = {
+            {11, 1, 0x458F}, {24, 1, 0x458F}, {27, 1, 0x458F}, {11, 40, 0x4D8F}, {24, 40, 0x4D8F},
+            {27, 40, 0x4D8F}, {28, 10, 0x459B}, {28, 28, 0x459B}, {28, 31, 0x459B}};
+        for (k = 0; k < (int)(sizeof fixed / sizeof fixed[0]); k++) pb[fixed[k].r][fixed[k].c] = fixed[k].e;
+    }
+    /* the window ($7F52 / DisplayMap): overlays on the floor, and the squares nobody
+     * has been to yet */
+    for (row = 0; row < 28; row++)
+        for (col = 0; col < 40; col++) map[row][col] = 0x8000;
+    for (row = 0; row < 26; row++)
+        for (col = 0; col < 19; col++) {
+            int v = (int)rd16(tiles + (uint32_t)(row * 19 + col) * 2), type = (v & 0x1F00) >> 8, t, a, bb;
+            if (!type) continue;
+            t = type & 15;
+            a = (0x79 + t) * 2 + 1;
+            bb = (0x79 + t) * 2 + 2;
+            if (type & 0x10) { map[row + 1][1 + col * 2] = (uint16_t)(bb | 0x8800); map[row + 1][2 + col * 2] = (uint16_t)(a | 0x8800); }
+            else { map[row + 1][1 + col * 2] = (uint16_t)(a | 0x8000); map[row + 1][2 + col * 2] = (uint16_t)(bb | 0x8000); }
+        }
+    for (sq_y = 0; sq_y < 7; sq_y++)
+        for (sq_x = 0; sq_x < 8; sq_x++) {
+            int bit = 0x80 >> sq_x;
+            if ((rd8(MAP_UNCOVERED + (uint32_t)(level * 7 + sq_y)) & bit) ||
+                (rd8(MAP_HINTED + (uint32_t)(level * 7 + sq_y)) & bit)) continue;
+            for (row = 0; row < 4; row++)
+                for (col = 0; col < 5; col++)
+                    map[sq_y * 4 + row][sq_x * 5 + col] = (uint16_t)(0xC112 + rd8(MAP_SQUARE + (uint32_t)(row * 5 + col)));
+        }
+    if (map_tick++ % 8 == 0) map_marks_update(win, p, level);
+    for (y = 0; y < h; y++) {
+        uint32_t *o = out + (size_t)y * GAMEVIEW_MAX_W;
+        int sy = y - oy;
+        for (x = 0; x < w; x++) {
+            /* plane B, scrolled 8 left and 8 up; around the original screen the
+             * starry frame carries on */
+            int sx = x - ox, px = sx + 8, py = sy + 8, c = px >> 3, r = py >> 3;
+            uint16_t e, we;
+            uint8_t t8[8];
+            if (sx < 0 || sy < 0 || sx >= 320 || sy >= VDP_HEIGHT) {
+                /* (around the original screen: more of the unexplored purple) */
+                e = (uint16_t)(0xC112 + rd8(MAP_SQUARE + 6));
+                map_tile_row(t8, e, ((sy % 8) + 8) % 8);
+                o[x] = pal[2][t8[((sx % 8) + 8) % 8]];
+                continue;
+            }
+            e = pb[r][c];
+            if (sy >= 0 && sy < VDP_HEIGHT && sx >= 0 && sx < 320 && ((we = map[sy >> 3][sx >> 3]) & 0x7FF)) {
+                map_tile_row(t8, we, sy & 7);
+                if (t8[sx & 7]) { o[x] = pal[(we >> 13) & 3][t8[sx & 7]]; continue; }
+            }
+            if (e & 0x7FF) {
+                map_tile_row(t8, e, ((py % 8) + 8) % 8);
+                if (t8[((px % 8) + 8) % 8]) { o[x] = pal[(e >> 13) & 3][t8[((px % 8) + 8) % 8]]; continue; }
+            }
+            o[x] = pal[0][0];
+        }
+    }
+    /* the markers (the players and the ship piece blink, as DrawMapCharacters does) */
+    {
+        static const uint32_t icon[4] = {ICON_TOEJAM, ICON_EARL, ICON_ELEVATOR, ICON_SHIP};
+        static const int line[4] = {3, 3, 3, 2}, wide[4] = {1, 1, 1, 2};
+        int blink_off = (rd16(VBLANK_COUNTER) & 0x18) == 0;
+        for (k = 3; k >= 0; k--) {
+            int r, c;
+            if (!map_marks[win][k].on || (blink_off && k != 2)) continue;
+            for (r = 0; r < 8; r++) {
+                int yy = oy + map_marks[win][k].y + r;
+                if (yy < 0 || yy >= h) continue;
+                for (c = 0; c < wide[k]; c++) {
+                    uint8_t t8[8];
+                    int i;
+                    rom_tile_row(t8, icon[k] + (uint32_t)c * 32, r, 0, 0);
+                    for (i = 0; i < 8; i++) {
+                        int xx = ox + map_marks[win][k].x + c * 8 + i;
+                        if (t8[i] && xx >= 0 && xx < w) out[(size_t)yy * GAMEVIEW_MAX_W + xx] = pal[line[k]][t8[i]];
+                    }
+                }
+            }
+        }
+    }
+}
+
+int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int *pitch)
+{
+    uint32_t *out;
+    int p = player, cam_x, cam_y, ox, oy, line, split, held, menu, menu_from, menu_to;
+    if (!g_gv_windows || !g_gv_gameplay || frame_ok != 1) return 0;
+    if (w < 2 || h < 2) return 0;
+    if (w > GAMEVIEW_MAX_W) w = GAMEVIEW_MAX_W;
+    if (h > GAMEVIEW_MAX_H) h = GAMEVIEW_MAX_H;
+    if (!player_in_game(p)) p = !p;   /* (one player: both windows show them) */
+    split = nregions == 2;
+    out = win_pic[player];
+    /* the camera: the player 160 px across and 128 down the original screen, kept
+     * inside the floor as the game keeps its own (8..$938 across, 8..$618 down) */
+    cam_x = (int16_t)ob16(PLAYER_OBJ(p)) - 160;
+    cam_y = (int16_t)ob16(PLAYER_OBJ(p) + 2) - 128;
+    if (cam_x < 8) cam_x = 8;
+    if (cam_x > 0x938) cam_x = 0x938;
+    if (cam_y < 8) cam_y = 8;
+    if (cam_y > 0x618) cam_y = 0x618;
+    ox = (w - 320) / 2;
+    oy = (h - VDP_HEIGHT) / 2;
+    if (map_open[p] && p == player) {
+        render_map(player, p, out, w, h);
+        *pixels = out;
+        *pitch = GAMEVIEW_MAX_W;
+        return 1;
+    }
+    held = split && (half_held[p] || split_blank);
+    if (held && win_last[player].ok && win_last[player].w == w && win_last[player].h == h) {
+        /* (falling, or the split being set up: the picture as it was, the game's
+         * half of this player where it lies in the world) */
+        int gx = region[p].cam_x, gy = region[p].cam_y, first = p * (VDP_HEIGHT / 2);
+        cam_x = win_last[player].cam_x;
+        cam_y = win_last[player].cam_y;
+        for (line = first; line < first + VDP_HEIGHT / 2; line++)
+            if (line < VDP_HEIGHT / 2 - 8 || line >= VDP_HEIGHT / 2 + 8)
+                paste_line(out, w, h, gy + (line - first) - cam_y + oy, gx - cam_x + ox, line, 0, h);
+        *pixels = out;
+        *pitch = GAMEVIEW_MAX_W;
+        return 1;
+    }
+    views_setup_cameras();
+    layout_copy_on = 1;
+    /* (the band of sprites across the middle: the hint box; with a menu open it is
+     * part of the menu's frame, which comes with the menu below) */
+    gameview_render_view(p, cam_x, cam_y, -1, VDP_HEIGHT, out, w, h, GAMEVIEW_MAX_W,
+                         !split && !rd8(MENU_FLAG(0)) && !rd8(MENU_FLAG(1)));
+    layout_copy_on = 0;
+    win_last[player].ok = 1;
+    win_last[player].w = w;
+    win_last[player].h = h;
+    win_last[player].cam_x = cam_x;
+    win_last[player].cam_y = cam_y;
+    /* the player's menu: their half of the screen when the window covers it (in
+     * one-player play, the present list from the top), at the top of the original
+     * screen; plain filler rows leave the level showing */
+    menu_from = p * (VDP_HEIGHT / 2);
+    menu_to = menu_from + VDP_HEIGHT / 2;
+    menu = rd8(MENU_FLAG(p)) && half_window_lines[p] >= VDP_HEIGHT / 2 - 16;
+    if (!menu && p == 0 && line_window[0] == 1) {
+        menu = 1;
+        for (menu_to = 0; menu_to < VDP_HEIGHT && line_window[menu_to] == 1; menu_to++) {}
+    }
+    if (menu)
+        for (line = menu_from; line < menu_to; line++)
+            if (line_window[line] && !window_row_filler(line / 8))
+                paste_line(out, w, h, oy + line - menu_from, ox, line, 0, h);
+    /* the two-player status bar, flush with the bottom edge (always: split too) */
+    if (rd8(TOEJAMS_LEVEL) != FINAL_LEVEL) {
+        static uint32_t bar[BAR_H][320];
+        int n = build_bar(bar, p), xs = ox < 0 ? -ox : 0, xd = ox < 0 ? 0 : ox, cnt = 320 - xs;
+        if (xd + cnt > w) cnt = w - xd;
+        for (line = 0; line < n && cnt > 0; line++)
+            if (h - n + line >= 0)
+                memcpy(out + (size_t)(h - n + line) * GAMEVIEW_MAX_W + xd, bar[line] + xs, sizeof(uint32_t) * (size_t)cnt);
+    }
+    *pixels = out;
+    *pitch = GAMEVIEW_MAX_W;
+    return 1;
+}
+
+/* (tests) the bar built for player own's window, lines 184.. of the original screen */
+int gameview_test_bar(uint32_t (*out)[320], int own) { return build_bar(out, own); }

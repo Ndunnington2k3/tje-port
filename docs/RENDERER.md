@@ -364,3 +364,35 @@ to 4:3:
 
 The VDP's band across the middle (lines 104-119) is never pasted: the divider is ours. The other
 half is unaffected. viewcheck skips halves shown as the VDP draws them.
+
+### Two windows (--two-windows, Oct 31): the mode network play will use
+
+`tje --two-windows` opens one window per player (SDL; one GL context shared by both windows, or
+one SDL renderer each; timer-paced, no vsync). Outside play both windows show the usual picture.
+During play `gameview_window_frame(player, w, h)` draws each window from game memory:
+
+- **Camera:** the player's own, as the one-player camera keeps it (player 160 px across and 128 down
+  the original screen, inside 8..$938 x 8..$618), together or split. Drawing only.
+- **View:** `gameview_render_view` with no game camera (floor layout only); the hint band only while
+  the players share the screen and no menu is open.
+- **Menu:** the player's half of the window lines (VBLANK_FLAG_1 / HBLANK_FLAG_1 $FF9364/5) pasted
+  at the top of the original screen, plain filler rows left out.
+- **Status bar:** the two-player bar, built from game memory for any moment (split too):
+  window rows 23-27 (frame ROM $A82FC, rank names $A9F82 through $9E0E's font mapping, "on
+  vacation" only for a player not in the game) and the status sprites (entries 11-22, their tiles
+  as the game keeps them) placed where $AB9E/$AD6A/$B0AC/$B570 put them on the bar; the level
+  number is the window's player's. `TJE_BARCHECK=prefix` compares it with the VDP's bar.
+- **Held split halves** (falling, split being set up): last window picture with the VDP's half
+  pasted where it lies in the world.
+- **Map without pausing:** the Map button (C) never reaches the game in this mode
+  (`gameview_map_input`, from `game_input_hook`); it opens a map in that player's window and their
+  character waits (Start still pauses); C or B closes it. Drawn as DrawGameMap draws it: plane B
+  ($78A8: starry frame ROM $A7E9C, the floor one 2-tile cell per block from the map tiles at ROM
+  $A4780, $7804's fixed tiles, plane scrolled 8/8), the window ($7F52 / DisplayMap: type overlays,
+  unvisited squares from ROM $A6BA0), palettes MapWater/MapSpace/Starry from ROM + line 3 live,
+  markers ($8394 players, $14148 elevator, $84CC ship piece) refreshed every 8 frames, players
+  and ship piece blinking with VBLANK_COUNTER & $18. Not made: the original's random "?" hints and
+  its random stars in open space (they change the game's state; the stars are fixed here).
+
+Headless: `--two-windows WxH` (views of WxH game pixels; `--shot F:path` also saves path.p1.ppm /
+path.p2.ppm).

@@ -60,6 +60,8 @@ int vdp_live_picture(void);
 int vdp_frozen(void);
 /* CRAM entry i (0-63) as 0x00RRGGBB */
 uint32_t vdp_palette_rgb(int i);
+/* A Genesis colour word (0000BBB0GGG0RRR0) as 0x00RRGGBB. */
+uint32_t vdp_color_rgb(uint16_t c);
 
 /* Raw access for tools/debugging and future native renderers */
 extern uint8_t vdp_vram[0x10000];
