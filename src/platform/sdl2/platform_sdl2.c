@@ -66,7 +66,18 @@ static void use_window(int k)
 {
     SDL_Window *wnd = k ? window2 : window;
     present_select(k);
-    if (gl_context) SDL_GL_MakeCurrent(wnd, gl_context);   /* (one context for both: the textures are shared) */
+    if (gl_context) {
+        static int no_vsync[2];
+        SDL_GL_MakeCurrent(wnd, gl_context);   /* (one context for both: the textures are shared) */
+        /* (two windows on one machine, for testing: no vsync in either, or each
+         * window's swap waits for its own refresh and the speed halves. The swap
+         * interval belongs to the window the context is current on (WGL), so it is
+         * set once in each.) */
+        if (two_windows && !no_vsync[k]) {
+            SDL_GL_SetSwapInterval(0);
+            no_vsync[k] = 1;
+        }
+    }
     else gfx_sdlrender_use(k ? renderer2 : renderer);
 }
 
@@ -161,7 +172,7 @@ static int open_window(void)
             fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
             return 1;
         }
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | (two_windows ? 0 : SDL_RENDERER_PRESENTVSYNC));
         if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
         if (!renderer) {
             fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());

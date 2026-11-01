@@ -2324,7 +2324,8 @@ static void render_views_picture(void)
  * status bar at the bottom (the game's shared one) while the game shows it; in
  * split play, that player's level number and life bar in the top corners. */
 static uint32_t win_pic[2][GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
-static struct { int ok, w, h, cam_x, cam_y; } win_last[2];
+static struct { int ok, w, h, cam_x, cam_y, level; } win_last[2];
+static uint8_t win_layout[2][988];   /* the player's floor layout when their window was last drawn */
 
 #define PLAYER_OBJ(p)   (0xFFA25Au + (uint32_t)(p) * 0x80u)
 #define PLAYER_LIVES(p) (0xFFA248u + (uint32_t)(p))
@@ -2743,13 +2744,41 @@ static void render_map(int win, int p, uint32_t *out, int w, int h)
 int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int *pitch)
 {
     uint32_t *out;
-    int p = player, cam_x, cam_y, ox, oy, line, split, held, menu, menu_from, menu_to;
-    if (!g_gv_windows || !g_gv_gameplay || frame_ok != 1) return 0;
-    if (w < 2 || h < 2) return 0;
+    static int between[2];   /* frames of the game's screen switching while play goes on */
+    extern int g_in_game;
+    int p = player, cam_x, cam_y, ox, oy, line, split, held, menu, menu_from, menu_to, live;
+    if (!g_gv_windows || w < 2 || h < 2) return 0;
     if (w > GAMEVIEW_MAX_W) w = GAMEVIEW_MAX_W;
     if (h > GAMEVIEW_MAX_H) h = GAMEVIEW_MAX_H;
     if (!player_in_game(p)) p = !p;   /* (one player: both windows show them) */
-    split = nregions == 2;
+    live = g_gv_gameplay && frame_ok == 1;
+    if (live) between[player] = 0;
+    else {
+        /* The screen splitting or joining again: the game blanks the display for
+         * a few frames and sets the split up (the halves black but for the
+         * players). Each window has nothing to switch: it goes on showing its
+         * player, drawn from memory, on the same floor. (Anything else that is
+         * not gameplay, a fall to another floor, an elevator ride, shows the
+         * usual picture.) */
+        int i, changed = 0;
+        uint32_t lt = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+        if (!(g_in_game && player_in_game(p) && win_last[player].ok && win_last[player].w == w && win_last[player].h == h &&
+              g_gameview_reason != 3 && ++between[player] < 600))
+            return 0;
+        for (i = 0; i < (int)sizeof win_layout[0]; i++) changed += rd8(lt + (uint32_t)i) != win_layout[player][i];
+        if (win_last[player].level != (int)rd8(LEVEL_OF(p)) || changed > 48) {
+            /* (this player is changing floors, falling: their picture stays as it
+             * was until they are on the new one) */
+            *pixels = win_pic[player];
+            *pitch = GAMEVIEW_MAX_W;
+            return 1;
+        }
+        for (i = 0; i < (int)sizeof layout_copy[0]; i++) {
+            layout_copy[0][i] = (uint8_t)rd8(TOEJAM_LEVEL_TILES + (uint32_t)i);
+            layout_copy[1][i] = (uint8_t)rd8(EARL_LEVEL_TILES + (uint32_t)i);
+        }
+    }
+    split = live ? nregions == 2 : rd8(SPLIT_SCREEN) != 0;
     out = win_pic[player];
     /* the camera: the player 160 px across and 128 down the original screen, kept
      * inside the floor as the game keeps its own (8..$938 across, 8..$618 down) */
@@ -2767,7 +2796,7 @@ int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int
         *pitch = GAMEVIEW_MAX_W;
         return 1;
     }
-    held = split && (half_held[p] || split_blank);
+    held = live && split && half_held[p] && !split_blank;
     if (held && win_last[player].ok && win_last[player].w == w && win_last[player].h == h) {
         /* (falling, or the split being set up: the picture as it was, the game's
          * half of this player where it lies in the world) */
@@ -2793,13 +2822,19 @@ int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int
     win_last[player].h = h;
     win_last[player].cam_x = cam_x;
     win_last[player].cam_y = cam_y;
+    win_last[player].level = (int)rd8(LEVEL_OF(p));
+    {
+        int i;
+        uint32_t lt = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+        for (i = 0; i < (int)sizeof win_layout[0]; i++) win_layout[player][i] = (uint8_t)rd8(lt + (uint32_t)i);
+    }
     /* the player's menu: their half of the screen when the window covers it (in
      * one-player play, the present list from the top), at the top of the original
      * screen; plain filler rows leave the level showing */
     menu_from = p * (VDP_HEIGHT / 2);
     menu_to = menu_from + VDP_HEIGHT / 2;
-    menu = rd8(MENU_FLAG(p)) && half_window_lines[p] >= VDP_HEIGHT / 2 - 16;
-    if (!menu && p == 0 && line_window[0] == 1) {
+    menu = live && rd8(MENU_FLAG(p)) && half_window_lines[p] >= VDP_HEIGHT / 2 - 16;
+    if (live && !menu && p == 0 && line_window[0] == 1) {
         menu = 1;
         for (menu_to = 0; menu_to < VDP_HEIGHT && line_window[menu_to] == 1; menu_to++) {}
     }

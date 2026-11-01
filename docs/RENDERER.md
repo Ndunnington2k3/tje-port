@@ -382,8 +382,12 @@ During play `gameview_window_frame(player, w, h)` draws each window from game me
   vacation" only for a player not in the game) and the status sprites (entries 11-22, their tiles
   as the game keeps them) placed where $AB9E/$AD6A/$B0AC/$B570 put them on the bar; the level
   number is the window's player's. `TJE_BARCHECK=prefix` compares it with the VDP's bar.
-- **Held split halves** (falling, split being set up): last window picture with the VDP's half
-  pasted where it lies in the world.
+- **No split-screen transition:** while the game blanks the display to split or join the screen
+  (and on its set-up frames), each window goes on drawing its player from memory; a player changing
+  floors (falling) keeps their window's last picture until they are on the new floor. A half held
+  while split (falling) shows the VDP's half where it lies in the world.
+- **No vsync** with two windows on one machine (swap interval 0 set in each window, as WGL keeps
+  it per window): both windows at full speed, paced by the timer.
 - **Map without pausing:** the Map button (C) never reaches the game in this mode
   (`gameview_map_input`, from `game_input_hook`); it opens a map in that player's window and their
   character waits (Start still pauses); C or B closes it. Drawn as DrawGameMap draws it: plane B
