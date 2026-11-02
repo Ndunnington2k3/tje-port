@@ -8,6 +8,7 @@
  *                          (buttons: any of U D L R A B C S, E = Escape; on menus
  *                          A/C/S = choose, B/E = back)
  *     --random SEED        after frame 500, mash random buttons (Start only rarely)
+ *     --random-until F     stop the random buttons at frame F
  *     --dumpram F:path     save the 64 KB of work RAM at frame F (repeatable)
  *     --dumpvram F:path    save VRAM, CRAM and the VDP registers at frame F
  *     --wav path.wav       emulate sound and record it to a WAV file
@@ -61,6 +62,7 @@ static unsigned random_seed;
 static uint16_t random_buttons;
 static unsigned random_left;
 static unsigned elevator_period;
+static unsigned random_until;
 static struct { unsigned frame; int slot, load; } saves[MAX_EVENTS];
 static int nsaves;
 static int window_w, window_h;   /* --window */
@@ -153,6 +155,8 @@ int plat_init(int argc, char **argv)
         } else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
             wav = fopen(argv[++i], "wb");
             if (wav) { static const uint8_t hdr[44] = {0}; fwrite(hdr, 1, 44, wav); }
+        } else if (!strcmp(argv[i], "--random-until") && i + 1 < argc) {
+            random_until = (unsigned)atoi(argv[++i]);   /* (random input stops at this frame) */
         } else if (!strcmp(argv[i], "--elevator") && i + 1 < argc) {
             elevator_period = (unsigned)atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--gvcheck") && i + 1 < argc) {
@@ -591,7 +595,7 @@ int plat_poll(uint16_t pad[2])
 {
     int i;
     pad[0] = pad[1] = 0;
-    if (random_seed && frame >= (elevator_period ? 1000u : 500u)) {
+    if (random_seed && frame >= (elevator_period ? 1000u : 500u) && (!random_until || frame < random_until)) {
         if (random_left == 0) {
             static const uint16_t choices[] = {PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_A, PAD_B, PAD_C,
                                                PAD_UP | PAD_RIGHT, PAD_DOWN | PAD_LEFT, 0};

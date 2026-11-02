@@ -2667,6 +2667,13 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
             *pitch = GAMEVIEW_MAX_W;
             return 1;
         }
+        /* (the game's own picture is shown: afterwards, the window waits for the
+         * game to show its player's floor, showing the game's picture till then -
+         * not its own from before) */
+        if (g_in_game && player_in_game(p)) {
+            win_last[player].ok = 0;
+            wait_live[player] = 1;
+        }
         return 0;
     }
     live = g_gv_gameplay && frame_ok == 1;
