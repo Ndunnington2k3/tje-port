@@ -696,12 +696,28 @@ static void log_event(const SDL_Event *e)
     fflush(input_log);
 }
 
+static char typed[64];
+static int ntyped;
+
+int plat_text_input(char *buf, int cap)
+{
+    int n = ntyped < cap ? ntyped : cap;
+    memcpy(buf, typed, (size_t)n);
+    ntyped = 0;
+    return n;
+}
+
 int plat_poll(uint16_t pad[2])
 {
     SDL_Event e;
     const Uint8 *k;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return 0;
+        if (e.type == SDL_TEXTINPUT) {
+            const char *t = e.text.text;
+            for (; *t; t++)
+                if (*t >= 32 && *t < 127 && ntyped < (int)sizeof typed) typed[ntyped++] = *t;
+        }
         if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_CLOSE) return 0;   /* (either window) */
         if (input_log) log_event(&e);
         if (capturing) { capture_event(&e); if (e.type == SDL_KEYDOWN) continue; }

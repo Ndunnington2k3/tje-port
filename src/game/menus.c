@@ -12,6 +12,8 @@
 #include "menu.h"
 #include "world.h"
 #include "options_menu.h"
+#include "lan_menu.h"
+#include "net.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -20,6 +22,7 @@
 #define WHO_COUNT_ROM   0x0242AEu
 #define WHO_LOAD        3           /* values of the new items */
 #define WHO_OPTIONS     4
+#define WHO_NETWORK     5
 
 #define SND_PRIORITY    0x32
 #define SND_BUZZ        0x1A
@@ -27,8 +30,9 @@
 /* The saved-games list is its own screen with its own title, "LOAD?"
  * (art/load_title.png), shown as a port overlay (menu_art_title). */
 
-/* The saved-games list. Loading a file does not return. */
-static void load_game_menu(void)
+/* The saved-games list. Loading a file does not return. two_players: for a
+ * network game (only games of both players can be chosen). */
+void load_game_menu(int two_players)
 {
     static const char *const names[SAVE_SLOTS] = {"File 1", "File 2", "File 3"};
     for (;;) {
@@ -76,6 +80,10 @@ static void load_game_menu(void)
         choice = menu_run(&m, MENU_NO_TITLE);
         menu_art_title(NULL);
         if (choice < 0 || choice == back) return;
+        if (choice < SAVE_SLOTS && info[choice].used && two_players && info[choice].players != 2) {
+            lan_message("A network game needs a saved game of both players.");
+            continue;
+        }
         if (choice < SAVE_SLOTS && info[choice].used) {
             if (save_load(choice) != 0) {
                 /* unreadable: say so with the game's "no" sound and show the list again */
@@ -93,7 +101,20 @@ void f_0235E2_PlayerSelectMenu(void)
 {
     /* Returns 0 for both players, 1 for ToeJam, 2 for Earl (as the original). */
     int choice, sel = 0;
+    char msg[96];
     CY(40);
+    /* (a network game over: back to playing alone) */
+    if (net_in_game()) net_leave(NULL);
+    /* how the last network game ended */
+    if (net_take_message(msg, sizeof msg)) lan_message(msg);
+    /* back from the What screen while hosting: the room again */
+    if (net_role() == NET_HOST) {
+        if (lan_menu() == 0) {
+            R.d[0] = 0;
+            RETURN();
+        }
+        sel = 4;
+    }
     for (;;) {
         Menu m;
         int i, n = (int16_t)rd16(WHO_COUNT_ROM);
@@ -104,16 +125,22 @@ void f_0235E2_PlayerSelectMenu(void)
             int k;
             for (k = 0; k < MENU_TEXT - 1 && rd8(s + (uint32_t)k); k++) text[k] = (char)rd8(s + (uint32_t)k);
             text[k] = 0;
-            /* two rows higher than the original, so the longer list sits in the middle */
-            menu_add(&m, (int)rd8(e), (int)rd8(e + 1) - 2, text, (int16_t)rd16(e + 6));
+            /* three rows higher than the original (rows 14-18): the six lines,
+             * evenly spaced, sit where the original three were centred */
+            menu_add(&m, (int)rd8(e), (int)rd8(e + 1) - 3, text, (int16_t)rd16(e + 6));
         }
-        menu_add(&m, 6, 19, "Load Game", WHO_LOAD);
+        menu_add(&m, 6, 17, "Load Game", WHO_LOAD);
+        menu_add(&m, 6, 19, "Network Play", WHO_NETWORK);
         menu_add(&m, 6, 21, "Options", WHO_OPTIONS);
         m.sel = sel;
         choice = menu_run(&m, MENU_TITLE_WHO);
         sel = m.sel;
-        if (choice == WHO_LOAD) load_game_menu();
+        if (choice == WHO_LOAD) load_game_menu(0);
         else if (choice == WHO_OPTIONS) options_menu();
+        else if (choice == WHO_NETWORK) {
+            int r = lan_menu();
+            if (r >= 0) { choice = r; break; }   /* a network game: both players */
+        }
         else break;
     }
     R.d[0] = (uint32_t)(int32_t)choice;

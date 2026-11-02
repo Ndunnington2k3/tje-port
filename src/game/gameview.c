@@ -1450,7 +1450,7 @@ void gameview_line(int line)
     }
 }
 
-int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
+static int frame_main(const uint32_t **pixels, int *width, int *height, int *pitch)
 {
     g_gv_gameplay = 0;
     g_gv_kept = 0;
@@ -1513,6 +1513,50 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
     *height = pic_h;
     *pitch = GAMEVIEW_MAX_W;
     return 1;
+}
+
+int g_gv_net_player = -1;
+static char net_message[96];
+static void draw_message(uint32_t *out, int w, int h, const char *text);
+
+void gameview_set_message(const char *text)
+{
+    snprintf(net_message, sizeof net_message, "%s", text ? text : "");
+}
+
+int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
+{
+    int r = frame_main(pixels, width, height, pitch);
+    if (g_gv_net_player >= 0) {
+        /* network play: this machine's player's window */
+        const uint32_t *px;
+        int w, h, pp;
+        present_wanted_view(&w, &h);
+        if (gameview_window_frame(g_gv_net_player, &w, &h, &px, &pp)) {
+            *pixels = px;
+            *width = w;
+            *height = h;
+            *pitch = pp;
+            r = 1;
+        }
+    }
+    if (net_message[0]) {
+        /* (over a copy: the pictures above are kept for the next frame) */
+        static uint32_t copy[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+        int y, w = r ? *width : vdp_width(), h = r ? *height : VDP_HEIGHT;
+        const uint32_t *src = r ? *pixels : vdp_framebuffer();
+        int sp = r ? *pitch : VDP_FB_PITCH;
+        if (w > GAMEVIEW_MAX_W) w = GAMEVIEW_MAX_W;
+        if (h > GAMEVIEW_MAX_H) h = GAMEVIEW_MAX_H;
+        for (y = 0; y < h; y++) memcpy(copy + (size_t)y * GAMEVIEW_MAX_W, src + (size_t)y * sp, sizeof(uint32_t) * (size_t)w);
+        draw_message(copy, w, h, net_message);
+        *pixels = copy;
+        *width = w;
+        *height = h;
+        *pitch = GAMEVIEW_MAX_W;
+        r = 1;
+    }
+    return r;
 }
 
 /* ==== Per-player views ==========================================================
@@ -2581,6 +2625,74 @@ static void draw_soft_pause(uint32_t *out, int w, int h, int p)
         int y = y0 + r;
         if (y < 0 || y >= h) continue;
         for (c = 0; c < SPW; c++) {
+            uint8_t t8[8];
+            tile_row(t8, box[r >> 3][c], r & 7);
+            for (k = 0; k < 8; k++) {
+                int x = x0 + c * 8 + k;
+                if (x < 0 || x >= w) continue;
+                out[(size_t)y * GAMEVIEW_MAX_W + x] = (t8[k] & PIX_OPAQUE) ? vdp_palette_rgb(t8[k] & 0x3F)
+                                                                         : vdp_palette_rgb(vdp_reg[7] & 0x3F);
+            }
+        }
+    }
+}
+
+/* the game's font (LOC_00009E0E): its tile number for a character */
+static int font_tile(int ch)
+{
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 1;
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A' + 1;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 0x24;
+    switch (ch) {
+    case ',': return 0x20;
+    case '\'': case ':': return 0x21;
+    case '-': return 0x22;
+    case '!': return 0x23;
+    case '.': return 0x1F;
+    case '?': return 0x1B;
+    }
+    return 0;
+}
+
+/* A message in a box like the soft pause's, its lines broken at spaces. */
+static void draw_message(uint32_t *out, int w, int h, const char *text)
+{
+    enum { MW = 30, MH = 7 };
+    static uint16_t box[MH][MW];
+    char lines[3][MW];
+    int n = 0, r, c, k, x0, y0, len = (int)strlen(text), pos = 0;
+    uint32_t frame = 0xA82FCu;
+    memset(lines, 0, sizeof lines);
+    while (pos < len && n < 3) {
+        int take = len - pos > MW - 4 ? MW - 4 : len - pos;
+        if (pos + take < len) {
+            int b = take;
+            while (b > 0 && text[pos + b] != ' ') b--;
+            if (b > 0) take = b;
+        }
+        memcpy(lines[n++], text + pos, (size_t)take);
+        pos += take;
+        while (text[pos] == ' ') pos++;
+    }
+    for (r = 0; r < MH; r++)
+        for (c = 0; c < MW; c++) {
+            int src_row = r == 0 ? 0 : r == MH - 1 ? 3 : (r & 1) ? 1 : 2;
+            int src_col = c == 0 ? 0 : c == MW - 1 ? 39 : (r == 0 || r == MH - 1) ? 1 + (c - 1) % 38 : -1;
+            int b = src_col < 0 ? 0 : (int)rd8(frame + (uint32_t)(src_row * 40 + src_col)), t = b & 0x3F;
+            if (b & 0x40) t |= 0x0800;
+            if (b & 0x80) t |= 0x1000;
+            box[r][c] = (uint16_t)(t + 0x8580);
+        }
+    for (k = 0; k < n; k++) {
+        int l = (int)strlen(lines[k]), row = (MH - n) / 2 + k;
+        for (c = 0; c < l; c++) box[row][(MW - l) / 2 + c] = (uint16_t)(0x85B4 + font_tile(lines[k][c]));
+    }
+    x0 = (w - MW * 8) / 2;
+    y0 = (h - MH * 8) / 2;
+    for (r = 0; r < MH * 8; r++) {
+        int y = y0 + r;
+        if (y < 0 || y >= h) continue;
+        for (c = 0; c < MW; c++) {
             uint8_t t8[8];
             tile_row(t8, box[r >> 3][c], r & 7);
             for (k = 0; k < 8; k++) {

@@ -8,7 +8,10 @@
  *                          (buttons: any of U D L R A B C S, E = Escape; on menus
  *                          A/C/S = choose, B/E = back)
  *     --random SEED        after frame 500, mash random buttons (Start only rarely)
+ *     --realtime           run at 60 frames a second (network play tests)
+ *     --random-from F      start the random buttons at frame F (500)
  *     --random-until F     stop the random buttons at frame F
+ *     --type F:text        type text at frame F (keyboard text entry)
  *     --dumpram F:path     save the 64 KB of work RAM at frame F (repeatable)
  *     --dumpvram F:path    save VRAM, CRAM and the VDP registers at frame F
  *     --wav path.wav       emulate sound and record it to a WAV file
@@ -42,6 +45,7 @@ static int g_gv_win_top_seen_ext(void) { return g_gv_win_top_seen; }
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define MAX_EVENTS 1024
 
@@ -62,7 +66,10 @@ static unsigned random_seed;
 static uint16_t random_buttons;
 static unsigned random_left;
 static unsigned elevator_period;
-static unsigned random_until;
+static unsigned random_until, random_from = 500;
+static int realtime;
+static struct { unsigned frame; char text[64]; int done; } types[8];
+static int ntypes;
 static struct { unsigned frame; int slot, load; } saves[MAX_EVENTS];
 static int nsaves;
 static int window_w, window_h;   /* --window */
@@ -155,6 +162,17 @@ int plat_init(int argc, char **argv)
         } else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
             wav = fopen(argv[++i], "wb");
             if (wav) { static const uint8_t hdr[44] = {0}; fwrite(hdr, 1, 44, wav); }
+        } else if (!strcmp(argv[i], "--type") && i + 1 < argc && ntypes < 8) {
+            const char *a = argv[++i], *c = strchr(a, ':');
+            if (c) {
+                types[ntypes].frame = (unsigned)atoi(a);
+                snprintf(types[ntypes].text, sizeof types[0].text, "%s", c + 1);
+                types[ntypes++].done = 0;
+            }
+        } else if (!strcmp(argv[i], "--realtime")) {
+            realtime = 1;
+        } else if (!strcmp(argv[i], "--random-from") && i + 1 < argc) {
+            random_from = (unsigned)atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--random-until") && i + 1 < argc) {
             random_until = (unsigned)atoi(argv[++i]);   /* (random input stops at this frame) */
         } else if (!strcmp(argv[i], "--elevator") && i + 1 < argc) {
@@ -354,6 +372,15 @@ static void save_ppm(const char *path, const uint32_t *px, int w, int h, int pit
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     int i;
+
+    if (realtime) {
+        /* (--realtime: 60 frames a second, like a real copy of the game) */
+        static uint32_t next;
+        uint32_t now = plat_ms();
+        if (!next || (int32_t)(now - next) > 100) next = now;
+        next += 16;
+        while ((int32_t)(plat_ms() - next) < 0) usleep(1000);
+    }
 
     if (getenv("TJE_PICHASH")) {
         /* (tests) a hash of every picture shown (and each two-window picture), to
@@ -595,7 +622,7 @@ int plat_poll(uint16_t pad[2])
 {
     int i;
     pad[0] = pad[1] = 0;
-    if (random_seed && frame >= (elevator_period ? 1000u : 500u) && (!random_until || frame < random_until)) {
+    if (random_seed && frame >= (elevator_period ? 1000u : random_from) && (!random_until || frame < random_until)) {
         if (random_left == 0) {
             static const uint16_t choices[] = {PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_A, PAD_B, PAD_C,
                                                PAD_UP | PAD_RIGHT, PAD_DOWN | PAD_LEFT, 0};
@@ -667,4 +694,17 @@ int plat_poll(uint16_t pad[2])
 static uint16_t choices_p2(void)
 {
     return (uint16_t)(1u << (rnd() % 7));
+}
+
+/* (headless: --type F:text types text at frame F) */
+int plat_text_input(char *buf, int cap)
+{
+    int i, n = 0;
+    for (i = 0; i < ntypes; i++)
+        if (types[i].frame == frame && !types[i].done) {
+            int k;
+            for (k = 0; types[i].text[k] && n < cap; k++) buf[n++] = types[i].text[k];
+            types[i].done = 1;
+        }
+    return n;
 }

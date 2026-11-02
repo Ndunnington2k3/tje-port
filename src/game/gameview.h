@@ -47,6 +47,13 @@ int gameview_window_frame(int player, int *w, int *h, const uint32_t **pixels, i
 void gameview_map_input(uint16_t pad[2]);
 int gameview_map_open(int player);
 
+/* Network play: the player this machine shows (-1: none); the frame's picture is
+ * their window's. */
+extern int g_gv_net_player;
+/* A box with a message over the middle of the picture (NULL: none). Lower-case
+ * letters, digits, space and - . , ' ! only. */
+void gameview_set_message(const char *text);
+
 /* (tests) split screen: is half k (0 top, 1 bottom) shown as the VDP draws it this
  * frame (under its player's menu, held while falling, or the split being set up)? */
 int gameview_split_half_shown_as_vdp(int k);

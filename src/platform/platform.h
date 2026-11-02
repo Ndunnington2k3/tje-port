@@ -62,6 +62,31 @@ void plat_message(const char *title, const char *text);
 /* Path of the ROM to load (from command line, config, or a default). */
 const char *plat_rom_path(void);
 
+/* Text typed on a keyboard since the last call (printable ASCII only; nothing on
+ * systems without one). Returns the number of characters written to buf. */
+int plat_text_input(char *buf, int cap);
+
+/* ---- local network (network play, src/game/net.c) ----------------------------
+ * Datagrams only: small packets that may be lost, duplicated or arrive out of
+ * order (as with PSP ad hoc PDP and 3DS local wireless). One endpoint per program,
+ * on the first free port of a small fixed range, so several copies can run on one
+ * machine. */
+typedef struct { uint8_t b[8]; } PlatNetAddr;   /* opaque (PC: IPv4 address and port) */
+#define PLAT_NET_MAX_PACKET 1200
+int plat_net_open(void);                         /* 0 = ok (again: no-op) */
+void plat_net_close(void);
+int plat_net_send(const PlatNetAddr *to, const void *data, int len);
+/* To every copy of the game on the local network (and this machine). */
+int plat_net_broadcast(const void *data, int len);
+/* Next waiting packet: its length (0 = none), never blocks. */
+int plat_net_recv(PlatNetAddr *from, void *buf, int cap);
+int plat_net_addr_equal(const PlatNetAddr *a, const PlatNetAddr *b);
+void plat_net_addr_text(const PlatNetAddr *a, char *out, int size);
+/* A name for this system (the default room name: the computer's / console's name). */
+void plat_net_name(char *out, int size);
+/* Milliseconds from some fixed moment (for network timeouts). */
+uint32_t plat_ms(void);
+
 #ifdef __cplusplus
 }
 #endif

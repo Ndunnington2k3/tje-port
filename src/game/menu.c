@@ -257,6 +257,7 @@ int menu_run(Menu *m, int title)
         menu_frame();
         if (t == 2) grab_hand();
         if (m->frame) m->frame(m, t);
+        if (m->close) { result = m->close_value; break; }
         p = pads_now();
         if (p != prev) {
             uint32_t pressed = p & ~prev;

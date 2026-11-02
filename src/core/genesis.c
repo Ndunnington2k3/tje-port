@@ -31,6 +31,14 @@ static void (*input_hook)(uint16_t pad[2]);
 
 void genesis_set_input_hook(void (*fn)(uint16_t pad[2])) { input_hook = fn; }
 
+static void (*pad_before)(uint16_t pad[2], uint16_t *menu), (*pad_after)(uint16_t pad[2], uint16_t *menu);
+void genesis_set_pad_hooks(void (*before)(uint16_t pad[2], uint16_t *menu), void (*after)(uint16_t pad[2], uint16_t *menu))
+{
+    pad_before = before;
+    pad_after = after;
+}
+int g_fast_forward;
+
 void genesis_set_frame_hook(void (*fn)(void)) { line0_hook = fn; }
 void genesis_set_line_hook(void (*fn)(int line)) { line_hook = fn; }
 void genesis_set_picture_source(int (*fn)(const uint32_t **pixels, int *w, int *h, int *pitch)) { picture_source = fn; }
@@ -140,24 +148,40 @@ void genesis_check_interrupts(void)
     }
 }
 
+static void present_frame(void)
+{
+    const uint32_t *px;
+    int w, h, pitch;
+    if (picture_source && picture_source(&px, &w, &h, &pitch)) plat_present(px, w, h, pitch);
+    else plat_present(vdp_framebuffer(), vdp_width(), VDP_HEIGHT, VDP_FB_PITCH);
+}
+
 static void end_of_frame(void)
 {
     const int16_t *audio;
     int n = snd_end_frame(&audio);
-    if (n > 0) plat_audio(audio, n);
+    if (n > 0 && !g_fast_forward) plat_audio(audio, n);
     g_frame++;
-    {
-        const uint32_t *px;
-        int w, h, pitch;
-        if (picture_source && picture_source(&px, &w, &h, &pitch)) plat_present(px, w, h, pitch);
-        else plat_present(vdp_framebuffer(), vdp_width(), VDP_HEIGHT, VDP_FB_PITCH);
-    }
+    if (!g_fast_forward) present_frame();
     if (!plat_poll(g_pad)) {
         quit_code = 0;
         longjmp(quit_jmp, 1);
     }
     g_menu_pad = plat_menu_input();
+    if (pad_before) pad_before(g_pad, &g_menu_pad);
     if (input_hook) input_hook(g_pad);
+    if (pad_after) pad_after(g_pad, &g_menu_pad);
+}
+
+uint16_t genesis_idle_frame(void)
+{
+    uint16_t pads[2];
+    present_frame();
+    if (!plat_poll(pads)) {
+        quit_code = 0;
+        longjmp(quit_jmp, 1);
+    }
+    return plat_menu_input();
 }
 
 void genesis_run_events(void)

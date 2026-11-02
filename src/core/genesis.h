@@ -77,6 +77,15 @@ void genesis_check_interrupts(void);
  * sees them (e.g. to turn PAD_BACK into Start during play). NULL for none. */
 void genesis_set_input_hook(void (*fn)(uint16_t pad[2]));
 
+/* Network play (src/game/net.c): called around the input hook each frame, with
+ * the frame's inputs and menu controls, which they may replace (and wait for). */
+void genesis_set_pad_hooks(void (*before)(uint16_t pad[2], uint16_t *menu), void (*after)(uint16_t pad[2], uint16_t *menu));
+/* Show the frame again and read the controllers without running the game (while
+ * waiting for the other machine); returns the menu controls. */
+uint16_t genesis_idle_frame(void);
+/* Frames are run without showing them or playing their sound (catching up). */
+extern int g_fast_forward;
+
 /* Controllers: current button state for pad 0/1 (PAD_* bits). */
 extern uint16_t g_pad[2];
 /* Menu controls this frame (plat_menu_input): PAD_UP..PAD_RIGHT, MENU_OK, MENU_BACK. */

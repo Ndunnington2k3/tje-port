@@ -7,6 +7,7 @@
 #include "menu.h"
 #include "settings.h"
 #include "world.h"
+#include "net.h"
 #include "core/ser.h"
 
 #include <stdio.h>
@@ -195,13 +196,20 @@ void f_0014E6_InGameLoop(void)
     /* (a game loaded from a port menu, or quit to the menu from the pause menu,
      * restarts the machine without returning from that menu: Escape pauses again) */
     g_port_menu_active = 0;
-    if (post_load_pending) {
+    if (g_net_resume) {
+        /* (restarted from a network snapshot, taken at the top of the loop below:
+         * the loop goes on from there) */
+        g_net_resume = 0;
+        post_load_pending = 0;
+        net_resumed();
+    } else if (post_load_pending) {
         post_load_pending = 0;
         after_load();
     } else {
         loop_entered();
     }
     for (;;) {
+        net_loop_top();   /* (network play: sessions start, snapshots are taken here) */
         CY(44);
         RT_POLL();
         watch_arrivals();
@@ -486,6 +494,7 @@ int save_load(int slot)
 
 void save_quit_to_menu(void)
 {
+    if (net_role() != NET_NONE) net_leave(NULL);
     g_boot_to_menu = 1;
     g_in_game = 0;
     g_port_menu_active = 0;

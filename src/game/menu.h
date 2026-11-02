@@ -59,6 +59,8 @@ struct Menu {
     /* Optional. Called once per frame while the menu is up (t counts frames). */
     void (*frame)(Menu *m, unsigned t);
     void *user;
+    /* Set (from the frame callback) to close the menu: menu_run returns close_value. */
+    int close, close_value;
     /* internal */
     uint32_t text_addr[MENU_MAX];
     int shown_len[MENU_MAX];
