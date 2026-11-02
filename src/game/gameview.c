@@ -2143,6 +2143,9 @@ static void render_status_bar(uint32_t *out, int pitch, int from, int to)
     static uint8_t a[320], sp[320];
     uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
     int line, x, saved = npieces;
+    /* (only the bar's own sprites: the view's objects, still in the list, are in
+     * the original screen's coordinates and would land in the bar from its top rows) */
+    npieces = 0;
     view_screen_sprites(11, 22, from, to - from, 0, 0, 320, to - from);
     for (line = from; line < to; line++) {
         uint32_t *o = out + (size_t)(line - from) * pitch;
@@ -2977,3 +2980,14 @@ int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int
 
 /* (tests) the bar built for player own's window, lines 184.. of the original screen */
 int gameview_test_bar(uint32_t (*out)[320], int own) { return build_bar(out, own); }
+
+/* (tests) where the 1P picture's status bar is: original lines from..to-1 shown
+ * at picture row `row`; 0 if not shown this frame */
+int gameview_test_bar_rows(int *from, int *to, int *row)
+{
+    if (frame_ok != 1 || nregions != 1 || !(win_to == VDP_HEIGHT && win_from > 0) || (pic_w == 320 && pic_h == VDP_HEIGHT)) return 0;
+    *from = win_from;
+    *to = hud_end;
+    *row = pic_h - (hud_end - win_from);
+    return 1;
+}

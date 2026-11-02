@@ -35,6 +35,8 @@
 #include "game/gameview.h"
 #include "game/viewdiag.h"
 extern int g_gv_gameplay;
+extern int g_gv_win_top_seen;
+static int g_gv_win_top_seen_ext(void) { return g_gv_win_top_seen; }
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -563,6 +565,33 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             fprintf(stderr, "barcheck: frame %u: %lu pixels differ\n", frame, bad);
         }
         if (frame + 1 == max_frames) fprintf(stderr, "barcheck: %u frames, %u differ\n", checked, bad_frames);
+    }
+    if (getenv("TJE_WIDEBAR")) {
+        /* (tests) the wide 1P picture's status bar against the VDP's bar lines */
+        extern int gameview_test_bar_rows(int *from, int *to, int *row);
+        const uint32_t *gv;
+        int gw, gh, gp, from, to, row;
+        static unsigned checked, bad_frames;
+        if (gameview_frame(&gv, &gw, &gh, &gp) && gameview_test_bar_rows(&from, &to, &row) && !g_gv_win_top_seen_ext()) {
+            const uint32_t *v = vdp_framebuffer();
+            int y, x, ox = (gw - 320) / 2;
+            unsigned long bad = 0;
+            for (y = from; y < to && y < 183 + 41; y++)
+                for (x = 0; x < 320; x++)
+                    if (x + ox >= 0 && x + ox < gw &&
+                        (gv[(row + y - from) * gp + x + ox] & 0xFFFFFF) != (v[y * VDP_FB_PITCH + x] & 0xFFFFFF)) bad++;
+            checked++;
+            if (bad) {
+                if (bad_frames++ < 6) {
+                    char path[300];
+                    snprintf(path, sizeof path, "%s_%u_wide.ppm", getenv("TJE_WIDEBAR"), frame);
+                    save_ppm(path, gv, gw, gh, gp);
+                    snprintf(path, sizeof path, "%s_%u_vdp.ppm", getenv("TJE_WIDEBAR"), frame);
+                    save_ppm(path, v, 320, 224, VDP_FB_PITCH);
+                }
+                fprintf(stderr, "widebar: frame %u: %lu pixels differ\n", frame, bad);
+            }
+        }
     }
     if (g_gv_windows) {
         int k;
