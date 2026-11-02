@@ -2651,10 +2651,10 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
      *  - the player changing floors (falling), or the display off: the window's
      *    last picture, until the player is on the floor the game shows again;
      *  - else the player's view. */
-    /* (riding an elevator, ELEVATOR_FLAG 1 or 3 - 2 is standing in it: when
-     * nobody else stays on the floor the game shows its ride screen, shown here as
-     * it is; with the other player still playing there is none, the elevator
-     * rises out of the rider's view, drawn below like any moment of play) */
+    /* (an elevator leaves only with every player in the game inside it - the
+     * ride screen, LOC_00013540, is then shown here as the game draws it; a
+     * player already in it, waiting for the other (ELEVATOR_FLAG 1), keeps their
+     * own view) */
     if (!g_in_game || !player_in_game(p) || alone_riding()) {
         frozen_for[player] = 0;
         cam_ok[player] = 0;

@@ -413,8 +413,11 @@ During play `gameview_window_frame(player, w, h)` draws each window from game me
   redraws: no pause, no stutter, the state changes at once. The windows ignore the VDP's planes
   (now stale after a split or join) and draw from memory; a player whose floor changes (falling)
   keeps their window's last picture until the new floor is up (the game shows it, or the display is
-  on and the layout steady for 8 frames). Riding an elevator (ELEVATOR_FLAG 1 or 3): the usual
-  picture.
+  on and the layout steady for 8 frames). Elevators leave only with every player
+  inside (the game's rule): a player waiting in one keeps their view; once the game's ride
+  screen is built (LOC_00013540) it is shown as the game draws it (every VDP line drawn), and
+  after the ride the window shows the game's picture (black while the display is off) until the
+  game shows the new floor.
 - **Camera:** follows the player smoothly (an eighth of the distance each frame): players move in
   steps (4 px every 8 frames walking) and a camera locked to them made the picture judder at a
   fraction of the frame rate; the game's own camera glides the same way.
