@@ -65,6 +65,12 @@ uint32_t vdp_color_rgb(uint16_t c);
 
 /* Raw access for tools/debugging and future native renderers */
 extern uint8_t vdp_vram[0x10000];
+/* One flag per 32-byte tile of VRAM, set by every write through the VDP: users
+ * that keep decoded copies of tiles clear the flags they have caught up with.
+ * Code writing vdp_vram directly calls vdp_tiles_all_dirty(). */
+extern uint8_t vdp_tile_dirty[2048];
+void vdp_tiles_all_dirty(void);
+extern int vdp_stats_on;   /* (tests) count VRAM writes for vdp_frame_stats */
 extern uint16_t vdp_cram[64];
 extern uint16_t vdp_vsram[40];
 extern uint8_t vdp_reg[32];

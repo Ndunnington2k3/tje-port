@@ -158,6 +158,8 @@ int plat_init(int argc, char **argv)
         } else if (!strcmp(argv[i], "--gvcheck") && i + 1 < argc) {
             gvcheck = argv[++i];   /* (the gameplay view is on by default: options.c) */
             {
+                extern int g_gv_old_path;
+                g_gv_old_path = 1;   /* (the line-by-line picture is the one compared) */
                 extern int g_gameview_test_pieces;
                 g_gameview_test_pieces = getenv("TJE_GV_PIECES") != NULL;
             }
@@ -609,12 +611,26 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         for (k = 0; k < 2; k++) {
             const uint32_t *px;
             int pp;
-            if (!gameview_window_frame(k, tw_w, tw_h, &px, &pp)) continue;
+            int ww = tw_w, wh = tw_h;
+            if (!gameview_window_frame(k, &ww, &wh, &px, &pp)) continue;
+            if (getenv("TJE_PICHASH")) {
+                static FILE *wf;
+                uint32_t hash = 2166136261u;
+                int x, y;
+                if (!wf) {
+                    char path[600];
+                    snprintf(path, sizeof path, "%s.windows", getenv("TJE_PICHASH"));
+                    wf = fopen(path, "w");
+                }
+                for (y = 0; y < wh; y++)
+                    for (x = 0; x < ww; x++) hash = (hash ^ (px[(size_t)y * pp + x] & 0xFFFFFF)) * 16777619u;
+                if (wf) fprintf(wf, "%u p%d %dx%d %08X\n", frame, k + 1, ww, wh, hash);
+            }
             for (i = 0; i < nshots; i++)
                 if (shots[i].frame == frame) {
                     char path[300];
                     snprintf(path, sizeof path, "%s.p%d.ppm", shots[i].path, k + 1);
-                    save_ppm(path, px, tw_w, tw_h, pp);
+                    save_ppm(path, px, ww, wh, pp);
                 }
         }
     }
@@ -637,6 +653,7 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         }
     if (getenv("TJE_TRACE_VDP")) {
         uint32_t st[5];
+        vdp_stats_on = 1;
         vdp_frame_stats(st);
         fprintf(stderr, "v%5u tiles %5u A %5u B %5u sat %4u off %3u reg1 %02X\n", frame, st[0], st[1], st[2], st[3], st[4], vdp_reg[1]);
     }

@@ -90,21 +90,102 @@ static uint32_t level_cell(uint32_t tiles, int level, int cx, int cy)
     return attr | t;
 }
 
-/* 8 pixels of a tile row into line-buffer form (bits 0-5 colour, 6 priority, 7 opaque) */
+/* The floor's plane cells, kept per player and brought up to date block by block
+ * when the layout (or the floor, or the cell attribute) changes, instead of being
+ * worked out from the layout for every 8 pixels of every row: the same cells
+ * level_cell gives, for cells (0..335, 0..223) - the floor and the space around
+ * it - and the space pattern beyond. Used while a view is being drawn. */
+#define FLOOR_CW 336
+#define FLOOR_CH 224
+static uint16_t floor_grid[2][FLOOR_CH][FLOOR_CW];
+static uint16_t floor_space[2][8][16];
+static uint8_t floor_words[2][19 * 26 * 2];
+static int floor_level[2] = {-1, -1}, floor_attr[2] = {-1, -1};
+static int floor_on[2];   /* the grid is right for the view being drawn */
+
+static void floor_sync(uint32_t tiles, int level)
+{
+    int p = tiles == EARL_LEVEL_TILES, full, bx, by, sx, sy;
+    int attr = (int)rd16(CELL_ATTR);
+    full = level != floor_level[p] || attr != floor_attr[p];
+    if (full) {
+        for (sy = 0; sy < FLOOR_CH; sy++)
+            for (sx = 0; sx < FLOOR_CW; sx++) {
+                int bxx = sx >> 4, byy = sy >> 3;
+                if (bxx == 0 || bxx > 0x13 || byy == 0 || byy > 0x1A)
+                    floor_grid[p][sy][sx] = (uint16_t)level_cell(tiles, level, sx, sy);
+            }
+        for (sy = 0; sy < 8; sy++)
+            for (sx = 0; sx < 16; sx++) floor_space[p][sy][sx] = (uint16_t)level_cell(tiles, level, -16 + sx, -8 + sy);
+        floor_level[p] = level;
+        floor_attr[p] = attr;
+    }
+    for (by = 0; by < 26; by++)
+        for (bx = 0; bx < 19; bx++) {
+            uint32_t off = (uint32_t)(by * 19 + bx) * 2, w = layout_word(tiles, off);
+            if (!full && floor_words[p][off] == (uint8_t)(w >> 8) && floor_words[p][off + 1] == (uint8_t)w) continue;
+            floor_words[p][off] = (uint8_t)(w >> 8);
+            floor_words[p][off + 1] = (uint8_t)w;
+            for (sy = 0; sy < 8; sy++)
+                for (sx = 0; sx < 16; sx++) {
+                    int cx = (bx + 1) * 16 + sx, cy = (by + 1) * 8 + sy;
+                    floor_grid[p][cy][cx] = (uint16_t)level_cell(tiles, level, cx, cy);
+                }
+        }
+    floor_on[p] = 1;
+}
+
+static inline uint32_t floor_cell(uint32_t tiles, int level, int cx, int cy)
+{
+    int p = tiles == EARL_LEVEL_TILES;
+    if (!floor_on[p]) return level_cell(tiles, level, cx, cy);
+    if (cx >= 0 && cy >= 0 && cx < FLOOR_CW && cy < FLOOR_CH) return floor_grid[p][cy][cx];
+    return floor_space[p][cy & 7][cx & 15];
+}
+
+/* Decoded tiles: each tile's 8 rows of 8 colour numbers (0-15), one byte a pixel,
+ * redone when the VDP says the tile was written (vdp_tile_dirty). */
+static uint64_t tile_cache[2048][8];
+
+static inline uint64_t tile_pixels(uint32_t tile, int row)
+{
+    if (vdp_tile_dirty[tile]) {
+        const uint8_t *p = &vdp_vram[tile * 32];
+        int r, i;
+        for (r = 0; r < 8; r++) {
+            uint8_t px[8];
+            for (i = 0; i < 4; i++) {
+                px[i * 2] = (uint8_t)(p[r * 4 + i] >> 4);
+                px[i * 2 + 1] = (uint8_t)(p[r * 4 + i] & 15);
+            }
+            memcpy(&tile_cache[tile][r], px, 8);
+        }
+        vdp_tile_dirty[tile] = 0;
+    }
+    return tile_cache[tile][row];
+}
+
+/* 8 pixels of a tile row into line-buffer form (bits 0-5 colour, 6 priority, 7
+ * opaque): all 8 at once, a byte each in a 64-bit word (the byte at the lowest
+ * address is the leftmost pixel, the same order on every little- or big-endian
+ * machine, as the word only ever goes through memcpy) */
 static void tile_row(uint8_t out[8], uint32_t entry, int row)
 {
-    uint32_t tile = entry & 0x7FF, pal = (entry >> 9) & 0x30;
-    uint8_t prio = (entry & 0x8000) ? PIX_PRIO : 0;
-    const uint8_t *p;
-    int i;
+    uint64_t x, opaque, o;
+    uint32_t tile = entry & 0x7FF;
     if (entry & 0x1000) row = 7 - row;
-    p = &vdp_vram[(tile * 32 + (uint32_t)row * 4) & 0xFFFF];
-    for (i = 0; i < 8; i++) {
-        int px = (entry & 0x0800) ? 7 - i : i;
-        uint8_t b = p[px >> 1];
-        uint32_t c = (px & 1) ? (b & 0x0F) : (b >> 4);
-        out[i] = (uint8_t)(c ? (PIX_OPAQUE | prio | pal | c) : prio);
+    x = tile_pixels(tile, row);
+    if (entry & 0x0800) {
+        uint8_t b[8], f[8];
+        int i;
+        memcpy(b, &x, 8);
+        for (i = 0; i < 8; i++) f[i] = b[7 - i];
+        memcpy(&x, f, 8);
     }
+    opaque = (x + 0x7F7F7F7F7F7F7F7Full) & 0x8080808080808080ull;   /* (bit 7 of each non-zero byte) */
+    o = x | opaque | ((opaque >> 7) * (uint64_t)((entry >> 9) & 0x30));
+    if (entry & 0x8000) o |= 0x4040404040404040ull;
+    memcpy(out, &o, 8);
 }
 
 typedef struct {
@@ -155,9 +236,11 @@ static void level_row(uint8_t *buf, int off, int x_from, int x_to, const Region 
     for (; x < x_to; x += 8, cx++) {
         uint8_t px[8];
         int i;
-        tile_row(px, level_cell(r->tiles, r->level, cx, cy), row);
-        for (i = 0; i < 8; i++)
-            if (x + i >= x_from && x + i < x_to) buf[x + i + off] = px[i];
+        tile_row(px, floor_cell(r->tiles, r->level, cx, cy), row);
+        if (x >= x_from && x + 8 <= x_to) memcpy(buf + x + off, px, 8);
+        else
+            for (i = 0; i < 8; i++)
+                if (x + i >= x_from && x + i < x_to) buf[x + i + off] = px[i];
     }
 }
 
@@ -1021,6 +1104,8 @@ static int display_on_at_top;   /* the display was on at the top of this frame *
 int g_gv_win_top_seen;          /* (tests) the window was at the top on some line of this frame */
 int g_gv_kept;                  /* (tests) this frame repeats the last picture (clean transitions) */
 int g_gv_use_views = 1;         /* draw wider gameplay pictures with the per-player views */
+int g_gv_old_path;              /* (tests, --gvcheck) draw gameplay line by line as well (the picture checked against the VDP) */
+static int old_rows;            /* this frame's gameplay is drawn line by line (else: the views, or the VDP's own picture) */
 static void render_views_picture(void);
 extern int g_in_game;   /* the last picture made here, kept while the VDP is frozen */
 static int window_row_filler(int row);
@@ -1659,6 +1744,13 @@ void gameview_line(int line)
             return;
         }
         if (frame_ok) {
+            /* Who draws this gameplay frame: wider, the per-player views at the end
+             * of the frame; at the original size, the VDP (its picture is the
+             * original); line by line here only for the tests that check it */
+            old_rows = g_gv_old_path || g_gameview_test_pieces ||
+                       (!g_gv_use_views && (pic_w != 320 || pic_h != VDP_HEIGHT));
+        }
+        if (frame_ok && old_rows) {
             find_object_sprites();
             /* (at the original size, exactly the original picture: objects off its
              * screen are not drawn, even the few pixels of them that would reach in) */
@@ -1700,7 +1792,7 @@ void gameview_line(int line)
         return;
         }
     }
-    if ((line & 31) == 0) find_object_sprites();    /* (the game rewrites the sprite table during the frame) */
+    if (old_rows && (line & 31) == 0) find_object_sprites();    /* (the game rewrites the sprite table during the frame) */
     /* window rows now (the game moves the window during the frame when the
      * present list opens and closes) */
     wv = (vdp_reg[18] & 0x1F) * 8;
@@ -1713,6 +1805,7 @@ void gameview_line(int line)
         if (nregions == 2 || g_gv_windows || !(vdp_reg[18] & 0x80))
             memcpy(top_window_lines[line], vdp_framebuffer() + (size_t)line * VDP_FB_PITCH, sizeof top_window_lines[0]);
     }
+    if (!old_rows) return;
     /* (in a wider picture, filler rows of the window are not kept: level there) */
     if (in_window && (pic_w != 320 || pic_h != VDP_HEIGHT) && window_row_filler(line / 8)) in_window = 0;
     if (in_window) draw_band(line);
@@ -1767,6 +1860,14 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
      * frame are only kept for the original size, where they are checked against
      * the VDP) */
     /* (two windows: each window draws its own picture; this one is not shown) */
+    if (!old_rows && pic_w == 320 && pic_h == VDP_HEIGHT && !views_done) {
+        /* (the original size: the VDP's picture is the original one; kept here
+         * too for the frames the picture is held) */
+        int y;
+        for (y = 0; y < VDP_HEIGHT; y++)
+            memcpy(picture + (size_t)y * GAMEVIEW_MAX_W, vdp_framebuffer() + (size_t)y * VDP_FB_PITCH, sizeof(uint32_t) * 320);
+        views_done = 1;
+    }
     if (g_gv_use_views && (pic_w != 320 || pic_h != VDP_HEIGHT) && !views_done && !g_gv_windows) {
         render_views_picture();
         views_done = 1;   /* (gameview_frame may be asked more than once a frame) */
@@ -2043,13 +2144,17 @@ static void view_plane_b_row(uint8_t *buf, int off, int x_from, int x_to, int sc
     uint32_t base = (uint32_t)(vdp_reg[4] & 7) << 13;
     int hs = -(cam_x >= 0 ? cam_x >> 1 : -((-cam_x) >> 1));
     int vs = cam_y >= 0 ? cam_y >> 1 : -((-cam_y) >> 1);
-    int y = (screen_y + vs) & (ph * 8 - 1), x;
-    for (x = x_from; x < x_to; x++) {
-        int px = (x - hs) & (pw * 8 - 1);
-        uint32_t ea = (base + (uint32_t)((y >> 3) * pw + (px >> 3)) * 2) & 0xFFFF;
+    int y = (screen_y + vs) & (ph * 8 - 1), x = x_from - ((x_from - hs) & 7), cx = ((x - hs) & (pw * 8 - 1)) >> 3, i;
+    uint32_t row_base = base + (uint32_t)((y >> 3) * pw) * 2;
+    /* (8 pixels at a time, a tile column each) */
+    for (; x < x_to; x += 8, cx = (cx + 1) & (pw - 1)) {
+        uint32_t ea = (row_base + (uint32_t)cx * 2) & 0xFFFF;
         uint8_t t8[8];
-        if (x == x_from || (px & 7) == 0) tile_row(t8, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1], y & 7);
-        buf[x + off] = t8[px & 7];
+        tile_row(t8, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1], y & 7);
+        if (x >= x_from && x + 8 <= x_to) memcpy(buf + x + off, t8, 8);
+        else
+            for (i = 0; i < 8; i++)
+                if (x + i >= x_from && x + i < x_to) buf[x + i + off] = t8[i];
     }
 }
 
@@ -2095,14 +2200,32 @@ static void window_line(uint8_t *buf, int off, int line) { window_line_clip(buf,
 
 
 
+/* The layer a pixel shows (0 sprite, 1 plane A, 2 plane B, 3 the backdrop) for each
+ * combination of their opaque / priority bits: priority sprite, plane A, plane B,
+ * then the same without priority, as the VDP decides */
+static uint8_t layer_pick[64];
+
+static void layer_pick_init(void)
+{
+    int k, l;
+    for (k = 0; k < 64; k++) {
+        int bits[3] = {k & 3, (k >> 2) & 3, (k >> 4) & 3}, pick = 3;   /* (bit 1 opaque, bit 0 priority) */
+        for (l = 0; l < 3 && pick == 3; l++) if (bits[l] == 3) pick = l;
+        for (l = 0; l < 3 && pick == 3; l++) if (bits[l] & 2) pick = l;
+        layer_pick[k] = (uint8_t)pick;
+    }
+}
+
 int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int screen_h,
                          uint32_t *out, int w, int h, int pitch, int band)
 {
     static uint8_t a[GAMEVIEW_MAX_W], b[GAMEVIEW_MAX_W], sp[GAMEVIEW_MAX_W];
     Region r;
     int ox = (w - 320) / 2, oy = (h - screen_h) / 2, y, x;
-    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F), pal[64];
     if (w > GAMEVIEW_MAX_W || h > GAMEVIEW_MAX_H) return -1;
+    for (x = 0; x < 64; x++) pal[x] = vdp_palette_rgb(x);
+    if (!layer_pick[0] && !layer_pick[63]) layer_pick_init();   /* (once: entry 0 is 3 when set up) */
     views_setup_cameras();
     r.top = 0;
     r.bottom = screen_h;
@@ -2110,6 +2233,7 @@ int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int scr
     r.cam_y = cam_y;
     r.tiles = player ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
     r.level = rd8(player ? EARLS_LEVEL : TOEJAMS_LEVEL);
+    floor_sync(r.tiles, r.level);
     view_collect(r.level, cam_x, cam_y, -ox, -oy, w - ox, h - oy);
     if (band) view_band(-ox, -oy, w - ox, h - oy);
     else if (screen_h == VDP_HEIGHT / 2 && game_cam >= 0 && !view_skip_half_hud) view_half_hud(game_cam ? VDP_HEIGHT / 2 : 0, -ox, -oy, w - ox, h - oy);
@@ -2122,17 +2246,17 @@ int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int scr
         if (sy >= 0 && sy < view_top_window) window_line_clip(a, ox, sy, w);   /* (present list: the window replaces plane A) */
         pieces_row(sp, ox, -ox, w - ox, sy);
         for (x = 0; x < w; x++) {
-            uint8_t s = sp[x], pa = a[x], pb = b[x], c;
-            if ((s & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = s;
-            else if ((pa & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pa;
-            else if ((pb & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pb;
-            else if (s & PIX_OPAQUE) c = s;
-            else if (pa & PIX_OPAQUE) c = pa;
-            else if (pb & PIX_OPAQUE) c = pb;
-            else { o[x] = backdrop; continue; }
-            o[x] = vdp_palette_rgb(c & 0x3F);
+            /* (which layer shows: from the opaque and priority bits of the three) */
+            uint8_t px[4];
+            int k;
+            px[0] = sp[x];
+            px[1] = a[x];
+            px[2] = b[x];
+            k = layer_pick[((px[0] >> 6) & 3) | (((px[1] >> 6) & 3) << 2) | (((px[2] >> 6) & 3) << 4)];
+            o[x] = k < 3 ? pal[px[k] & 0x3F] : backdrop;
         }
     }
+    floor_on[0] = floor_on[1] = 0;
     return 0;
 }
 
@@ -2838,8 +2962,25 @@ static void draw_soft_pause(uint32_t *out, int w, int h, int p)
 
 #define ELEVATOR_FLAG_OF(p) (0xFFDA6Au + (uint32_t)(p))
 
-int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int *pitch)
+/* (a window showing the usual picture during play: the views' picture of the
+ * whole screen, drawn now if nobody has asked for it yet this frame) */
+static int window_usual_picture(int *w, int *h, const uint32_t **pixels, int *pitch)
 {
+    if (!(frame_ok == 1 && g_gv_gameplay)) return 0;
+    if (!views_done && g_gv_use_views && (pic_w != 320 || pic_h != VDP_HEIGHT)) {
+        render_views_picture();
+        views_done = 1;
+    }
+    *pixels = picture;
+    *w = pic_w;
+    *h = pic_h;
+    *pitch = GAMEVIEW_MAX_W;
+    return 1;
+}
+
+int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels, int *pitch)
+{
+    int w = *wp, h = *hp;
     uint32_t *out;
     static int frozen_for[2];               /* frames this window has kept its picture */
     static int cam_ok[2], cam_level[2], wait_live[2];
@@ -2850,6 +2991,8 @@ int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int
     if (!g_gv_windows || w < 2 || h < 2) return 0;
     if (w > GAMEVIEW_MAX_W) w = GAMEVIEW_MAX_W;
     if (h > GAMEVIEW_MAX_H) h = GAMEVIEW_MAX_H;
+    *wp = w;
+    *hp = h;
     if (!player_in_game(p)) p = !p;   /* (one player: both windows show them) */
     out = win_pic[player];
     /* What to show, from game memory (two-window mode never splits the screen, and
@@ -2859,7 +3002,11 @@ int gameview_window_frame(int player, int w, int h, const uint32_t **pixels, int
      *  - the player changing floors (falling), or the display off: the window's
      *    last picture, until the player is on the floor the game shows again;
      *  - else the player's view. */
-    if (!g_in_game || !player_in_game(p) || (rd8(ELEVATOR_FLAG_OF(p)) & 1)) {   /* (1, 3: riding; 2: standing in it) */ frozen_for[player] = 0; cam_ok[player] = 0; return 0; }
+    if (!g_in_game || !player_in_game(p) || (rd8(ELEVATOR_FLAG_OF(p)) & 1)) {   /* (1, 3: riding; 2: standing in it) */
+        frozen_for[player] = 0;
+        cam_ok[player] = 0;
+        return window_usual_picture(wp, hp, pixels, pitch);
+    }
     live = g_gv_gameplay && frame_ok == 1;
     split = rd8(SPLIT_SCREEN) != 0;
     lt = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;

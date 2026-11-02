@@ -226,6 +226,7 @@ static void apply_state(const uint8_t *st)
     vdp_refresh_palette();
     memcpy(g_ram, st + 0x2478, 0x10000);
     memcpy(vdp_vram, st + 0x12478, 0x10000);
+    vdp_tiles_all_dirty();
     for (i = 0; i < 8; i++) {
         R.d[i] = le32(st + 0x80 + i * 4);
         R.a[i] = le32(st + 0xA0 + i * 4);

@@ -341,11 +341,9 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
             use_window(k);
             present_wanted_view_of(k, &w, &h);
             t1 = SDL_GetPerformanceCounter();
-            got = gameview_window_frame(k, w, h, &px, &pp);
+            got = gameview_window_frame(k, &w, &h, &px, &pp);
             if (perf_on) perf_t[PERF_VIEW] += SDL_GetPerformanceCounter() - t1;
             if (got) {
-                if (w > GAMEVIEW_MAX_W) w = GAMEVIEW_MAX_W;
-                if (h > GAMEVIEW_MAX_H) h = GAMEVIEW_MAX_H;
                 present_set_frame(px, w, h, pp);
             } else {
                 present_set_frame(pixels, width, height, pitch);
