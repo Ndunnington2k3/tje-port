@@ -16,9 +16,11 @@
 TJE_OVERRIDE(0x013540)
 void f_013540(void)
 {
+    extern int g_gv_ride_screen;
     vdp_freeze(-1);
     orig_f_013540();          /* pops its own return address */
     vdp_freeze(2);
+    g_gv_ride_screen = 1;     /* (two windows: the ride screen is up - gameview.c) */
 }
 
 /* ---- two-window mode: the split screen without its transition ----------------

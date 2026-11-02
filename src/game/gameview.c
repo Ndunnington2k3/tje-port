@@ -2595,6 +2595,22 @@ static void draw_soft_pause(uint32_t *out, int w, int h, int p)
 
 #define ELEVATOR_FLAG_OF(p) (0xFFDA6Au + (uint32_t)(p))
 
+/* the game's own ride screen is up (LOC_00013540 has built it - transitions.c -
+ * and everyone in the game is still riding) */
+int g_gv_ride_screen;
+
+static int alone_riding(void)
+{
+    int p, any = 0;
+    for (p = 0; p < 2; p++)
+        if (player_in_game(p)) {
+            if (!(rd8(ELEVATOR_FLAG_OF(p)) & 1)) any = -1;
+            else if (!any) any = 1;
+        }
+    if (any != 1) g_gv_ride_screen = 0;
+    return any == 1 && g_gv_ride_screen;
+}
+
 /* (a window showing the usual picture during play: the views' picture of the
  * whole screen, drawn now if nobody has asked for it yet this frame) */
 static int window_usual_picture(int *w, int *h, const uint32_t **pixels, int *pitch)
@@ -2635,44 +2651,23 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
      *  - the player changing floors (falling), or the display off: the window's
      *    last picture, until the player is on the floor the game shows again;
      *  - else the player's view. */
-    if (!g_in_game || !player_in_game(p) || (rd8(ELEVATOR_FLAG_OF(p)) & 1)) {   /* (1, 3: riding; 2: standing in it) */
+    /* (riding an elevator, ELEVATOR_FLAG 1 or 3 - 2 is standing in it: when
+     * nobody else stays on the floor the game shows its ride screen, shown here as
+     * it is; with the other player still playing there is none, the elevator
+     * rises out of the rider's view, drawn below like any moment of play) */
+    if (!g_in_game || !player_in_game(p) || alone_riding()) {
         frozen_for[player] = 0;
         cam_ok[player] = 0;
-        if (g_in_game && player_in_game(p) && player_in_game(!p) && rd8(SPLIT_SCREEN) && vdp_live_picture() &&
-            vdp_width() == 320) {
-            /* one player riding while the other plays on: the game splits the
-             * screen; this window shows the rider's half (ToeJam's on top), above
-             * the two-player bar */
-            int from = p * (VDP_HEIGHT / 2), z = w / 320, top, left, x, k;
-            if (z > (h - BAR_H) / (VDP_HEIGHT / 2)) z = (h - BAR_H) / (VDP_HEIGHT / 2);
-            if (z < 1) z = 1;
-            top = (h - BAR_H - z * (VDP_HEIGHT / 2)) / 2;
-            left = (w - z * 320) / 2;
-            if (top < 0) top = 0;
-            out = win_pic[player];
-            for (line = 0; line < h; line++) memset(out + (size_t)line * GAMEVIEW_MAX_W, 0, sizeof(uint32_t) * (size_t)w);
-            for (line = 0; line < VDP_HEIGHT / 2; line++)
-                for (k = 0; k < z; k++) {
-                    int r = top + line * z + k;
-                    const uint32_t *src = top_window_lines[from + line];
-                    uint32_t *dst = out + (size_t)r * GAMEVIEW_MAX_W;
-                    if (r >= h - BAR_H) break;
-                    for (x = 0; x < 320 * z; x++)
-                        if (left + x >= 0 && left + x < w) dst[left + x] = src[x / z];
-                }
-            if (rd8(TOEJAMS_LEVEL) != FINAL_LEVEL) {
-                static uint32_t bar[BAR_H][320];
-                int n = build_bar(bar, p), x0 = (w - 320) / 2, xs = x0 < 0 ? -x0 : 0, xd = x0 < 0 ? 0 : x0, cnt = 320 - xs;
-                if (xd + cnt > w) cnt = w - xd;
-                for (line = 0; line < n && cnt > 0; line++)
-                    if (h - n + line >= 0)
-                        memcpy(out + (size_t)(h - n + line) * GAMEVIEW_MAX_W + xd, bar[line] + xs, sizeof(uint32_t) * (size_t)cnt);
-            }
-            *pixels = out;
+        if (window_usual_picture(wp, hp, pixels, pitch)) return 1;
+        /* (the ride screen being built behind a kept picture - not live when the
+         * frame began: the VDP's kept picture is one drawn for the views, partly;
+         * this window keeps its own) */
+        if (g_in_game && (!vdp_live_picture() || g_gameview_reason == 1) && win_last[player].ok && win_last[player].w == w && win_last[player].h == h) {
+            *pixels = win_pic[player];
             *pitch = GAMEVIEW_MAX_W;
             return 1;
         }
-        return window_usual_picture(wp, hp, pixels, pitch);
+        return 0;
     }
     live = g_gv_gameplay && frame_ok == 1;
     split = rd8(SPLIT_SCREEN) != 0;
@@ -2820,13 +2815,11 @@ static int wants_vdp_line(int line)
     if (!g_gv_windows) {
         if ((pic_w == 320 && pic_h == VDP_HEIGHT) || nregions == 2) return 1;
     } else {
-        /* (a window showing the game's own picture: a player riding an elevator
-         * while the other plays on - gameview_window_frame) */
+        /* (a window showing the game's own picture: its elevator ride screen -
+         * gameview_window_frame) */
         extern int g_in_game;
-        int p;
         if (!g_in_game) return 1;
-        for (p = 0; p < 2; p++)
-            if (player_in_game(p) && (rd8(ELEVATOR_FLAG_OF(p)) & 1)) return 1;
+        if (alone_riding()) return 1;
     }
     wv = (vdp_reg[18] & 0x1F) * 8;
     in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;
