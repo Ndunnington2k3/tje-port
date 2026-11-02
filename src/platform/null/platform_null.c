@@ -350,6 +350,17 @@ static void save_ppm(const char *path, const uint32_t *px, int w, int h, int pit
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     int i;
+    if (getenv("TJE_PICHASH")) {
+        /* (tests) a hash of every picture shown (and each two-window picture), to
+         * compare builds that must draw the same */
+        static FILE *hf;
+        uint32_t hash = 2166136261u;
+        int x, y;
+        if (!hf) hf = fopen(getenv("TJE_PICHASH"), "w");
+        for (y = 0; y < height; y++)
+            for (x = 0; x < width; x++) hash = (hash ^ (pixels[(size_t)y * pitch + x] & 0xFFFFFF)) * 16777619u;
+        if (hf) fprintf(hf, "%u %dx%d %08X\n", frame, width, height, hash);
+    }
     viewdiag_frame(pixels, width, height, pitch);
     if (getenv("TJE_GV_REASONS")) {
         static int last_split = -1;
