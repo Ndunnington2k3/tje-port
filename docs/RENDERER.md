@@ -336,16 +336,41 @@ against the VDP's gameplay rows. Result: frame 0 after a state load and a handfu
 frames differ; split 3 of 918. `--gvcheck` at 320x224 stays at 0. Pictures narrower than 320 or
 shorter than 224 are clipped (the window rows and the status bar are pasted clipped).
 
-### Leftovers to remove later (noted Oct 31; not urgent, user's call)
+### Optimisation pass (Nov 1)
 
-- Wide gameplay frames still run the old line-by-line path in full before the views overwrite it
-  (~0.57 ms/frame at 480x272, ~22%). Keep from it only: the floor-layout copy at line 0, the
-  present-list line capture, split plane A check (reason 5/6), hold mode.
-- ~400 lines used only by that path (find_offscreen_objects, sprite_row / find_object_sprites,
-  wide parts of draw_row); 320x224 could be shown straight from the VDP instead.
-- VDP line rendering during gameplay: needed only for the present list, hold mode and tests.
-  Remove before the PSP / 3DS work.
-- Debug-only loggers (TJE_GV_BLINK/FLICKER/SYNC, --view-log, SAT_TRACE): cost nothing unless on.
+Profiled with callgrind (instructions per frame, walking on floor 10; the game's own
+translated code is 0.1-0.9M of it):
+
+| | before | after |
+|---|---|---|
+| 4:3 | 17.5M | 10.2M |
+| wide, one window | 51M | 18.5M |
+| two windows (640x448 views) | 101M | 45M |
+
+- No unseen pictures: at the original size the VDP's picture is shown (copied, so
+  held frames still work); wider, only the per-player views draw. The old
+  line-by-line gameplay renderer (find_offscreen_objects, draw_row, the piece test
+  mode) is gone; --gvcheck now only counts gameplay frames (TJE_VIEWCHECK checks the
+  views against the VDP). The drop-out finders (TJE_GV_BLINK, TJE_GV_FLICKER,
+  --view-log's automatic findings) went with it; --view-log / F12 captures remain.
+- The VDP draws only the lines something uses (vdp_line_wanted): with the views
+  drawing a gameplay frame, the window's rows (menus, present list), every line in a
+  split screen shown in one window, all lines otherwise. Nothing the game reads
+  depends on drawing. A frame the game ends part way down shows the last picture.
+  Checks that compare with the VDP draw every line (g_gv_need_vdp).
+- Tiles decoded once (vdp_tile_dirty, set by every VRAM write through the VDP;
+  direct writers call vdp_tiles_all_dirty) and expanded 8 pixels at a time;
+  floor cells kept per player, updated block by block; plane B in 8-pixel steps;
+  palette table; layer choice by lookup.
+- Pictures are unchanged: TJE_PICHASH (hash of every picture shown, and of each
+  window's) matched a build from before over 14 states x 2 sizes x 4000 frames, 4
+  states x 4 sizes, boot and menus, and two-window shots - except 2 frames where
+  the game switched the display off part way down, which used to show a mix of the
+  old and new picture.
+
+Still to consider: sound (Nuked-OPN2 is ~16M/frame when sound is on: a lighter
+YM2612 core or native music for PSP/3DS), and the GPU drawing path for PSP/3DS
+(the software compositor is ~40 instructions a pixel).
 
 ### Split screen: every state of a half (Oct 31)
 

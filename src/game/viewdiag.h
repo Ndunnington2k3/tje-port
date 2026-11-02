@@ -1,7 +1,6 @@
 /*
- * Diagnostics for the wider gameplay view (gameview.c): finds objects and sprite
- * pixels that drop out for one frame, and keeps the last frames so they can be
- * saved when something looks wrong (PC: --view-log, F12).
+ * Diagnostics for the wider gameplay view (gameview.c): keeps the last frames so
+ * they can be saved when something looks wrong (PC: --view-log, F12).
  */
 #ifndef TJE_VIEWDIAG_H
 #define TJE_VIEWDIAG_H
