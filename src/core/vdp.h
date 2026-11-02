@@ -70,7 +70,12 @@ extern uint8_t vdp_vram[0x10000];
  * Code writing vdp_vram directly calls vdp_tiles_all_dirty(). */
 extern uint8_t vdp_tile_dirty[2048];
 void vdp_tiles_all_dirty(void);
-extern int vdp_stats_on;   /* (tests) count VRAM writes for vdp_frame_stats */
+extern int vdp_stats_on;
+/* Optional: asked before each line is drawn; 0 = nobody will look at it this frame
+ * (the line is then left as it was, and vdp_lines_skipped is set until the next
+ * frame). Drawing only: nothing the game can read depends on it. */
+extern int (*vdp_line_wanted)(int line);
+extern int vdp_lines_skipped;   /* (tests) count VRAM writes for vdp_frame_stats */
 extern uint16_t vdp_cram[64];
 extern uint16_t vdp_vsram[40];
 extern uint8_t vdp_reg[32];

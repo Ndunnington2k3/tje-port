@@ -181,6 +181,13 @@ int plat_init(int argc, char **argv)
         } else if (argv[i][0] != '-') rom_path = argv[i];
         else if (i + 1 < argc && argv[i + 1][0] != '-') i++;  /* skip value of unknown/overflowing option */
     }
+    {
+        /* (checks that compare with the VDP's picture need all of its lines) */
+        extern int g_gv_need_vdp;
+        if (gvcheck || getenv("TJE_VIEWCHECK") || getenv("TJE_BARCHECK") || getenv("TJE_WIDEBAR") ||
+            getenv("TJE_GV_BLINK") || getenv("TJE_GV_FLICKER") || getenv("TJE_GV_SYNC") || getenv("TJE_ALL_VDP_LINES"))
+            g_gv_need_vdp = 1;
+    }
     return 0;
 }
 
@@ -352,6 +359,7 @@ static void save_ppm(const char *path, const uint32_t *px, int w, int h, int pit
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     int i;
+
     if (getenv("TJE_PICHASH")) {
         /* (tests) a hash of every picture shown (and each two-window picture), to
          * compare builds that must draw the same */

@@ -38,6 +38,9 @@ int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int scr
  * gameview_frame asks for each player's own picture at its window's size (game
  * pixels). 0: not a gameplay frame (show the usual picture in both windows). */
 extern int g_gv_windows;
+/* Let the VDP leave out the lines nobody will see (called once at start-up). */
+void gameview_install_line_filter(void);
+extern int g_gv_need_vdp;   /* (tests) every VDP line drawn */
 int gameview_window_frame(int player, int *w, int *h, const uint32_t **pixels, int *pitch);   /* (w, h: in, the size wanted; out, the picture's) */
 /* Two-window mode: a player's Map button opens a map in their window and the game
  * goes on (called with each frame's input, before the game reads it). */

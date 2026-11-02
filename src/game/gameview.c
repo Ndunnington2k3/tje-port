@@ -176,11 +176,15 @@ static void tile_row(uint8_t out[8], uint32_t entry, int row)
     if (entry & 0x1000) row = 7 - row;
     x = tile_pixels(tile, row);
     if (entry & 0x0800) {
-        uint8_t b[8], f[8];
-        int i;
-        memcpy(b, &x, 8);
-        for (i = 0; i < 8; i++) f[i] = b[7 - i];
-        memcpy(&x, f, 8);
+        /* (mirrored: the bytes in the opposite order - on either kind of machine,
+         * reversing a word's bytes reverses their order in memory) */
+#if defined(__GNUC__) || defined(__clang__)
+        x = __builtin_bswap64(x);
+#else
+        x = ((x & 0x00FF00FF00FF00FFull) << 8) | ((x >> 8) & 0x00FF00FF00FF00FFull);
+        x = ((x & 0x0000FFFF0000FFFFull) << 16) | ((x >> 16) & 0x0000FFFF0000FFFFull);
+        x = (x << 32) | (x >> 32);
+#endif
     }
     opaque = (x + 0x7F7F7F7F7F7F7F7Full) & 0x8080808080808080ull;   /* (bit 7 of each non-zero byte) */
     o = x | opaque | ((opaque >> 7) * (uint64_t)((entry >> 9) & 0x30));
@@ -1827,7 +1831,8 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
          * keep it too for a frame the display was switched off part way down (the
          * top of it would be the old scene, the rest black: falling to the next
          * floor), when clean transitions are on */
-        if (last_ok && (vdp_frozen() || (g_options.clean_transitions && display_on_at_top && !(vdp_reg[1] & 0x40)))) {
+        if (last_ok && (vdp_frozen() || vdp_lines_skipped ||
+                        (g_options.clean_transitions && display_on_at_top && !(vdp_reg[1] & 0x40)))) {
             g_gv_kept = 1;
             *pixels = picture;
             *width = last_w;
@@ -3138,3 +3143,24 @@ int gameview_test_bar_rows(int *from, int *to, int *row)
     *row = pic_h - (hud_end - win_from);
     return 1;
 }
+
+/* The VDP's lines this frame that something here will show or copy: with the
+ * per-player views drawing a gameplay frame, only the window's rows (menus, the
+ * present list) and, in a split screen shown in one window, every line (its held
+ * and menu halves). Everything else, and the first line (gameplay is decided
+ * after it), the VDP draws as always. */
+int g_gv_need_vdp;   /* (tests comparing with the VDP's picture) */
+
+static int wants_vdp_line(int line)
+{
+    int wv, in_window;
+    if (g_gv_need_vdp || line == 0 || frame_ok != 1 || old_rows) return 1;
+    if (!g_gv_windows) {
+        if (!g_gv_use_views || (pic_w == 320 && pic_h == VDP_HEIGHT) || nregions == 2) return 1;
+    }
+    wv = (vdp_reg[18] & 0x1F) * 8;
+    in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;
+    return in_window;
+}
+
+void gameview_install_line_filter(void) { vdp_line_wanted = wants_vdp_line; }

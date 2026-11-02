@@ -480,6 +480,9 @@ static void render_sprites(uint8_t *out, int line, int width)
     } while (link != 0 && count < maxspr);
 }
 
+int (*vdp_line_wanted)(int line);
+int vdp_lines_skipped;
+
 void vdp_render_line(int line)
 {
     uint8_t la[VDP_MAX_WIDTH], lb[VDP_MAX_WIDTH], ls[VDP_MAX_WIDTH];
@@ -498,8 +501,13 @@ void vdp_render_line(int line)
         else frames_on = 0;
         frame_visible = frames_on >= 2;
     }
+    if (line == 0) vdp_lines_skipped = 0;
     if (freeze_frames)
         return;                                    /* keep showing the last picture */
+    if (vdp_line_wanted && !vdp_line_wanted(line)) {
+        vdp_lines_skipped = 1;                     /* (nobody shows this line: not drawn) */
+        return;
+    }
     if (!(vdp_reg[1] & 0x40) || (clean_transitions && !frame_visible)) {
         st_off_lines++;
         for (x = 0; x < VDP_MAX_WIDTH; x++) fb[x] = bg;
@@ -581,6 +589,7 @@ void vdp_load(Ser *s)
 {
     int i;
     des_bytes(s, vdp_vram, sizeof vdp_vram);
+    vdp_tiles_all_dirty();
     for (i = 0; i < 64; i++) vdp_cram[i] = (uint16_t)des_u16(s);
     for (i = 0; i < 40; i++) vdp_vsram[i] = (uint16_t)des_u16(s);
     des_bytes(s, vdp_reg, sizeof vdp_reg);
