@@ -28,7 +28,15 @@ and `- ! . , '`.
 same starting point, on the same inputs. Each frame a machine samples its own player's
 controls and sends them; they are used `delay` frames later (3 frames, 50 ms) on both
 machines. A frame is finished only with both players' inputs for it: a machine without
-them waits (after 0.4 s it says so). Only inputs travel: 15 bits per frame (the game's
+them waits, polling every millisecond for up to a frame's time before it shows the frame
+again (after 0.4 s it says why).
+
+**Keeping pace.** Both machines show 60 frames a second, but a frame that takes too long
+(a busy PC) puts that machine a frame behind, for good: lag like that used to pile up
+until the other machine had to wait (repeated frames, then a burst of skipped ones: a
+stutter). A machine 2 or more frames behind the other now runs one frame without showing
+it, and is back in step; the other machine never notices. The same catches a joiner up
+after a snapshot (many frames at once). Only inputs travel: 15 bits per frame (the game's
 buttons and the menu controls), each packet carrying every input the other side has
 not yet confirmed (up to 40 frames), so a lost packet costs nothing and nothing is ever
 sent again on request.
@@ -98,7 +106,10 @@ wireless, UDS) implement the same calls; the two cannot talk to each other.
 
 `tools/net_test.py --exe build/tje_headless --rom tje.bin` runs two headless copies
 (`--realtime`) through the menus and plays with random inputs; scenarios: plain,
-loss (25% of packets dropped, `TJE_NET_LOSS`), rejoin (the joiner vanishes, a third
+loss (25% of packets dropped, `TJE_NET_LOSS`), jitter (frames take up to `JIT` ms longer
+at random, `TJE_JITTER`; `--realtime` shows frames on a shared 60 Hz clock like vsync on one
+monitor), rejoin (the joiner vanishes, a third
 copy joins the game in progress), mend (the joiner's memory is changed: the host must
 notice and mend it). Every scenario compares the checksum logs (`TJE_NET_HASHLOG`).
-`TJE_NET_DELAY` sets the input delay.
+`TJE_NET_DELAY` sets the input delay. `TJE_NET_LOG=1` also reports, every 300 frames,
+how often a machine waited, frames shown twice and frames not shown.

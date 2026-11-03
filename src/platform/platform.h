@@ -86,6 +86,8 @@ void plat_net_addr_text(const PlatNetAddr *a, char *out, int size);
 void plat_net_name(char *out, int size);
 /* Milliseconds from some fixed moment (for network timeouts). */
 uint32_t plat_ms(void);
+/* Give the processor away for about ms milliseconds. */
+void plat_sleep_ms(int ms);
 
 #ifdef __cplusplus
 }

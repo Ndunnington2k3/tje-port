@@ -836,6 +836,8 @@ static void show_wait(uint32_t waited)
 
 /* After it: this frame's inputs are sampled and sent, and the frame's inputs of
  * both players (from `delay` frames ago) are what the game sees. */
+static unsigned idle_frames;   /* (TJE_NET_LOG) frames shown again while waiting */
+
 static void pads_after(uint16_t pad[2], uint16_t *menu)
 {
     int me;
@@ -870,8 +872,15 @@ static void pads_after(uint16_t pad[2], uint16_t *menu)
             save_quit_to_menu();                  /* (does not return) */
             return;
         }
+        /* (usually the other machine is only a moment late: wait for its inputs
+         * without showing a frame again, for a frame's time) */
+        if (plat_ms() - t0 < 17) {
+            plat_sleep_ms(1);
+            continue;
+        }
         show_wait(plat_ms() - t0);
         m = genesis_idle_frame();
+        idle_frames++;
         if (role == NET_HOST && phase == NET_H_LOST && (m & MENU_BACK)) {
             net_leave(NULL);
             in_stall = 0;
@@ -881,13 +890,30 @@ static void pads_after(uint16_t pad[2], uint16_t *menu)
     }
     in_stall = 0;
     gameview_set_message(NULL);
+    {
+        /* (TJE_NET_LOG: how smooth it is) */
+        static unsigned waits, waited_ms, ffs;
+        uint32_t w = plat_ms() - t0;
+        if (w > 1) { waits++; waited_ms += w; }
+        if (g_fast_forward) ffs++;
+        if (f % 300 == 0) {
+            logf_("frames %u-%u: waited %u times (%u ms), %u frames shown twice, %u not shown; the other is %d frames ahead",
+                  f - 299, f, waits, waited_ms, idle_frames, ffs, (int)(peer_contig - (uint32_t)delay) - (int)f);
+            waits = waited_ms = ffs = idle_frames = 0;
+        }
+    }
     pad[0] = unpack_pad(get(0, f));
     pad[1] = unpack_pad(get(1, f));
     *menu = (uint16_t)(unpack_menu(get(0, f)) | unpack_menu(get(1, f)));
     nf = f;
-    /* behind the other machine (just restarted from a snapshot): catch up
-     * without showing the frames */
-    g_fast_forward = peer_contig > nf + (uint32_t)delay + 2 && have(0, nf + 1) && have(1, nf + 1);
+    /* Behind the other machine (a frame that took too long here, or just
+     * restarted from a snapshot): catch up by running frames without showing
+     * them - one at a time when only a little behind, so the other machine never
+     * has to wait. */
+    {
+        int behind = (int)(peer_contig - (uint32_t)delay - nf);
+        g_fast_forward = behind >= 2 && have(0, nf + 1) && have(1, nf + 1) && !(g_fast_forward && behind < 20);
+    }
 }
 
 void net_install(void)

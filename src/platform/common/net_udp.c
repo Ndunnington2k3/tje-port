@@ -182,10 +182,24 @@ void plat_net_name(char *out, int size)
 uint32_t plat_ms(void)
 {
 #ifdef _WIN32
-    return (uint32_t)GetTickCount();
+    /* (not GetTickCount: it moves in steps of about 16 ms) */
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (uint32_t)(now.QuadPart * 1000 / freq.QuadPart);
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+#endif
+}
+
+void plat_sleep_ms(int ms)
+{
+#ifdef _WIN32
+    Sleep((DWORD)ms);
+#else
+    usleep((useconds_t)ms * 1000u);
 #endif
 }

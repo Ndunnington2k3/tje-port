@@ -374,12 +374,16 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
     int i;
 
     if (realtime) {
-        /* (--realtime: 60 frames a second, like a real copy of the game) */
-        static uint32_t next;
-        uint32_t now = plat_ms();
-        if (!next || (int32_t)(now - next) > 100) next = now;
-        next += 16;
-        while ((int32_t)(plat_ms() - next) < 0) usleep(1000);
+        /* (--realtime: shown at the next 60 Hz "vertical blank" of a clock all
+         * copies share, like windows on one monitor with vsync; TJE_JITTER=ms: the
+         * frame's work takes up to that much longer at random, like a busy PC) */
+        static int jitter = -1;
+        uint32_t now, vb;
+        if (jitter < 0) jitter = getenv("TJE_JITTER") ? atoi(getenv("TJE_JITTER")) : 0;
+        if (jitter > 0) usleep((useconds_t)(rand() % (jitter + 1)) * 1000u);
+        now = plat_ms();
+        vb = (uint32_t)(((uint64_t)now * 3 / 50 + 1) * 50 / 3);
+        while ((int32_t)(plat_ms() - vb) < 0) usleep(500);
     }
 
     if (getenv("TJE_PICHASH")) {

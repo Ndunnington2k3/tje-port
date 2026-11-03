@@ -8,6 +8,7 @@ writes a checksum of the game's memory (TJE_NET_HASHLOG); the logs must agree.
 Scenarios:
   plain    host + joiner
   loss     the same with 25% of packets lost and a longer input delay
+  jitter   frames take up to JIT ms (environment, default 12) longer at random
   rejoin   the joiner quits part way (no goodbye: a lost connection); a new copy
            joins the game in progress
   mend     the joiner's memory is changed part way (a desync): the host must
@@ -54,6 +55,8 @@ def run(sc, exe, rom, d):
     jargs = []
     if sc == 'loss':
         env = {'TJE_NET_LOSS': '25', 'TJE_NET_DELAY': '5'}
+    if sc == 'jitter':
+        env = {'TJE_JITTER': os.environ.get('JIT', '12')}
     if sc == 'rejoin':
         jargs = ['--frames', '3800']
     if sc == 'mend':
@@ -95,7 +98,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--exe', required=True)
     ap.add_argument('--rom', required=True)
-    ap.add_argument('scenarios', nargs='*', default=['plain', 'loss', 'rejoin', 'mend'])
+    ap.add_argument('scenarios', nargs='*', default=['plain', 'loss', 'jitter', 'rejoin', 'mend'])
     a = ap.parse_args()
     fails = 0
     for sc in a.scenarios:
