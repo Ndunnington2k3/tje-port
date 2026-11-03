@@ -3206,6 +3206,10 @@ static int wants_vdp_line(int line)
     if (g_gv_need_vdp || line == 0 || frame_ok != 1) return 1;
     if (!g_gv_windows) {
         if ((pic_w == 320 && pic_h == VDP_HEIGHT) || nregions == 2) return 1;
+        /* (one view: the status bar - the window at the bottom - is built from
+         * game memory, render_status_bar; only a window at the top, the present
+         * list, is shown as the VDP draws it) */
+        if (vdp_reg[18] & 0x80) return 0;
     } else {
         /* (a window showing the game's own picture: its elevator ride screen -
          * gameview_window_frame) */

@@ -74,23 +74,33 @@ int snd_enabled(void) { return enabled; }
 /* ---- PSG ---------------------------------------------------------------- */
 static void psg_step(int ticks)
 {
+    /* each counter counts down a tick at a time and, on reaching 0, reloads and
+     * flips its output: worked out for all the ticks at once (the same result) */
     int i;
-    while (ticks-- > 0) {
-        for (i = 0; i < 3; i++) {
-            if (psg_count[i]) psg_count[i]--;
-            if (psg_count[i] == 0) {
-                psg_count[i] = psg_tone[i] ? psg_tone[i] : 1;
-                psg_out[i] ^= 1;
-            }
-        }
-        if (psg_noise_count) psg_noise_count--;
-        if (psg_noise_count == 0) {
-            int rate = psg_noise_ctrl & 3;
-            uint16_t fb;
-            psg_noise_count = rate == 3 ? (psg_tone[2] ? psg_tone[2] : 1) * 2 : (uint16_t)(0x20 << rate);
-            fb = (psg_noise_ctrl & 4) ? ((psg_lfsr ^ (psg_lfsr >> 3)) & 1) : (psg_lfsr & 1);
-            psg_lfsr = (uint16_t)((psg_lfsr >> 1) | (fb << 15));
-        }
+    uint32_t n;
+    if (ticks <= 0) return;
+    for (i = 0; i < 3; i++) {
+        uint32_t c = psg_count[i] ? psg_count[i] : 1, p = psg_tone[i] ? psg_tone[i] : 1, flips;
+        n = (uint32_t)ticks;
+        if (c > n) { psg_count[i] = (uint16_t)(c - n); continue; }
+        n -= c;
+        flips = 1 + n / p;
+        psg_count[i] = (uint16_t)(p - n % p);
+        psg_out[i] ^= (uint8_t)(flips & 1);
+    }
+    /* the noise: a shift of the register each time its counter runs out (at most
+     * one or two a sample) */
+    n = (uint32_t)ticks;
+    while (n) {
+        uint32_t c = psg_noise_count ? psg_noise_count : 1;
+        int rate;
+        uint16_t fb;
+        if (c > n) { psg_noise_count = (uint16_t)(c - n); break; }
+        n -= c;
+        rate = psg_noise_ctrl & 3;
+        psg_noise_count = rate == 3 ? (uint16_t)((psg_tone[2] ? psg_tone[2] : 1) * 2) : (uint16_t)(0x20 << rate);
+        fb = (psg_noise_ctrl & 4) ? ((psg_lfsr ^ (psg_lfsr >> 3)) & 1) : (psg_lfsr & 1);
+        psg_lfsr = (uint16_t)((psg_lfsr >> 1) | (fb << 15));
     }
 }
 
@@ -228,9 +238,25 @@ static void ym_write(uint32_t port, uint32_t v, uint32_t when)
 }
 
 /* ---- Z80 ---------------------------------------------------------------- */
+/* (while z80_sync runs the Z80: the Z80's time, worked out only when asked - a
+ * write to the sound chips - not after every instruction) */
+static int z80_in_sync;
+static uint32_t zs_from, zs_to;
+static int32_t zs_delta, zs_total, zs_budget;
+
 static uint32_t z80_now68(void)
 {
     /* Z80 time converted back to 68k cycles: z80 cycles * 15/7 */
+    if (z80_in_sync) {
+        uint32_t pos;
+        int32_t done = zs_total - zs_budget;
+        if (zs_delta < 0x4000 && done < 0x10000)
+            pos = zs_from + (uint32_t)(done * zs_delta / (zs_total > 0 ? zs_total : 1));
+        else
+            pos = zs_from + (uint32_t)((int64_t)done * zs_delta / (zs_total > 0 ? zs_total : 1));
+        if ((int32_t)(pos - zs_to) > 0) pos = zs_to;
+        return pos;
+    }
     return z80_pos;
 }
 
@@ -263,6 +289,11 @@ static void z80_out(z80 *z, uint8_t p, uint8_t v) { (void)z; (void)p; (void)v; }
 
 static int z80_running(void) { return !z80_busreq && !z80_reset_line; }
 
+#ifdef TJE_Z80_STATS
+#include <stdio.h>
+static unsigned long z80_steps, z80_halt_steps;
+__attribute__((destructor)) static void z80_report(void) { fprintf(stderr, "z80 steps %lu, halted %lu\n", z80_steps, z80_halt_steps); }
+#endif
 /* Run the Z80 up to 68k cycle `to`. */
 static void z80_sync(uint32_t to)
 {
@@ -274,17 +305,24 @@ static void z80_sync(uint32_t to)
     /* budget in Z80 cycles x15: delta 68k cycles * 7 */
     z80_budget += delta * 7;
     total = z80_budget;
+    zs_from = from;
+    zs_to = to;
+    zs_delta = delta;
+    zs_total = total;
+    z80_in_sync = 1;
     while (z80_budget > 0) {
         unsigned long c0 = cpu.cyc;
         int32_t used;
+        zs_budget = z80_budget;     /* (the time at the start of this instruction) */
+#ifdef TJE_Z80_STATS
+        { z80_steps++; if (cpu.halted) z80_halt_steps++; }
+#endif
         z80_step(&cpu);
         used = (int32_t)(cpu.cyc - c0);
         if (used <= 0) used = 4;
         z80_budget -= used * 15;
-        /* current Z80 time in 68k cycles, so FM writes land at the right moment */
-        z80_pos = from + (uint32_t)((int64_t)(total - z80_budget) * delta / (total > 0 ? total : 1));
-        if ((int32_t)(z80_pos - to) > 0) z80_pos = to;
     }
+    z80_in_sync = 0;
     z80_pos = to;
 }
 
