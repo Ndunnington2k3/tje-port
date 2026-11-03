@@ -1,4 +1,5 @@
 #include "sound.h"
+#include "prof.h"
 #include "m68k_rt.h"
 #include "genesis.h"
 
@@ -171,7 +172,7 @@ static void ym_sync(uint32_t to)
     uint32_t n;
     if (delta <= 0) return;
     ym_pos = to;
-    if (LIGHT) { light_sync((uint32_t)delta); return; }
+    if (LIGHT) { PROF_PUSH(PROF_FM); light_sync((uint32_t)delta); PROF_POP(); return; }
     ym_frac += (uint32_t)delta;
     n = ym_frac / 6;
     ym_frac %= 6;
@@ -180,6 +181,7 @@ static void ym_sync(uint32_t to)
         ym_debt -= d;
         n -= d;
     }
+    PROF_PUSH(PROF_FM);
     while (n--) {
         Bit16s buf[2];
         OPN2_Clock(&ym, buf);
@@ -191,6 +193,7 @@ static void ym_sync(uint32_t to)
             ym_acc[0] = ym_acc[1] = 0;
         }
     }
+    PROF_POP();
 }
 
 static uint8_t ym_read(uint32_t port)
@@ -310,6 +313,7 @@ static void z80_sync(uint32_t to)
     zs_delta = delta;
     zs_total = total;
     z80_in_sync = 1;
+    PROF_PUSH(PROF_Z80);
     while (z80_budget > 0) {
         unsigned long c0 = cpu.cyc;
         int32_t used;
@@ -322,6 +326,7 @@ static void z80_sync(uint32_t to)
         if (used <= 0) used = 4;
         z80_budget -= used * 15;
     }
+    PROF_POP();
     z80_in_sync = 0;
     z80_pos = to;
 }

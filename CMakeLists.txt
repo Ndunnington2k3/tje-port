@@ -60,6 +60,7 @@ add_library(tje_core STATIC
     src/core/vdp.c
     src/core/io.c
     src/core/sound.c
+    src/core/prof.c
     src/gfx/view.c
     src/gfx/present.c
     src/gfx/gfx_gl.c
@@ -71,6 +72,10 @@ add_library(tje_core STATIC
     ${TJE_GAME_SOURCES}
     ${TJE_GENERATED_SOURCES})
 target_include_directories(tje_core PUBLIC src src/generated)
+option(TJE_PROF "Time each part of the machine (core/prof.h; the PSP writes it to perf.log)" OFF)
+if(TJE_PROF)
+    target_compile_definitions(tje_core PUBLIC TJE_PROF)
+endif()
 target_include_directories(tje_core PRIVATE third_party/nuked-opn2 third_party/gpgx-ym2612 third_party/z80)
 if(NOT MSVC)
     target_link_libraries(tje_core PUBLIC m)   # (ym2612.c builds its tables with sin/pow/log)
@@ -135,7 +140,8 @@ if(PSP)
     target_include_directories(tje_psp PRIVATE src/platform/psp)
     target_link_libraries(tje_psp PRIVATE tje_core pspgu pspge pspdisplay pspctrl pspaudio psppower
                           psputility pspdebug pspnet pspnet_adhoc pspnet_adhocctl pspnet_adhocmatching m)
-    create_pbp_file(TARGET tje_psp TITLE "ToeJam and Earl" VERSION "01.00")   # ("&" breaks the packaging step)
+    set(TJE_PSP_TITLE "ToeJam and Earl" CACHE STRING "The title on the PSP's menu (test builds side by side)")
+    create_pbp_file(TARGET tje_psp TITLE "${TJE_PSP_TITLE}" VERSION "01.00")   # ("&" breaks the packaging step)
 endif()
 
 if(TJE_BUILD_ISA_TEST)

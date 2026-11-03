@@ -1,4 +1,5 @@
 #include "genesis.h"
+#include "prof.h"
 #include "m68k_rt.h"
 #include "vdp.h"
 #include "sound.h"
@@ -152,17 +153,28 @@ static void present_frame(void)
 {
     const uint32_t *px;
     int w, h, pitch;
-    if (picture_source && picture_source(&px, &w, &h, &pitch)) plat_present(px, w, h, pitch);
+    int got;
+    PROF_PUSH(PROF_VIEW);
+    got = picture_source && picture_source(&px, &w, &h, &pitch);
+    PROF_POP();
+    PROF_PUSH(PROF_PRESENT);
+    if (got) plat_present(px, w, h, pitch);
     else plat_present(vdp_framebuffer(), vdp_width(), VDP_HEIGHT, VDP_FB_PITCH);
+    PROF_POP();
 }
 
 static void end_of_frame(void)
 {
     const int16_t *audio;
-    int n = snd_end_frame(&audio);
+    int n;
+    PROF_LEVEL0();   /* (a longjmp may have left parts open: network play restarting) */
+    PROF_PUSH(PROF_SOUND);
+    n = snd_end_frame(&audio);
+    PROF_POP();
     if (n > 0 && !g_fast_forward) plat_audio(audio, n);
     g_frame++;
     if (!g_fast_forward) present_frame();
+    PROF_PUSH(PROF_HOOKS);
     if (!plat_poll(g_pad)) {
         quit_code = 0;
         longjmp(quit_jmp, 1);
@@ -171,6 +183,7 @@ static void end_of_frame(void)
     if (pad_before) pad_before(g_pad, &g_menu_pad);
     if (input_hook) input_hook(g_pad);
     if (pad_after) pad_after(g_pad, &g_menu_pad);
+    PROF_POP();
 }
 
 uint16_t genesis_idle_frame(void)
@@ -191,10 +204,16 @@ void genesis_run_events(void)
     while ((int32_t)(R.cycles - R.next_event) >= 0) {
         in_events = 1;
         R.next_event += GEN_CYCLES_PER_LINE;
+        PROF_PUSH(PROF_SOUND);
         snd_line(line);
+        PROF_POP();
         if (line < VDP_HEIGHT) {
+            PROF_PUSH(PROF_VDP);
             vdp_render_line(line);
+            PROF_POP();
+            PROF_PUSH(PROF_HOOKS);
             if (line_hook) line_hook(line);
+            PROF_POP();
             /* horizontal interrupt counter runs during active display */
             if (--hint_counter < 0) {
                 hint_counter = vdp_hint_reload();
@@ -212,7 +231,9 @@ void genesis_run_events(void)
         } else if (line == GEN_LINES_NTSC) {
             line = 0;
             vdp_set_vblank(0);
+            PROF_PUSH(PROF_HOOKS);
             if (line0_hook) line0_hook();
+            PROF_POP();
         }
         vdp_set_line(line);
         in_events = 0;
