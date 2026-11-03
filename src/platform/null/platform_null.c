@@ -46,6 +46,7 @@ static int g_gv_win_top_seen_ext(void) { return g_gv_win_top_seen; }
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 #define MAX_EVENTS 1024
 
@@ -369,6 +370,21 @@ static void save_ppm(const char *path, const uint32_t *px, int w, int h, int pit
     fclose(f);
 }
 
+static int clock_pacing, pace_adjust_us;
+
+void plat_pacing(int by_clock, int adjust_us)
+{
+    clock_pacing = by_clock;
+    pace_adjust_us = by_clock ? adjust_us : 0;
+}
+
+static uint64_t now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     int i;
@@ -381,10 +397,20 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         uint32_t now, vb;
         if (jitter < 0) jitter = getenv("TJE_JITTER") ? atoi(getenv("TJE_JITTER")) : 0;
         if (jitter > 0) usleep((useconds_t)(rand() % (jitter + 1)) * 1000u);
+        if (clock_pacing) {
+            /* (network play: by the clock, plat_pacing) */
+            static uint64_t next;
+            uint64_t t = now_us();
+            next += 16683 + pace_adjust_us;
+            if (!next || t > next + 67000 || next > t + 67000) next = t;
+            while (now_us() < next) usleep(200);
+            goto paced;
+        }
         now = plat_ms();
         vb = (uint32_t)(((uint64_t)now * 3 / 50 + 1) * 50 / 3);
         while ((int32_t)(plat_ms() - vb) < 0) usleep(500);
     }
+paced:
 
     if (getenv("TJE_PICHASH")) {
         /* (tests) a hash of every picture shown (and each two-window picture), to
@@ -589,6 +615,13 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         for (i = 0; i < nshots; i++)
             if (shots[i].frame == frame) save_ppm(shots[i].path, pixels, width, height, pitch);
     }
+    for (i = 0; i < nshots; i++)
+        if (shots[i].frame == frame && getenv("TJE_SHOT_VDP")) {
+            /* (tests) the VDP's own picture too */
+            char path[300];
+            snprintf(path, sizeof path, "%s.vdp.ppm", shots[i].path);
+            save_ppm(path, vdp_framebuffer(), 320, 224, VDP_FB_PITCH);
+        }
     for (i = 0; i < ndumps; i++)
         if (dumps[i].frame == frame) {
             FILE *f = fopen(dumps[i].path, "wb");

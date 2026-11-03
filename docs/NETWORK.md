@@ -31,15 +31,16 @@ machines. A frame is finished only with both players' inputs for it: a machine w
 them waits, polling every millisecond for up to a frame's time before it shows the frame
 again (after 0.4 s it says why).
 
-**Keeping pace.** Both machines show 60 frames a second, but a frame that takes too long
-(a busy PC) puts that machine a frame behind, for good: lag like that used to pile up
-until the other machine had to wait (repeated frames, then a burst of skipped ones: a
-stutter). A machine 2 or more frames behind the other now runs one frame without showing
-it, and is back in step; the other machine never notices. The same catches a joiner up
-after a snapshot (many frames at once). Only inputs travel: 15 bits per frame (the game's
-buttons and the menu controls), each packet carrying every input the other side has
-not yet confirmed (up to 40 frames), so a lost packet costs nothing and nothing is ever
-sent again on request.
+**Keeping pace.** During network play frames are paced by the clock, not the display's
+refresh (in a window or borderless full screen the desktop compositor still keeps the
+picture whole), so each machine can stretch or shorten its frames a little. Each machine
+sees the other's frame number a little late (the inputs take a moment to arrive), so each
+also sends how far ahead it sees the other: half the difference of the two views is how
+far ahead the other really is, the delay cancelling out. The machine ahead makes its
+frames up to 2 ms longer, the one behind up to 2 ms shorter, until they are in step:
+nothing is shown twice or left out (a frame that took too long on one machine is made up
+over the next few). Only a machine 4 or more frames behind (a long hiccup, or just
+restarted from a snapshot) runs frames without showing them until it is back.
 
 **The same starting point.** The game starts on the host. At the top of the main game
 loop (InGameLoop, `save.c`) the host takes a machine snapshot (CPU, RAM, VDP, sound) and
@@ -59,6 +60,10 @@ What both machines must agree on, and why they do:
 - The port's own input handling (the soft pause, the map that does not pause, Back as
   Start) acts on this machine's player before the inputs are sent: what is sent is what
   the game sees.
+- Game rules changed for a window per player (`transitions.c`, `g_gv_windows`): no
+  split-screen transition, and a present list never stops the game (the original stops
+  everything while a list is open with the players sharing the screen; here the game
+  splits first and the list opens in its player's half, the other player playing on).
 
 **Checking.** Every 32 frames each machine records a checksum of the game's 64 KB of
 RAM; the joiner sends its latest with its inputs, the host compares. If they differ

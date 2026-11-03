@@ -86,6 +86,11 @@ void plat_net_addr_text(const PlatNetAddr *a, char *out, int size);
 void plat_net_name(char *out, int size);
 /* Milliseconds from some fixed moment (for network timeouts). */
 uint32_t plat_ms(void);
+/* Network play: pace the frames by the clock rather than the display's refresh
+ * (by_clock 1), the next frame lasting adjust_us microseconds more (or less) than
+ * a Genesis frame, so two machines can be kept in step gently. by_clock 0: back
+ * to the usual. */
+void plat_pacing(int by_clock, int adjust_us);
 /* Give the processor away for about ms milliseconds. */
 void plat_sleep_ms(int ms);
 

@@ -43,6 +43,23 @@ static const GfxBackend *gfx;
 static const char *rom_path = "tje.bin";
 static SDL_GameController *pads[2];
 static Uint64 next_frame_time;
+static int clock_pacing, pace_adjust_us;
+
+void plat_pacing(int by_clock, int adjust_us)
+{
+    pace_adjust_us = by_clock ? adjust_us : 0;
+    if (by_clock == clock_pacing) return;
+    clock_pacing = by_clock;
+    /* (no waiting for the display: the clock decides; in a window or borderless
+     * full screen the desktop compositor still keeps the picture whole) */
+    if (gl_context) {
+        SDL_GL_MakeCurrent(window, gl_context);
+        if (!two_windows) SDL_GL_SetSwapInterval(by_clock ? 0 : 1);
+    } else if (renderer && !two_windows) {
+        SDL_RenderSetVSync(renderer, by_clock ? 0 : 1);
+    }
+    next_frame_time = SDL_GetPerformanceCounter();
+}
 static int vsync_ok;
 static SDL_AudioDeviceID audio_dev;
 static int audio_on = 1;
@@ -358,10 +375,10 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
     viewdiag_frame(pixels, width, height, pitch);
     t1 = SDL_GetPerformanceCounter();
 
-    if (!vsync_ok) {
+    if (!vsync_ok || clock_pacing) {
         /* NTSC Genesis runs at ~59.92 fps */
         Uint64 freq = SDL_GetPerformanceFrequency();
-        Uint64 frame = freq * 1001 / 60000;
+        Uint64 frame = freq * 1001 / 60000 + (Uint64)((int64_t)freq * pace_adjust_us / 1000000);
         Uint64 now = SDL_GetPerformanceCounter();
         next_frame_time += frame;
         if (next_frame_time > now) {

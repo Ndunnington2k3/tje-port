@@ -33,7 +33,7 @@
 #include <string.h>
 
 #define NET_PROTO       1
-#define NET_BUILD       1           /* change when anything changes what the game does */
+#define NET_BUILD       2           /* change when anything changes what the game does */
 #define NET_DELAY       3
 #define RING            16384       /* frames of inputs kept (4.5 minutes) */
 #define SNAP_EVERY      120         /* frames between the host's snapshots */
@@ -70,6 +70,9 @@ static int delay = NET_DELAY;
 static uint32_t hash_frame[64], hash_val[64];
 static uint32_t ignore_hashes_to;
 static int in_stall;
+/* keeping step (pads_after): how far the other machine is ahead of this one as
+ * seen here, averaged (1/16 frames), and as the other sees us */
+static int seen_ahead16, their_seen_ahead16;
 
 /* host: the latest snapshot taken at the top of the main loop */
 static uint8_t *snap;
@@ -221,6 +224,8 @@ static void end_session(void)
     snap_ok = 0;
     windows_off();
     g_fast_forward = 0;
+    seen_ahead16 = their_seen_ahead16 = 0;
+    plat_pacing(0, 0);
 }
 
 void net_leave(const char *why)
@@ -283,6 +288,7 @@ static void send_inputs(void)
     /* the latest checksum (the host compares) */
     o32(&o, hash_frame[k]);
     o32(&o, hash_val[k]);
+    o16(&o, (uint32_t)(uint16_t)(int16_t)seen_ahead16);
     send_peer(&o);
 }
 
@@ -476,6 +482,8 @@ static void on_input(In *in)
     hf = i32(in);
     hv = i32(in);
     if (in->bad) return;
+    their_seen_ahead16 = (int16_t)i16(in);
+    if (in->bad) their_seen_ahead16 = 0;
     if (ack > peer_has_mine && ack <= my_last) peer_has_mine = ack;
     advance_contig();
     /* host: compare the joiner's checksum with ours for that frame */
@@ -906,13 +914,22 @@ static void pads_after(uint16_t pad[2], uint16_t *menu)
     pad[1] = unpack_pad(get(1, f));
     *menu = (uint16_t)(unpack_menu(get(0, f)) | unpack_menu(get(1, f)));
     nf = f;
-    /* Behind the other machine (a frame that took too long here, or just
-     * restarted from a snapshot): catch up by running frames without showing
-     * them - one at a time when only a little behind, so the other machine never
-     * has to wait. */
+    /* Keeping step with the other machine. Each sees the other's frame a little
+     * late (the inputs take a moment to arrive), so each also sends how far ahead
+     * it sees the other: half the difference of the two views is how far ahead
+     * the other really is, the delay cancelling out. A machine ahead makes its
+     * frames up to 2 ms longer, one behind up to 2 ms shorter, until they are in
+     * step: nothing shown twice or left out. Far behind (a slow moment, or just
+     * restarted from a snapshot): frames run without being shown. */
     {
-        int behind = (int)(peer_contig - (uint32_t)delay - nf);
-        g_fast_forward = behind >= 2 && have(0, nf + 1) && have(1, nf + 1) && !(g_fast_forward && behind < 20);
+        int ahead = (int)(peer_contig - (uint32_t)delay - nf), off16, adj = 0;
+        seen_ahead16 += (ahead * 16 - seen_ahead16) / 8;
+        off16 = (seen_ahead16 - their_seen_ahead16) / 2;
+        if (off16 > 4 || off16 < -4) adj = -off16 * 2000 / 16;
+        if (adj > 2000) adj = 2000;
+        if (adj < -2000) adj = -2000;
+        plat_pacing(1, adj);
+        g_fast_forward = have(0, nf + 1) && have(1, nf + 1) && (ahead >= 4 || (g_fast_forward && ahead >= 2));
     }
 }
 

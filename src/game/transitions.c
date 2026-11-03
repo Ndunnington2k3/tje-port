@@ -62,3 +62,37 @@ void f_000EE6(void)
     if (g_gv_windows) as_if_display_off(orig_f_000EE6);
     else orig_f_000EE6();
 }
+
+/* ---- two-window mode: a present list does not stop the game ----------------
+ * CheckBButton (LOC_00009868): with the players sharing the screen, a present
+ * list opened stops the whole game (a loop of its own, only the list running,
+ * until it closes); with the screen split it is part of the main loop and the
+ * other player plays on. With a window per player there is no shared screen:
+ * the list always goes the second way (the game then splits, as it does for a
+ * list opened when apart, with no transition here). */
+TJE_OVERRIDE(0x009868)
+void f_009868_CheckBButton(void)
+{
+    int p;
+    if (!g_gv_windows) { orig_f_009868_CheckBButton(); return; }
+    CY(30);
+    /* A list about to open with the players together: split first (as the game
+     * does a moment later anyway), so it opens in its player's half, as when
+     * they are apart - opened on the shared screen, the split would leave it
+     * there, out of its player's window. (ProcessInventory: B newly pressed by a
+     * player in the game, list closed.) */
+    if (!rd8(0xFF8010u) && (int8_t)rd8(0xFFA248u) >= 0 && (int8_t)rd8(0xFFA249u) >= 0)
+        for (p = 0; p < 2; p++) {
+            uint32_t st = rd8(0xFFA25Au + 0x80u * (uint32_t)p + 0x4B);
+            if (!rd8(0xFF9364u + (uint32_t)p) && st != 5 && st != 6 &&
+                !(rd8(0xFF8020u + (uint32_t)p) & 0x10) && (rd8(0xFF801Eu + (uint32_t)p) & 0x10)) {
+                push32(0);
+                CALL(f_000C2E);
+                POP_ARGS(1);
+                break;
+            }
+        }
+    CALL(f_00949C_ProcessInventory);
+    CY(30);
+    RETURN();
+}
