@@ -380,9 +380,13 @@ void plat_pacing(int by_clock, int adjust_us)
 
 static uint64_t now_us(void)
 {
+#ifdef _WIN32
+    return (uint64_t)plat_ms() * 1000u;
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+#endif
 }
 
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
