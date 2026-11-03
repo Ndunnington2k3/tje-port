@@ -131,7 +131,7 @@ if(TJE_BUILD_SDL2)
 endif()
 
 if(PSP)
-    add_executable(tje_psp src/main.c src/platform/psp/platform_psp.c src/platform/psp/gfx_gu.c)
+    add_executable(tje_psp src/main.c src/platform/psp/platform_psp.c src/platform/psp/gfx_gu.c src/platform/psp/net_adhoc.c)
     target_include_directories(tje_psp PRIVATE src/platform/psp)
     target_link_libraries(tje_psp PRIVATE tje_core pspgu pspge pspdisplay pspctrl pspaudio psppower
                           psputility pspdebug pspnet pspnet_adhoc pspnet_adhocctl pspnet_adhocmatching m)

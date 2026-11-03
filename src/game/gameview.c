@@ -1538,6 +1538,7 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
 int g_gv_net_player = -1;
 static char net_message[96];
 static void draw_message(uint32_t *out, int w, int h, const char *text);
+static void vl_overlay_clip(ViewList *vl, int x, int y, int w, int h, const uint32_t *px, int pitch);
 
 void gameview_set_message(const char *text)
 {
@@ -1560,7 +1561,14 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
             r = 1;
         }
     }
-    if (net_message[0]) {
+    if (net_message[0] && r && !*pixels) {
+        /* (the frame is a list: the box as one more overlay) */
+        static uint32_t box[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+        int w = *width, h = *height;
+        draw_message(box, w, h, net_message);
+        vl_overlay_clip(&vlist, (w - 240) / 2, (h - 56) / 2, 240, 56,
+                        box + (size_t)((h - 56) / 2) * GAMEVIEW_MAX_W + (w - 240) / 2, GAMEVIEW_MAX_W);
+    } else if (net_message[0]) {
         /* (over a copy: the pictures above are kept for the next frame) */
         static uint32_t copy[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
         int y, w = r ? *width : vdp_width(), h = r ? *height : VDP_HEIGHT;
@@ -2159,6 +2167,16 @@ static void vl_overlay(ViewList *vl, int x, int y, int w, int h, const uint32_t 
     if (vl->noverlays >= VL_MAX_OVERLAYS || w <= 0 || h <= 0) return;
     o = &vl->overlays[vl->noverlays++];
     o->x = x; o->y = y; o->w = w; o->h = h; o->px = px; o->pitch = pitch;
+}
+
+/* (an overlay clipped to the list's picture) */
+static void vl_overlay_clip(ViewList *vl, int x, int y, int w, int h, const uint32_t *px, int pitch)
+{
+    if (x < 0) { px -= x; w += x; x = 0; }
+    if (y < 0) { px -= (size_t)y * (size_t)pitch; h += y; y = 0; }
+    if (x + w > vl->w) w = vl->w - x;
+    if (y + h > vl->h) h = vl->h - y;
+    vl_overlay(vl, x, y, w, h, px, pitch);
 }
 
 /* The status bar (window rows from..to-1 of the original screen) with its icon
@@ -3012,12 +3030,52 @@ static int window_usual_picture(int *w, int *h, const uint32_t **pixels, int *pi
     return 1;
 }
 
+/* (network play on a GPU) the window drawn as a list last; its overlays (the
+ * message box goes after them) */
+static int win_list[2], win_list_overlays;
+
+static void window_kept_list(int player, const uint32_t **pixels)
+{
+    if (!win_list[player]) return;
+    vlist.frozen = 1;
+    vlist.noverlays = win_list_overlays;
+    present_set_list(&vlist);
+    *pixels = NULL;
+}
+
+/* (tests, TJE_VLCHECK: the window drawn both ways, the list in software compared) */
+static int window_check(int player)
+{
+    (void)player;
+    if (vl_check < 0) vl_check = getenv("TJE_VLCHECK") != NULL;
+    return vl_check;
+}
+
+static void window_compare(const uint32_t *out, int w, int h)
+{
+    static uint32_t ref[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+    long bad = 0;
+    int x, y;
+    viewlist_render_soft(&vlist, ref, GAMEVIEW_MAX_W);
+    for (y = 0; y < h; y++)
+        for (x = 0; x < w; x++)
+            bad += ref[(size_t)y * GAMEVIEW_MAX_W + x] != out[(size_t)y * GAMEVIEW_MAX_W + x];
+    if (++vl_checked % 500 == 0) fprintf(stderr, "vlcheck: %d views, %d differ\n", vl_checked, vl_bad_frames);
+    if (bad) {
+        vl_bad_frames++;
+        fprintf(stderr, "vlcheck: window frame differs in %ld pixels\n", bad);
+    }
+}
+
 int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels, int *pitch)
 {
     int w = *wp, h = *hp;
     uint32_t *out;
     static int frozen_for[2];               /* frames this window has kept its picture */
     static int cam_ok[2], cam_level[2], wait_live[2];
+    /* (network play on a GPU: this machine's window drawn as a list, gfx/viewlist.h;
+     * its kept picture is the list again, the GPU's tiles kept as they were) */
+    int as_list = (g_gv_use_list || window_check(player)) && player == g_gv_net_player;
     static int32_t cam_fx[2], cam_fy[2];    /* the window's camera, 1/256 pixel */
     extern int g_in_game;
     int p = player, cam_x, cam_y, ox, oy, line, split, menu, menu_from, menu_to, live, i, changed = 0, tx, ty;
@@ -3050,8 +3108,10 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
         if (g_in_game && (!vdp_live_picture() || g_gameview_reason == 1) && win_last[player].ok && win_last[player].w == w && win_last[player].h == h) {
             *pixels = win_pic[player];
             *pitch = GAMEVIEW_MAX_W;
+            window_kept_list(player, pixels);
             return 1;
         }
+        win_list[player] = 0;
         /* (the game's own picture is shown: afterwards, the window waits for the
          * game to show its player's floor, showing the game's picture till then -
          * not its own from before) */
@@ -3088,10 +3148,13 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
         if (!draw && getenv("TJE_WIN_DBG")) fprintf(stderr, "window %d: holding (switching %d, live %d, stable %d)\n", player, switching, live, stable[player]);
         if (!draw) {
             if (!win_last[player].ok || win_last[player].w != w || win_last[player].h != h || ++frozen_for[player] > 600 ||
-                g_gameview_reason == 3)
+                g_gameview_reason == 3) {
+                win_list[player] = 0;
                 return 0;
+            }
             *pixels = win_pic[player];
             *pitch = GAMEVIEW_MAX_W;
+            window_kept_list(player, pixels);
             return 1;
         }
     }
@@ -3127,6 +3190,7 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     ox = (w - 320) / 2;
     oy = (h - VDP_HEIGHT) / 2;
     if (map_open[p] && p == player) {
+        win_list[player] = 0;
         render_map(player, p, out, w, h);
         *pixels = out;
         *pitch = GAMEVIEW_MAX_W;
@@ -3136,9 +3200,18 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     layout_copy_on = 1;
     /* (the band of sprites across the middle: the hint box; with a menu open it is
      * part of the menu's frame, which comes with the menu below) */
-    gameview_render_view(p, cam_x, cam_y, -1, VDP_HEIGHT, out, w, h, GAMEVIEW_MAX_W,
-                         !split && !rd8(MENU_FLAG(0)) && !rd8(MENU_FLAG(1)));
+    if (as_list) {
+        vl_begin(&vlist, w, h);
+        build_view_list(&vlist, p, cam_x, cam_y, -1, VDP_HEIGHT, 0, 0, w, h,
+                        !split && !rd8(MENU_FLAG(0)) && !rd8(MENU_FLAG(1)));
+    }
+    if (!as_list || window_check(player)) {
+        views_setup_cameras();
+        gameview_render_view(p, cam_x, cam_y, -1, VDP_HEIGHT, out, w, h, GAMEVIEW_MAX_W,
+                             !split && !rd8(MENU_FLAG(0)) && !rd8(MENU_FLAG(1)));
+    }
     layout_copy_on = 0;
+    win_list[player] = as_list && g_gv_use_list;
     win_last[player].ok = 1;
     win_last[player].w = w;
     win_last[player].h = h;
@@ -3162,20 +3235,46 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     }
     if (menu)
         for (line = menu_from; line < menu_to; line++)
-            if (line_window[line] && !window_row_filler(line / 8))
+            if (line_window[line] && !window_row_filler(line / 8)) {
+                if (as_list) {
+                    /* (a run of such lines: one overlay) */
+                    int end = line + 1;
+                    while (end < menu_to && line_window[end] && !window_row_filler(end / 8)) end++;
+                    vl_overlay_clip(&vlist, ox, oy + line - menu_from, 320, end - line, top_window_lines[line], 320);
+                    if (window_check(player))
+                        for (; line < end; line++) paste_line(out, w, h, oy + line - menu_from, ox, line, 0, h);
+                    line = end - 1;
+                    continue;
+                }
                 paste_line(out, w, h, oy + line - menu_from, ox, line, 0, h);
+            }
     /* the two-player status bar, flush with the bottom edge (always: split too) */
     if (rd8(TOEJAMS_LEVEL) != FINAL_LEVEL) {
         static uint32_t bar[BAR_H][320];
         int n = build_bar(bar, p), xs = ox < 0 ? -ox : 0, xd = ox < 0 ? 0 : ox, cnt = 320 - xs;
+        if (as_list) vl_overlay_clip(&vlist, ox, h - n, 320, n, &bar[0][0], 320);
+        if (as_list && !window_check(player)) n = 0;
         if (xd + cnt > w) cnt = w - xd;
         for (line = 0; line < n && cnt > 0; line++)
             if (h - n + line >= 0)
                 memcpy(out + (size_t)(h - n + line) * GAMEVIEW_MAX_W + xd, bar[line] + xs, sizeof(uint32_t) * (size_t)cnt);
     }
-    if (soft_pause[p].open && p == player) draw_soft_pause(out, w, h, p);
+    if (soft_pause[p].open && p == player) {
+        draw_soft_pause(out, w, h, p);
+        if (as_list)   /* (the box: SPW x SPH tiles, centred) */
+            vl_overlay_clip(&vlist, (w - 160) / 2, (h - 56) / 2, 160, 56,
+                            out + (size_t)((h - 56) / 2) * GAMEVIEW_MAX_W + (w - 160) / 2, GAMEVIEW_MAX_W);
+    }
     *pixels = out;
     *pitch = GAMEVIEW_MAX_W;
+    if (as_list) {
+        win_list_overlays = vlist.noverlays;
+        if (window_check(player)) window_compare(out, w, h);
+        if (g_gv_use_list) {
+            present_set_list(&vlist);
+            *pixels = NULL;
+        }
+    }
     return 1;
 }
 

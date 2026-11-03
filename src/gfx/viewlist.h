@@ -25,7 +25,7 @@
 #define VL_MAX_CELLS    8192
 #define VL_MAX_BATCHES  24
 #define VL_MAX_PIECES   96
-#define VL_MAX_OVERLAYS 8
+#define VL_MAX_OVERLAYS 16
 
 typedef struct { int16_t x, y; uint16_t entry; } VlCell;   /* top-left in the picture */
 

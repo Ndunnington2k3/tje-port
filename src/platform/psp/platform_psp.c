@@ -381,17 +381,7 @@ void plat_net_name(char *out, int size)
     snprintf(out, (size_t)size, "%s", nick);
 }
 
-/* network play over ad hoc: to come (platform_psp_net.c) */
-int plat_net_open(void) { return -1; }
-void plat_net_close(void) {}
-int plat_net_send(const PlatNetAddr *to, const void *d, int n) { (void)to; (void)d; (void)n; return -1; }
-int plat_net_broadcast(const void *d, int n) { (void)d; (void)n; return -1; }
-int plat_net_recv(PlatNetAddr *from, void *buf, int cap) { (void)from; (void)buf; (void)cap; return 0; }
-int plat_net_addr_equal(const PlatNetAddr *a, const PlatNetAddr *b) { return !memcmp(a->b, b->b, 6); }
-void plat_net_addr_text(const PlatNetAddr *a, char *out, int size)
-{
-    snprintf(out, (size_t)size, "%02X:%02X:%02X:%02X:%02X:%02X", a->b[0], a->b[1], a->b[2], a->b[3], a->b[4], a->b[5]);
-}
+/* network play: net_adhoc.c */
 
 int plat_init(int argc, char **argv)
 {
@@ -411,6 +401,18 @@ int plat_init(int argc, char **argv)
     plat_default_bindings(0);
     plat_default_bindings(1);
 
+    /* (tests: nettest.on next to EBOOT.PBP - network log and memory checksums there) */
+    {
+        static char path[300], hash[300];
+        FILE *f;
+        snprintf(path, sizeof path, "%snettest.on", data_dir);
+        if ((f = fopen(path, "rb")) != NULL) {
+            fclose(f);
+            snprintf(hash, sizeof hash, "%snet.hash", data_dir);
+            setenv("TJE_NET_LOG", "1", 1);
+            setenv("TJE_NET_HASHLOG", hash, 1);
+        }
+    }
     present_init(gfx_gu_init());
     {
         extern int g_gv_use_list;

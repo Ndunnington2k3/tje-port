@@ -148,7 +148,7 @@ const uint32_t *gfx_gu_drawn(void)
 static uint8_t __attribute__((aligned(64))) atlas[512 * 256 / 2];
 static uint32_t __attribute__((aligned(64))) clut_tiles[64];
 static uint32_t __attribute__((aligned(64))) clut_pieces[2][256];
-static uint32_t __attribute__((aligned(64))) ovl_px[2][320 * 232];
+static uint32_t __attribute__((aligned(64))) ovl_px[2 * 320 * 232];   /* the overlays, one after another */
 
 typedef struct { unsigned short u, v; short x, y, z; } V16;
 
@@ -269,24 +269,33 @@ static void view_list(const ViewList *vl, int x, int y)
     }
     sceGuDisable(GU_ALPHA_TEST);
     sceGuScissor(0, 0, SCR_W, SCR_H);
-    /* the finished pictures over it (status bar, present list) */
-    for (k = 0; k < vl->noverlays && k < 2; k++) {
-        const VlOverlay *o = &vl->overlays[k];
-        int r, c, w = o->w > 320 ? 320 : o->w, h = o->h > 232 ? 232 : o->h;
-        uint32_t *d = ovl_px[k];
-        V16 *v;
-        for (r = 0; r < h; r++)
-            for (c = 0; c < w; c++) d[r * 320 + c] = abgr(o->px[(size_t)r * o->pitch + c]);
-        sceKernelDcacheWritebackRange(d, (unsigned)(320 * h * 4));
-        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-        sceGuTexImage(0, 512, pow2(h), 320, d);
-        sceGuTexFlush();
-        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-        v = (V16 *)sceGuGetMemory(2 * sizeof(V16));
-        v[0].u = 0; v[0].v = 0; v[0].x = (short)(x + o->x); v[0].y = (short)(y + o->y); v[0].z = 0;
-        v[1].u = (unsigned short)w; v[1].v = (unsigned short)h;
-        v[1].x = (short)(x + o->x + w); v[1].y = (short)(y + o->y + h); v[1].z = 0;
-        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+    /* the finished pictures over it (status bar, present list, menus, boxes),
+     * copied one after another into one area the GE reads */
+    {
+        size_t used = 0;
+        for (k = 0; k < vl->noverlays; k++) {
+            const VlOverlay *o = &vl->overlays[k];
+            int r, c, w = o->w > 512 ? 512 : o->w, h = o->h > 512 ? 512 : o->h, tbw = (w + 3) & ~3;
+            uint32_t *d = ovl_px + used;
+            V16 *v;
+            if (used + (size_t)tbw * (size_t)h > sizeof ovl_px / 4) break;
+            used += ((size_t)tbw * (size_t)h + 15) & ~(size_t)15;
+            for (r = 0; r < h; r++) {
+                const uint32_t *src = o->px + (size_t)r * o->pitch;
+                uint32_t *dst = d + r * tbw;
+                for (c = 0; c < w; c++) dst[c] = abgr(src[c]);
+            }
+            sceKernelDcacheWritebackRange(d, (unsigned)(tbw * h * 4));
+            sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+            sceGuTexImage(0, pow2(w), pow2(h), tbw, d);
+            sceGuTexFlush();
+            sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+            v = (V16 *)sceGuGetMemory(2 * sizeof(V16));
+            v[0].u = 0; v[0].v = 0; v[0].x = (short)(x + o->x); v[0].y = (short)(y + o->y); v[0].z = 0;
+            v[1].u = (unsigned short)w; v[1].v = (unsigned short)h;
+            v[1].x = (short)(x + o->x + w); v[1].y = (short)(y + o->y + h); v[1].z = 0;
+            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+        }
     }
 }
 

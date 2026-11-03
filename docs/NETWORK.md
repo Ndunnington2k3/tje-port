@@ -104,8 +104,21 @@ about 1400). Header: `'T' 'J' protocol type session(4)`.
 `plat_net_*` (platform.h) is datagrams only: open, send, broadcast, receive (never
 blocking), a system name, a millisecond clock. PC: UDP on the first free port of
 41290-41297 (several copies on one machine), broadcasts to 255.255.255.255 and
-127.0.0.1. PSP (ad hoc, PDP with the matching library for rooms) and 3DS (local
-wireless, UDS) implement the same calls; the two cannot talk to each other.
+127.0.0.1.
+
+PSP (src/platform/psp/net_adhoc.c): every copy joins one ad hoc group, `TJEARL01`
+(the first PSP there makes it), and talks in PDP datagrams on one port; an address is
+the other PSP's MAC and port, broadcasts go to FF:FF:FF:FF:FF:FF. Rooms are the game's
+own (DISCOVER/ROOM over broadcast), as on PC: no matching library. Joining the group
+takes a moment; `plat_net_open` starts it and returns, and nothing is sent or
+received until it is done, so the menus never stop. The system name is the PSP's
+nickname. 3DS (local wireless, UDS) will implement the same calls. PC and PSP cannot
+talk to each other.
+
+On a GPU (PSP), this machine's player's window is drawn as a view list
+(docs/RENDERER.md) like the one-player view: the floor, plane B and the objects by the
+GE, the player's menu (runs of the window's lines), the status bar, the soft pause box
+and network messages as overlays. The map stays a software picture.
 
 ## Testing
 
@@ -117,4 +130,14 @@ monitor), rejoin (the joiner vanishes, a third
 copy joins the game in progress), mend (the joiner's memory is changed: the host must
 notice and mend it). Every scenario compares the checksum logs (`TJE_NET_HASHLOG`).
 `TJE_NET_DELAY` sets the input delay. `TJE_NET_LOG=1` also reports, every 300 frames,
-how often a machine waited, frames shown twice and frames not shown.
+how often a machine waited, frames shown twice and frames not shown. With
+`TJE_VLCHECK` the network window is also drawn in software and compared with its list
+drawn by `viewlist_render_soft` (identical so far).
+
+`tools/psp_net_test.py` does the same with two emulated PSPs (PPSSPP headless:
+`--instance 1/2`, its ad hoc server, a shared sync file keeping their clocks in step),
+each with its own memory stick. `nettest.on` next to EBOOT.PBP turns on the network log
+and writes the checksums to `net.hash` there; `--vlcheck` also compares every GE
+picture with the list drawn in software; `--loss`/`--delay` drop and delay ad hoc
+datagrams. PPSSPP's ad hoc relay needs IPv6; `PPSSPP_NO_RELAY` (our patch) skips it.
+Results: 119 checksums agree over 100 s; 5% loss and 15 ms delay play with no waits.
