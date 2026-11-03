@@ -749,3 +749,5 @@ int plat_text_input(char *buf, int cap)
         }
     return n;
 }
+
+const char *plat_start_state(void) { return NULL; }

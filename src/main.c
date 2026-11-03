@@ -44,6 +44,8 @@ int main(int argc, char **argv)
                 }
             }
     }
+    if (plat_start_state() && genesis_load_state(plat_start_state()) != 0)
+        plat_message("ToeJam & Earl", "Could not load the start state.");
     rc = genesis_run();
     rt_coverage_write(getenv("TJE_COVERAGE_OUT"));
     plat_shutdown();

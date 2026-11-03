@@ -772,3 +772,5 @@ int plat_poll(uint16_t pad[2])
     pad[1] = read_player(1, k);
     return 1;
 }
+
+const char *plat_start_state(void) { return NULL; }

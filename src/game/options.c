@@ -11,7 +11,7 @@ GameOptions g_options = {
     1,  /* clean_transitions */
     1,  /* native_view */
     1,  /* extend_screens */
-#ifdef __psp__
+#ifdef __PSP__
     FM_SOUND_LIGHT2,     /* fm_sound */
 #else
     FM_SOUND_ACCURATE,   /* fm_sound */

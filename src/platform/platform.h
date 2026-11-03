@@ -56,6 +56,9 @@ void plat_capture_cancel(void);
 /* Folder for settings and saved games ("" = current folder), ending in a separator. */
 const char *plat_data_dir(void);
 
+/* A save state to start from (testing; like --state on PC), or NULL. */
+const char *plat_start_state(void);
+
 /* Show an error/info message to the user. */
 void plat_message(const char *title, const char *text);
 
