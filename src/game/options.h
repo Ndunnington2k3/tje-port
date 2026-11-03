@@ -16,7 +16,13 @@ typedef struct {
     /* Screens other than gameplay fill wider windows too: borders move out to the
      * edges, background patterns repeat (gameview.c). Off: they stay 4:3. */
     int extend_screens;
+    /* Which FM chip emulation makes the music (core/sound.h): Accurate
+     * (Nuked-OPN2), or Light (Genesis Plus GX's: about a tenth of the work) at full,
+     * half or a third of the chip's rate. Sound only: the game is the same. */
+    int fm_sound;
 } GameOptions;
+
+enum { FM_SOUND_ACCURATE, FM_SOUND_LIGHT, FM_SOUND_LIGHT2, FM_SOUND_LIGHT3 };
 
 extern GameOptions g_options;
 

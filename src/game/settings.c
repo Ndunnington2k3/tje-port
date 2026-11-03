@@ -12,11 +12,12 @@ static const char *const button_names[8] = {"up", "down", "left", "right", "pres
 static const char *const slot_names[2] = {"key", "pad"};
 
 /* port options kept in the file */
-static struct { const char *name; int *value; } const option_list[] = {
-    {"quick_start", &g_options.quick_start},
-    {"clean_transitions", &g_options.clean_transitions},
-    {"native_view", &g_options.native_view},
-    {"extend_screens", &g_options.extend_screens},
+static struct { const char *name; int *value; int max; } const option_list[] = {
+    {"quick_start", &g_options.quick_start, 1},
+    {"clean_transitions", &g_options.clean_transitions, 1},
+    {"native_view", &g_options.native_view, 1},
+    {"extend_screens", &g_options.extend_screens, 1},
+    {"fm_sound", &g_options.fm_sound, FM_SOUND_LIGHT3},   /* 0 accurate, 1-3 light (full/half/third rate) */
 };
 
 void data_path(const char *name, char *out, size_t size)
@@ -50,7 +51,10 @@ void settings_load(void)
         key = trim(line);
         val = trim(eq + 1);
         for (i = 0; i < sizeof option_list / sizeof option_list[0]; i++)
-            if (!strcmp(key, option_list[i].name)) *option_list[i].value = atoi(val) != 0;
+            if (!strcmp(key, option_list[i].name)) {
+                int v = atoi(val);
+                *option_list[i].value = v < 0 ? 0 : v > option_list[i].max ? option_list[i].max : v;
+            }
         /* bindings: p1.start.key = Return */
         if ((key[0] == 'p') && (key[1] == '1' || key[1] == '2') && key[2] == '.') {
             int p = key[1] - '1', b, s;

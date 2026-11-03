@@ -4,6 +4,7 @@
 
 #include "z80.h"
 #include "ym3438.h"
+#include "ym2612.h"   /* (Genesis Plus GX: the lighter FM chip, SND_FM_LIGHT) */
 
 #include "ser.h"
 
@@ -29,6 +30,16 @@ static uint32_t z80_pos;           /* 68k cycle the Z80 has run up to */
 static int32_t z80_budget;         /* Z80 cycles still owed (x15, may go negative) */
 
 static ym3438_t ym;
+/* which FM chip: Nuked-OPN2 (every internal clock) or Genesis Plus GX's (one
+ * calculation per output sample, fm_div chip samples each) */
+static int fm_core = SND_FM_ACCURATE, fm_div = 1;
+#define LIGHT (fm_core == SND_FM_LIGHT)
+static void ym_replay(const uint8_t *regs);
+static void fm_reset(void)
+{
+    if (LIGHT) YM2612ResetChip();
+    else OPN2_Reset(&ym);
+}
 static uint32_t ym_pos;            /* 68k cycle the FM chip has been clocked up to */
 static uint32_t ym_frac;           /* remainder in 68k cycles (0..5) */
 static uint32_t ym_debt;           /* extra cycles already clocked between back-to-back writes */
@@ -107,21 +118,41 @@ void snd_psg_write(uint32_t v)
 }
 
 /* ---- FM chip ------------------------------------------------------------ */
-static void ym_emit_sample(void)
+static void emit_sample(int32_t fm0, int32_t fm1)
 {
     int s0, s1, p;
     if (native_len >= NATIVE_MAX) return;
-    psg_frac += 4194;            /* PSG ticks per FM sample = 144/240 * 16/... ~ 4.2 (x1000) */
+    psg_frac += 4194u * (uint32_t)fm_div;   /* PSG ticks per FM sample = 144/240 * 16/... ~ 4.2 (x1000) */
     psg_step((int)(psg_frac / 1000));
     psg_frac %= 1000;
     p = psg_sample();
-    s0 = ym_acc[0] * 6 + p;
-    s1 = ym_acc[1] * 6 + p;
+    s0 = fm0 + p;
+    s1 = fm1 + p;
     if (s0 > 32767) s0 = 32767; else if (s0 < -32768) s0 = -32768;
     if (s1 > 32767) s1 = 32767; else if (s1 < -32768) s1 = -32768;
     native_buf[native_len * 2] = (int16_t)s0;
     native_buf[native_len * 2 + 1] = (int16_t)s1;
     native_len++;
+}
+
+static void ym_emit_sample(void) { emit_sample(ym_acc[0] * 6, ym_acc[1] * 6); }
+
+/* Genesis Plus GX's chip: one output sample per 144 * fm_div 68000 cycles */
+/* (its level matched to Nuked's by RMS over the same music: x 9/16) */
+#define LIGHT_GAIN(x) (((x) * 9) >> 4)
+static void light_sync(uint32_t delta)
+{
+    static int buf[2 * 256];
+    uint32_t period = 144u * (uint32_t)fm_div, n;
+    ym_frac += delta;
+    n = ym_frac / period;
+    ym_frac %= period;
+    while (n) {
+        int k = n > 256 ? 256 : (int)n, i;
+        YM2612Update(buf, k);
+        for (i = 0; i < k; i++) emit_sample(LIGHT_GAIN(buf[i * 2]), LIGHT_GAIN(buf[i * 2 + 1]));
+        n -= (uint32_t)k;
+    }
 }
 
 static void ym_sync(uint32_t to)
@@ -130,6 +161,7 @@ static void ym_sync(uint32_t to)
     uint32_t n;
     if (delta <= 0) return;
     ym_pos = to;
+    if (LIGHT) { light_sync((uint32_t)delta); return; }
     ym_frac += (uint32_t)delta;
     n = ym_frac / 6;
     ym_frac %= 6;
@@ -155,6 +187,7 @@ static uint8_t ym_read(uint32_t port)
 {
     /* Busy flag is cleared: polling loops would otherwise wait on time that only
      * advances between scanlines. Timer flags are real. */
+    if (LIGHT) return (uint8_t)(YM2612Read() & 0x7F);
     return (uint8_t)(OPN2_Read(&ym, port & 3) & 0x7F);
 }
 
@@ -178,6 +211,7 @@ static void ym_write(uint32_t port, uint32_t v, uint32_t when)
     if ((port & 3) == 1 && stat_addr0 == 0x2B && (v & 0x80)) snd_stat_dac_enable++;
 #endif
     ym_sync(when);
+    if (LIGHT) { YM2612Write(port & 3, v & 0xFF); return; }
     OPN2_Write(&ym, port & 3, (Bit8u)v);
     /* give the chip a few cycles to latch it before any following write */
     {
@@ -305,7 +339,7 @@ void snd_reset_write(uint32_t v)
         cpu.write_byte = z80_write;
         cpu.port_in = z80_in;
         cpu.port_out = z80_out;
-        if (enabled) { ym_sync(R.cycles); OPN2_Reset(&ym); }
+        if (enabled) { ym_sync(R.cycles); fm_reset(); }
         memset(ym_shadow, 0, sizeof ym_shadow);
     }
     z80_reset_line = assert_reset;
@@ -326,8 +360,9 @@ void snd_vint(void)
 
 int snd_end_frame(const int16_t **out)
 {
-    /* resample native (53,267 Hz) -> 48 kHz with linear interpolation */
-    const uint32_t step = (uint32_t)((53267.0 / SND_OUTPUT_RATE) * 65536.0);
+    /* resample native (53,267 Hz, or a half/third of it: fm_div) -> 48 kHz with
+     * linear interpolation */
+    const uint32_t step = (uint32_t)((53267.0 / fm_div / SND_OUTPUT_RATE) * 65536.0);
     int n = 0;
     if (!enabled) { *out = out_buf; return 0; }
     ym_sync(R.cycles);
@@ -374,9 +409,37 @@ int snd_end_frame(const int16_t **out)
 
 void snd_init(int on)
 {
+    static int light_ready;
     enabled = on;
     OPN2_SetChipType(ym3438_mode_ym2612);
+    if (!light_ready) {
+        YM2612Init();
+        YM2612Config(YM2612_DISCRETE);
+        light_ready = 1;
+    }
+    YM2612SetDivider(fm_div);
     snd_reset();
+}
+
+void snd_set_fm(int core, int div)
+{
+    if (div < 1) div = 1;
+    if (div > 3) div = 3;
+    if (core != SND_FM_LIGHT) div = 1;
+    if (core == fm_core && div == fm_div) return;
+    if (enabled) ym_sync(R.cycles);
+    fm_core = core;
+    fm_div = div;
+    YM2612SetDivider(div);
+    ym_frac = 0;
+    ym_slot = 0;
+    ym_acc[0] = ym_acc[1] = 0;
+    /* the new chip picks up where the other was (its registers replayed) */
+    {
+        uint8_t regs[512];
+        memcpy(regs, ym_shadow, sizeof regs);
+        ym_replay(regs);
+    }
 }
 
 void snd_reset(void)
@@ -394,7 +457,7 @@ void snd_reset(void)
     z80_budget = 0;
     ym_frac = 0;
     ym_debt = 0;
-    OPN2_Reset(&ym);
+    fm_reset();
     memset(ym_shadow, 0, sizeof ym_shadow);
     ym_latch[0] = ym_latch[1] = 0;
     ym_slot = 0;
@@ -417,7 +480,7 @@ static void ym_replay(const uint8_t *regs)
     int port, r;
     memcpy(ym_shadow, regs, sizeof ym_shadow);
     if (!enabled) return;
-    OPN2_Reset(&ym);
+    fm_reset();
     for (port = 0; port < 2; port++)
         for (r = 0x21; r < 0xB8; r++) {
             if (r == 0x28 || (r >= 0x29 && r < 0x30)) continue;  /* no key-on / DAC / timers */

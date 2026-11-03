@@ -172,7 +172,7 @@ void controls_select_menu(void)
 
 /* ---- Options ------------------------------------------------------------------ */
 
-enum { OPT_QUICK, OPT_CLEAN, OPT_BACK, OPT_EXIT, OPT_CONTROLS };
+enum { OPT_QUICK, OPT_CLEAN, OPT_BACK, OPT_EXIT, OPT_CONTROLS, OPT_FM };
 
 /* On/Off settings: their names are choosable lines; the values are separate
  * lines in a column further right (the font is proportional). */
@@ -180,7 +180,15 @@ typedef struct { int value; const char *name; int *setting; int row; } Toggle;
 static const Toggle toggles[] = {
     {OPT_QUICK, "Quick Start", &g_options.quick_start, 14},
     {OPT_CLEAN, "Clean Transitions", &g_options.clean_transitions, 16},
+    {OPT_FM, "Music Chip", &g_options.fm_sound, 18},
 };
+/* the values shown: On/Off, or the FM chip emulation's */
+static const char *const fm_names[] = {"Accurate", "Light", "Light, half", "Light, third"};
+static const char *toggle_text(int i)
+{
+    if (toggles[i].value == OPT_FM) return fm_names[*toggles[i].setting & 3];
+    return *toggles[i].setting ? "On" : "Off";
+}
 #define NTOGGLES ((int)(sizeof toggles / sizeof toggles[0]))
 #define COL_VALUE 28
 
@@ -194,9 +202,10 @@ static int options_action(Menu *m, int dir)
     int *value_items = (int *)m->user, i;
     for (i = 0; i < NTOGGLES; i++)
         if (m->item[m->sel].value == toggles[i].value) {
-            *toggles[i].setting = !*toggles[i].setting;
+            if (toggles[i].value == OPT_FM) *toggles[i].setting = (*toggles[i].setting + (dir < 0 ? 3 : 1)) % 4;
+            else *toggles[i].setting = !*toggles[i].setting;
             apply_options();
-            menu_set_text(m, value_items[i], *toggles[i].setting ? "On" : "Off");
+            menu_set_text(m, value_items[i], toggle_text(i));
             return 0;
         }
     return dir == 0;            /* the others open or close something */
@@ -226,10 +235,10 @@ void options_menu(void)
         m.b_is_back = 1;
         menu_add(&m, 6, 12, "Controls", OPT_CONTROLS);
         for (i = 0; i < NTOGGLES; i++) menu_add(&m, 6, toggles[i].row, toggles[i].name, toggles[i].value);
-        menu_add(&m, 6, 19, "Back", OPT_BACK);
-        menu_add(&m, 6, 23, "Exit Game", OPT_EXIT);   /* out of the way, and it asks first */
+        menu_add(&m, 6, 21, "Back", OPT_BACK);
+        menu_add(&m, 6, 24, "Exit Game", OPT_EXIT);   /* out of the way, and it asks first */
         for (i = 0; i < NTOGGLES; i++)
-            value_items[i] = menu_add(&m, COL_VALUE, toggles[i].row, *toggles[i].setting ? "On" : "Off", -1);
+            value_items[i] = menu_add(&m, COL_VALUE, toggles[i].row, toggle_text(i), -1);
         m.sel = sel;
         v = options_screen(&m);
         sel = m.sel;

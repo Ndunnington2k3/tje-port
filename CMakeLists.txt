@@ -59,11 +59,15 @@ add_library(tje_core STATIC
     src/gfx/gfx_gl.c
     src/gfx/gfx_soft.c
     third_party/nuked-opn2/ym3438.c
+    third_party/gpgx-ym2612/ym2612.c
     third_party/z80/z80.c
     ${TJE_GAME_SOURCES}
     ${TJE_GENERATED_SOURCES})
 target_include_directories(tje_core PUBLIC src src/generated)
-target_include_directories(tje_core PRIVATE third_party/nuked-opn2 third_party/z80)
+target_include_directories(tje_core PRIVATE third_party/nuked-opn2 third_party/gpgx-ym2612 third_party/z80)
+if(NOT MSVC)
+    target_link_libraries(tje_core PUBLIC m)   # (ym2612.c builds its tables with sin/pow/log)
+endif()
 
 if(MSVC)
     # The generated functions are large and goto-heavy; keep MSVC happy.

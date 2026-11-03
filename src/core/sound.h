@@ -20,6 +20,14 @@ void snd_init(int output);
 void snd_reset(void);
 int snd_enabled(void);
 
+/* Which FM chip emulation: SND_FM_ACCURATE (Nuked-OPN2, every internal clock: the
+ * PC's default) or SND_FM_LIGHT (Genesis Plus GX's, a calculation per sample; div
+ * 1-3: one sample per div chip samples, 53/27/18 kHz). Sound only: what the game
+ * does is the same with either. */
+#define SND_FM_ACCURATE 0
+#define SND_FM_LIGHT    1
+void snd_set_fm(int core, int div);
+
 /* 68000-side access to the sound hardware */
 uint32_t snd_z80_area_read(uint32_t a);          /* $A00000-$A0FFFF */
 void snd_z80_area_write(uint32_t a, uint32_t v);
