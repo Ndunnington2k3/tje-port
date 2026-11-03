@@ -64,6 +64,7 @@ add_library(tje_core STATIC
     src/gfx/present.c
     src/gfx/gfx_gl.c
     src/gfx/gfx_soft.c
+    src/gfx/viewlist_soft.c
     third_party/nuked-opn2/ym3438.c
     third_party/gpgx-ym2612/ym2612.c
     third_party/z80/z80.c

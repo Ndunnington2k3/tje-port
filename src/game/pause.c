@@ -81,7 +81,7 @@ static uint32_t bar_stride;
 static uint32_t bar_top_row;      /* screen row (8-pixel units) of the top border */
 
 static uint16_t vram16(uint32_t a) { return (uint16_t)((vdp_vram[a & 0xFFFF] << 8) | vdp_vram[(a + 1) & 0xFFFF]); }
-static void vram16_set(uint32_t a, uint16_t v) { vdp_vram[a & 0xFFFF] = (uint8_t)(v >> 8); vdp_vram[(a + 1) & 0xFFFF] = (uint8_t)v; vdp_tile_dirty[(a & 0xFFFF) >> 5] = 1; }
+static void vram16_set(uint32_t a, uint16_t v) { vdp_vram[a & 0xFFFF] = (uint8_t)(v >> 8); vdp_vram[(a + 1) & 0xFFFF] = (uint8_t)v; vdp_tile_written(a); }
 
 static uint16_t *bar_cell(int row, int col) { return &bar_saved[row][col]; }
 
@@ -206,7 +206,7 @@ static void sprites_save(void)
             if (hi < 8) hi = 0; else if (hi == 8) hi = 9;
             if (lo < 8) lo = 0; else if (lo == 8) lo = 9;
             vdp_vram[HAND_TILE * 32 + (uint32_t)i] = (uint8_t)(hi << 4 | lo);
-            vdp_tile_dirty[HAND_TILE + i / 32] = 1;
+            vdp_tile_written((HAND_TILE + (uint32_t)i / 32) * 32);
         }
     }
 }
@@ -227,7 +227,7 @@ static void sprites_update(void)
         uint32_t a = sat_base + (uint32_t)hand_entry * 8;
         vram16_set(a, (uint16_t)(128 + hand_y));
         vdp_vram[(a + 2) & 0xFFFF] = 0x0D;                       /* 4 x 2 tiles; keep the link */
-        vdp_tile_dirty[((a + 2) & 0xFFFF) >> 5] = 1;
+        vdp_tile_written(a + 2);
         vram16_set(a + 4, (uint16_t)(0x8000u | 0x6000u | HAND_TILE));   /* priority, palette 3 */
         vram16_set(a + 6, (uint16_t)(128 + hand_x));
     }

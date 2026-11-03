@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 typedef struct GfxTex GfxTex;
+struct ViewList;
 
 enum {
     GFX_FLIP_X = 1,
@@ -34,6 +35,9 @@ typedef struct GfxBackend {
     void (*quad)(GfxTex *t, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, unsigned flags);
     /* Finish the frame (the platform shows it). */
     void (*frame_end)(void);
+    /* Optional (NULL: not offered): draw a gameplay view given as a list
+     * (gfx/viewlist.h) at (x, y) of the target, between frame_begin and frame_end. */
+    void (*view_list)(const struct ViewList *vl, int x, int y);
 } GfxBackend;
 
 #endif

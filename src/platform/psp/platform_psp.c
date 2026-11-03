@@ -12,6 +12,8 @@
 #include "core/genesis.h"
 #include "gfx/present.h"
 #include "gfx_gu.h"
+#include "gfx/viewlist.h"
+#include "game/gameview.h"
 
 #include <pspkernel.h>
 #include <pspctrl.h>
@@ -284,12 +286,50 @@ static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
     }
 }
 
+/* (tests: vlcheck.on next to EBOOT.PBP - each view drawn by the GE compared with
+ * the same list drawn in software, gfx/viewlist_soft.c) */
+static void list_check(void)
+{
+    static int on = -1, frames, bad_frames;
+    static uint32_t ref[480 * 272];
+    const ViewList *vl = gameview_last_list();
+    const uint32_t *fb;
+    int x, y, ox, oy;
+    long bad = 0;
+    if (on < 0) {
+        char path[300];
+        FILE *f;
+        snprintf(path, sizeof path, "%svlcheck.on", data_dir);
+        f = fopen(path, "r");
+        on = f != NULL;
+        if (f) fclose(f);
+    }
+    if (!on || vl->w > 480 || vl->h > 272) return;
+    viewlist_render_soft(vl, ref, 480);
+    fb = gfx_gu_drawn();
+    ox = (SCR_W - vl->w) / 2;
+    oy = (SCR_H - vl->h) / 2;
+    for (y = 0; y < vl->h; y++)
+        for (x = 0; x < vl->w; x++) {
+            uint32_t g = fb[(y + oy) * 512 + x + ox], r = ref[y * 480 + x];
+            uint32_t g_rgb = ((g & 0xFF) << 16) | (g & 0xFF00) | ((g >> 16) & 0xFF);
+            if (g_rgb != (r & 0xFFFFFF)) {
+                if (!bad && bad_frames < 3) printf("vlcheck: first difference at %d,%d: GE %06X, list %06X\n", x, y, g_rgb, r & 0xFFFFFF);
+                bad++;
+            }
+        }
+    frames++;
+    if (bad) { bad_frames++; printf("vlcheck: %ld pixels differ\n", bad); }
+    if (frames % 120 == 0) printf("vlcheck: %d views, %d differ\n", frames, bad_frames);
+}
+
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
     uint64_t t_start = sceKernelGetSystemTimeWide(), t_drawn;
     present_set_frame(pixels, width, height, pitch);
     present_draw(SCR_W, SCR_H);
     t_drawn = sceKernelGetSystemTimeWide();
+    if (!pixels) list_check();
     gfx_gu_show();
     if (clock_pacing) {
         /* (network play: by the clock, plat_pacing) */
@@ -372,6 +412,10 @@ int plat_init(int argc, char **argv)
     plat_default_bindings(1);
 
     present_init(gfx_gu_init());
+    {
+        extern int g_gv_use_list;
+        g_gv_use_list = present_has_lists();   /* gameplay drawn by the GE from lists */
+    }
     th = sceKernelCreateThread("audio", audio_thread, 0x12, 0x10000, PSP_THREAD_ATTR_USER, NULL);
     if (th >= 0) sceKernelStartThread(th, 0, NULL);
     return 0;

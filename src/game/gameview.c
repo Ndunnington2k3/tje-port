@@ -15,6 +15,7 @@
 #include "options.h"
 #include "core/vdp.h"
 #include "gfx/present.h"
+#include "gfx/viewlist.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -828,6 +829,10 @@ static int display_on_at_top;   /* the display was on at the top of this frame *
 int g_gv_win_top_seen;          /* (tests) the window was at the top on some line of this frame */
 int g_gv_kept;                  /* (tests) this frame repeats the last picture (clean transitions) */
 static void render_views_picture(void);
+/* the gameplay view as a list for the GPU (when the platform draws lists) */
+static ViewList vlist;
+static int list_ready;        /* this frame's picture is the list */
+static int last_was_list;
 extern int g_in_game;   /* the last picture made here, kept while the VDP is frozen */
 static int window_row_filler(int row);
 static uint8_t band_row[GAMEVIEW_MAX_H];  /* picture rows holding the status bar / present list */
@@ -1353,6 +1358,7 @@ void gameview_line(int line)
         half_window_lines[0] = half_window_lines[1] = 0;
         memset(line_window, 0, sizeof line_window);
         views_done = 0;
+        list_ready = 0;
         half_held[0] = half_held[1] = 0;
         if (snap_age < 1000) snap_age++;
         g_gv_snap_age = snap_age;
@@ -1463,6 +1469,13 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
                         (g_options.clean_transitions && display_on_at_top && !(vdp_reg[1] & 0x40)))) {
             g_gv_kept = 1;
             *pixels = picture;
+            if (last_was_list) {
+                /* (the list again, with the GPU's copy of the tiles kept as it was:
+                 * the game is rebuilding them behind the held picture) */
+                vlist.frozen = 1;
+                present_set_list(&vlist);
+                *pixels = NULL;
+            }
             *width = last_w;
             *height = last_h;
             *pitch = GAMEVIEW_MAX_W;
@@ -1473,6 +1486,7 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
     }
     if (frame_ok == 2 || frame_ok == 3 || frame_ok == 4) {
         last_ok = 1;
+        last_was_list = 0;
         last_w = pic_w;
         last_h = pic_h;
         *pixels = picture;
@@ -1508,7 +1522,13 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
     last_ok = 1;
     last_w = pic_w;
     last_h = pic_h;
+    last_was_list = list_ready;
     *pixels = picture;
+    if (list_ready) {
+        /* (the GPU draws the view from the list) */
+        present_set_list(&vlist);
+        *pixels = NULL;
+    }
     *width = pic_w;
     *height = pic_h;
     *pitch = GAMEVIEW_MAX_W;
@@ -1937,6 +1957,210 @@ int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int scr
     return 0;
 }
 
+/* ==== The same view as a list for a GPU (gfx/viewlist.h) =========================
+ * gameview_render_view's picture, as cells and pieces: what is drawn where is
+ * worked out exactly as there, the pixels are left to the GPU. */
+
+int g_gv_use_list;            /* the platform draws views as lists (gameview_list) */
+const ViewList *gameview_last_list(void) { return &vlist; }
+static int vl_check = -1;     /* (tests, TJE_VLCHECK) */
+int vl_checked, vl_bad_frames;
+static uint8_t vl_piece_pool[VL_MAX_PIECES * 2048] __attribute__((aligned(64)));
+static size_t vl_pool_used;
+
+static void vl_batch(ViewList *vl, int layer, int x0, int y0, int x1, int y1)
+{
+    VlBatch *b;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > vl->w) x1 = vl->w;
+    if (y1 > vl->h) y1 = vl->h;
+    if (vl->nbatches >= VL_MAX_BATCHES || x0 >= x1 || y0 >= y1) { vl->nbatches = vl->nbatches; return; }
+    b = &vl->batches[vl->nbatches++];
+    b->layer = layer;
+    b->x0 = x0; b->y0 = y0; b->x1 = x1; b->y1 = y1;
+    b->first = vl->ncells;
+    b->count = 0;
+}
+
+static inline void vl_cell(ViewList *vl, int x, int y, uint32_t entry)
+{
+    VlCell *c;
+    if (!(entry & 0x7FF) || vl->ncells >= VL_MAX_CELLS) return;   /* (tile 0: see-through, nothing to draw) */
+    c = &vl->cells[vl->ncells++];
+    c->x = (int16_t)x;
+    c->y = (int16_t)y;
+    c->entry = (uint16_t)entry;
+    vl->batches[vl->nbatches - 1].count++;
+}
+
+/* the cells of the batch just begun: of the floor (world grid) */
+static void vl_floor(ViewList *vl, const Region *r, int ox, int oy)
+{
+    const VlBatch *b = &vl->batches[vl->nbatches - 1];
+    int cx0 = (r->cam_x + b->x0 - ox) >> 3, cx1 = (r->cam_x + b->x1 - 1 - ox) >> 3;
+    int cy0 = (r->cam_y + b->y0 - oy) >> 3, cy1 = (r->cam_y + b->y1 - 1 - oy) >> 3, cx, cy;
+    for (cy = cy0; cy <= cy1; cy++)
+        for (cx = cx0; cx <= cx1; cx++)
+            vl_cell(vl, cx * 8 - r->cam_x + ox, cy * 8 - r->cam_y + oy, floor_cell(r->tiles, r->level, cx, cy));
+}
+
+/* ... of a VRAM plane holding the same world grid (the game's plane A) */
+static void vl_vram_plane(ViewList *vl, const Region *r, uint32_t base, int ox, int oy)
+{
+    const VlBatch *b = &vl->batches[vl->nbatches - 1];
+    int cx0 = (r->cam_x + b->x0 - ox) >> 3, cx1 = (r->cam_x + b->x1 - 1 - ox) >> 3;
+    int cy0 = (r->cam_y + b->y0 - oy) >> 3, cy1 = (r->cam_y + b->y1 - 1 - oy) >> 3, cx, cy;
+    for (cy = cy0; cy <= cy1; cy++)
+        for (cx = cx0; cx <= cx1; cx++) {
+            uint32_t ea = (base + (uint32_t)(((cy & 31) * 64) + (cx & 63)) * 2) & 0xFFFF;
+            vl_cell(vl, cx * 8 - r->cam_x + ox, cy * 8 - r->cam_y + oy, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1]);
+        }
+}
+
+/* ... of plane B, scrolled at half the camera's speed (view_plane_b_row) */
+static void vl_plane_b(ViewList *vl, int cam_x, int cam_y, int ox, int oy)
+{
+    static const int psz[4] = {32, 64, 32, 128};
+    const VlBatch *b = &vl->batches[vl->nbatches - 1];
+    int pw = psz[vdp_reg[16] & 3], ph = psz[(vdp_reg[16] >> 4) & 3];
+    uint32_t base = (uint32_t)(vdp_reg[4] & 7) << 13;
+    int hs = -(cam_x >= 0 ? cam_x >> 1 : -((-cam_x) >> 1));
+    int vs = cam_y >= 0 ? cam_y >> 1 : -((-cam_y) >> 1);
+    /* original-screen pixel (x, y) shows plane pixel (x - hs, y + vs) */
+    int kx0 = (b->x0 - ox - hs) >> 3, kx1 = (b->x1 - 1 - ox - hs) >> 3;
+    int ky0 = (b->y0 - oy + vs) >> 3, ky1 = (b->y1 - 1 - oy + vs) >> 3, kx, ky;
+    for (ky = ky0; ky <= ky1; ky++)
+        for (kx = kx0; kx <= kx1; kx++) {
+            uint32_t ea = (base + (uint32_t)((ky & (ph - 1)) * pw + (kx & (pw - 1))) * 2) & 0xFFFF;
+            vl_cell(vl, kx * 8 + hs + ox, ky * 8 - vs + oy, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1]);
+        }
+}
+
+/* The view of gameview_render_view as a list, at (vx, vy) of a w x h picture
+ * (the list's size: pw x ph). */
+static void build_view_list(ViewList *vl, int player, int cam_x, int cam_y, int game_cam, int screen_h,
+                            int vx, int vy, int w, int h, int band)
+{
+    Region r;
+    int ox = vx + (w - 320) / 2, oy = vy + (h - screen_h) / 2, i, n;
+    static int order[VL_MAX_PIECES];
+    views_setup_cameras();
+    r.top = 0;
+    r.bottom = screen_h;
+    r.cam_x = cam_x;
+    r.cam_y = cam_y;
+    r.tiles = player ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+    r.level = rd8(player ? EARLS_LEVEL : TOEJAMS_LEVEL);
+    floor_sync(r.tiles, r.level);
+    view_collect(r.level, cam_x, cam_y, vx - ox, vy - oy, vx + w - ox, vy + h - oy);
+    if (band) view_band(vx - ox, vy - oy, vx + w - ox, vy + h - oy);
+    else if (screen_h == VDP_HEIGHT / 2 && game_cam >= 0 && !view_skip_half_hud)
+        view_half_hud(game_cam ? VDP_HEIGHT / 2 : 0, vx - ox, vy - oy, vx + w - ox, vy + h - oy);
+    /* plane B */
+    vl_batch(vl, 0, vx, vy, vx + w, vy + h);
+    vl_plane_b(vl, cam_x, cam_y, ox, oy);
+    /* plane A: the game's own plane where it holds this camera's screen, the floor
+     * layout around it (view_plane_a_row) */
+    if (game_cam >= 0) {
+        int ax0 = ox, ax1 = ox + 320, ay0 = oy, ay1 = oy + screen_h;
+        uint32_t base = game_cam ? 0xC000u : 0xA000u;
+        if (ax0 < vx) ax0 = vx;
+        if (ax1 > vx + w) ax1 = vx + w;
+        if (ay0 < vy) ay0 = vy;
+        if (ay1 > vy + h) ay1 = vy + h;
+        vl_batch(vl, 1, vx, vy, vx + w, ay0); vl_floor(vl, &r, ox, oy);              /* above */
+        vl_batch(vl, 1, vx, ay1, vx + w, vy + h); vl_floor(vl, &r, ox, oy);          /* below */
+        vl_batch(vl, 1, vx, ay0, ax0, ay1); vl_floor(vl, &r, ox, oy);                /* left */
+        vl_batch(vl, 1, ax1, ay0, vx + w, ay1); vl_floor(vl, &r, ox, oy);            /* right */
+        vl_batch(vl, 1, ax0, ay0, ax1, ay1); vl_vram_plane(vl, &r, base, ox, oy);    /* the game's */
+    } else {
+        vl_batch(vl, 1, vx, vy, vx + w, vy + h);
+        vl_floor(vl, &r, ox, oy);
+    }
+    /* the pieces, back first: pieces_row keeps the lowest rank (the first of equal
+     * ones) in front */
+    n = 0;
+    for (i = 0; i < npieces && n < VL_MAX_PIECES; i++)
+        if (pieces[i].w > 0 && pieces[i].h > 0) order[n++] = i;
+    for (i = 1; i < n; i++) {
+        int k = order[i], j = i - 1;
+        while (j >= 0 && (pieces[order[j]].rank < pieces[k].rank ||
+                          (pieces[order[j]].rank == pieces[k].rank && order[j] < k))) {
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = k;
+    }
+    for (i = 0; i < n && vl->npieces < VL_MAX_PIECES; i++) {
+        const Piece *p = &pieces[order[i]];
+        VlPiece *q = &vl->pieces[vl->npieces];
+        int stride = (p->w + 15) & ~15, row;
+        uint8_t *dst = vl_piece_pool + vl_pool_used;
+        if (vl_pool_used + (size_t)stride * (size_t)p->h > sizeof vl_piece_pool) break;
+        vl_pool_used += ((size_t)stride * (size_t)p->h + 63) & ~(size_t)63;
+        for (row = 0; row < p->h; row++) memcpy(dst + row * stride, p->px + row * p->w, (size_t)p->w);
+        q->stride = stride;
+        q->x = p->x + ox;
+        q->y = p->y + oy;
+        q->w = p->w;
+        q->h = p->h;
+        q->y0 = (p->cy0 < -(1 << 19) ? -(1 << 19) : p->cy0) + oy;
+        q->y1 = (p->cy1 > (1 << 19) ? (1 << 19) : p->cy1) + oy;
+        if (q->y0 < vy) q->y0 = vy;
+        if (q->y1 > vy + h) q->y1 = vy + h;
+        q->px = dst;
+        vl->npieces++;
+    }
+    /* Sprite against sprite is decided before sprite against plane (the one in
+     * front wins whatever the priorities; then its priority counts): drawn in
+     * passes by priority, a sprite behind with priority would show through one in
+     * front without. Such pixels behind are cleared (rare: only where pieces of
+     * different priority overlap). */
+    for (i = 0; i < vl->npieces; i++) {
+        VlPiece *bk = &vl->pieces[i];
+        int j;
+        for (j = i + 1; j < vl->npieces; j++) {
+            const VlPiece *fr = &vl->pieces[j];
+            int x0 = bk->x > fr->x ? bk->x : fr->x, x1 = bk->x + bk->w < fr->x + fr->w ? bk->x + bk->w : fr->x + fr->w;
+            int y0 = bk->y > fr->y ? bk->y : fr->y, y1 = bk->y + bk->h < fr->y + fr->h ? bk->y + bk->h : fr->y + fr->h, x, y;
+            if (y0 < fr->y0) y0 = fr->y0;
+            if (y1 > fr->y1) y1 = fr->y1;
+            if (x0 >= x1 || y0 >= y1) continue;
+            for (y = y0; y < y1; y++) {
+                uint8_t *b = (uint8_t *)bk->px + (size_t)(y - bk->y) * (size_t)bk->stride - bk->x;
+                const uint8_t *f = fr->px + (size_t)(y - fr->y) * (size_t)fr->stride - fr->x;
+                for (x = x0; x < x1; x++)
+                    if ((f[x] & (PIX_OPAQUE | PIX_PRIO)) == PIX_OPAQUE && (b[x] & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO))
+                        b[x] = 0;
+            }
+        }
+    }
+    floor_on[0] = floor_on[1] = 0;
+}
+
+static void vl_begin(ViewList *vl, int w, int h)
+{
+    int x;
+    vl_pool_used = 0;
+    vl->w = w;
+    vl->h = h;
+    vl->backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    for (x = 0; x < 64; x++) vl->pal[x] = vdp_palette_rgb(x);
+    vl->vram = vdp_vram;
+    vl->tiles_changed = vdp_tile_dirty_gpu;
+    vl->frozen = 0;
+    vl->ncells = vl->nbatches = vl->npieces = vl->noverlays = 0;
+}
+
+static void vl_overlay(ViewList *vl, int x, int y, int w, int h, const uint32_t *px, int pitch)
+{
+    VlOverlay *o;
+    if (vl->noverlays >= VL_MAX_OVERLAYS || w <= 0 || h <= 0) return;
+    o = &vl->overlays[vl->noverlays++];
+    o->x = x; o->y = y; o->w = w; o->h = h; o->px = px; o->pitch = pitch;
+}
+
 /* The status bar (window rows from..to-1 of the original screen) with its icon
  * sprites (entries 11-22 where they lie in those rows), into out (320 wide). */
 static void render_status_bar(uint32_t *out, int pitch, int from, int to)
@@ -2070,8 +2294,26 @@ static void split_half(int k, int area_top, int area_h)
 static void render_views_picture(void)
 {
     int split = nregions == 2;
+    if (vl_check < 0) vl_check = getenv("TJE_VLCHECK") != NULL;
     views_setup_cameras();
     layout_copy_on = 1;
+    if (!split && ((g_gv_use_list && !g_gv_windows) || vl_check)) {
+        /* the view as a list for the GPU (with the same present list and status
+         * bar over it) */
+        int top = (win_from == 0 && win_to > 0) ? win_to : 0, bar_h;
+        static uint32_t bar[VDP_HEIGHT][320];
+        vl_begin(&vlist, pic_w, pic_h);
+        build_view_list(&vlist, 0, region[0].cam_x, region[0].cam_y, 0, VDP_HEIGHT, 0, 0, pic_w, pic_h, 1);
+        if (top) vl_overlay(&vlist, (pic_w - 320) / 2, (pic_h - VDP_HEIGHT) / 2, 320, top, &top_window_lines[0][0], 320);
+        if (win_to == VDP_HEIGHT && win_from > 0) {
+            bar_h = hud_end - win_from;
+            if (bar_h > 0 && bar_h <= VDP_HEIGHT) {
+                render_status_bar(&bar[0][0], 320, win_from, hud_end);
+                vl_overlay(&vlist, (pic_w - 320) / 2, pic_h - bar_h, 320, bar_h, &bar[0][0], 320);
+            }
+        }
+        if (g_gv_use_list && !g_gv_windows) { list_ready = 1; layout_copy_on = 0; return; }
+    }
     if (!split) {
         int bar_h = 0;
         int top = (win_from == 0 && win_to > 0) ? win_to : 0, line;
@@ -2089,6 +2331,37 @@ static void render_views_picture(void)
                 static uint32_t bar[VDP_HEIGHT][320];
                 render_status_bar(&bar[0][0], 320, win_from, hud_end);
                 for (line = 0; line < bar_h; line++) paste_centred_row(pic_h - bar_h + line, bar[line]);
+            }
+        }
+        if (vl_check) {
+            /* (tests: the list, drawn as a GPU must, against the picture) */
+            static uint32_t chk[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+            long bad = 0;
+            int x, y;
+            viewlist_render_soft(&vlist, chk, GAMEVIEW_MAX_W);
+            for (y = 0; y < pic_h; y++)
+                for (x = 0; x < pic_w; x++)
+                    if ((chk[(size_t)y * GAMEVIEW_MAX_W + x] & 0xFFFFFF) != (picture[(size_t)y * GAMEVIEW_MAX_W + x] & 0xFFFFFF)) bad++;
+            vl_checked++;
+            if (vl_checked % 500 == 0) fprintf(stderr, "vlcheck: %d views, %d differ\n", vl_checked, vl_bad_frames);
+            if (bad) {
+                vl_bad_frames++;
+                if (vl_bad_frames <= 3 && getenv("TJE_VLCHECK_DUMP")) {
+                    char path[300];
+                    FILE *f;
+                    snprintf(path, sizeof path, "%s_%d.ppm", getenv("TJE_VLCHECK_DUMP"), vl_bad_frames);
+                    f = fopen(path, "wb");
+                    if (f) {
+                        fprintf(f, "P6\n%d %d\n255\n", pic_w, pic_h * 2);
+                        for (y = 0; y < pic_h * 2; y++)
+                            for (x = 0; x < pic_w; x++) {
+                                uint32_t c = y < pic_h ? picture[(size_t)y * GAMEVIEW_MAX_W + x] : chk[(size_t)(y - pic_h) * GAMEVIEW_MAX_W + x];
+                                fputc((int)(c >> 16) & 255, f); fputc((int)(c >> 8) & 255, f); fputc((int)c & 255, f);
+                            }
+                        fclose(f);
+                    }
+                }
+                fprintf(stderr, "vlcheck: %ld pixels differ\n", bad);
             }
         }
     } else {

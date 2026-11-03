@@ -69,6 +69,10 @@ extern uint8_t vdp_vram[0x10000];
  * that keep decoded copies of tiles clear the flags they have caught up with.
  * Code writing vdp_vram directly calls vdp_tiles_all_dirty(). */
 extern uint8_t vdp_tile_dirty[2048];
+/* The same for a GPU's copy of the tiles (gfx/viewlist.h), cleared by it. */
+extern uint8_t vdp_tile_dirty_gpu[2048];
+/* Port code writing VRAM directly: the tile at this address has changed. */
+void vdp_tile_written(uint32_t a);
 void vdp_tiles_all_dirty(void);
 extern int vdp_stats_on;
 /* Optional: asked before each line is drawn; 0 = nobody will look at it this frame

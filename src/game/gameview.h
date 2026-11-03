@@ -50,6 +50,12 @@ int gameview_map_open(int player);
 /* Network play: the player this machine shows (-1: none); the frame's picture is
  * their window's. */
 extern int g_gv_net_player;
+/* The platform's GPU draws gameplay views from lists (gfx/viewlist.h): set at
+ * start-up when present_has_lists(). The frame's picture is then NULL. */
+extern int g_gv_use_list;
+/* (tests) the list of the last view drawn from a list */
+struct ViewList;
+const struct ViewList *gameview_last_list(void);
 /* A box with a message over the middle of the picture (NULL: none). Lower-case
  * letters, digits, space and - . , ' ! only. */
 void gameview_set_message(const char *text);

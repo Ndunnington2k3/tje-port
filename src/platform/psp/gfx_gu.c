@@ -6,6 +6,7 @@
  * strips 64 texels wide (the texture cache's width).
  */
 #include "gfx_gu.h"
+#include "gfx/viewlist.h"
 
 #include <pspkernel.h>
 #include <pspdisplay.h>
@@ -23,7 +24,7 @@ struct GfxTex {
     uint32_t *data;      /* 0xAABBGGRR (the GE's 8888 order) */
 };
 
-static unsigned int __attribute__((aligned(64))) list[64 * 1024];
+static unsigned int __attribute__((aligned(64))) list[192 * 1024];   /* (a view list: ~5000 sprites) */
 static int vsync = 1;
 
 static int pow2(int v) { int p = 8; while (p < v) p <<= 1; return p; }
@@ -120,14 +121,177 @@ static void frame_end(void)
     sceGuSync(0, 0);
 }
 
+static void *draw_buf = (void *)0;   /* (offset in VRAM of the buffer being drawn) */
+
 void gfx_gu_show(void)
 {
     if (vsync) sceDisplayWaitVblankStart();
-    sceGuSwapBuffers();
+    draw_buf = sceGuSwapBuffers();
+}
+
+const uint32_t *gfx_gu_drawn(void)
+{
+    /* (the buffer just drawn, before gfx_gu_show: uncached VRAM) */
+    return (const uint32_t *)(0x44000000u + (uint32_t)draw_buf);
+}
+
+/* ---- gameplay views from lists (gfx/viewlist.h) --------------------------------
+ * The Genesis' 2048 tiles as one 512 x 256 texture of 4-bit colour numbers
+ * (64 tiles a row; the GE's 4-bit order is the low nibble first, the Genesis' the
+ * high: swapped on the way in), brought up to date tile by tile as the game
+ * changes them. A cell is a 2-vertex sprite from it, its palette line the
+ * colour table's offset (16 entries each, entry 0 see-through). Objects' pieces
+ * are 8-bit textures whose bytes (colour, priority, opaque) go through a table
+ * per pass: a priority pass shows only bytes with bits 6 and 7 set, the other
+ * only bit 7. */
+
+static uint8_t __attribute__((aligned(64))) atlas[512 * 256 / 2];
+static uint32_t __attribute__((aligned(64))) clut_tiles[64];
+static uint32_t __attribute__((aligned(64))) clut_pieces[2][256];
+static uint32_t __attribute__((aligned(64))) ovl_px[2][320 * 232];
+
+typedef struct { unsigned short u, v; short x, y, z; } V16;
+
+static uint32_t abgr(uint32_t c) { return 0xFF000000u | ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF); }
+
+static void atlas_update(const ViewList *vl)
+{
+    int t, changed = 0;
+    if (vl->frozen) return;
+    for (t = 0; t < 2048; t++) {
+        const uint8_t *src;
+        uint8_t *dst;
+        int r;
+        if (!vl->tiles_changed[t]) continue;
+        vl->tiles_changed[t] = 0;
+        src = vl->vram + t * 32;
+        dst = atlas + (t >> 6) * 8 * 256 + (t & 63) * 4;
+        for (r = 0; r < 8; r++) {
+            int i;
+            for (i = 0; i < 4; i++) {
+                uint8_t b = src[r * 4 + i];
+                dst[r * 256 + i] = (uint8_t)((b >> 4) | (b << 4));
+            }
+        }
+        changed = 1;
+    }
+    if (changed) {
+        sceKernelDcacheWritebackRange(atlas, sizeof atlas);
+        sceGuTexFlush();
+    }
+}
+
+static void tiles_pass(const ViewList *vl, int layer, int high, int x, int y)
+{
+    int k;
+    sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+    sceGuTexImage(0, 512, 256, 512, atlas);
+    sceGuClutLoad(64 / 8, clut_tiles);
+    for (k = 0; k < vl->nbatches; k++) {
+        const VlBatch *b = &vl->batches[k];
+        int count[4] = {0, 0, 0, 0}, c, line;
+        if (b->layer != layer || !b->count) continue;
+        for (c = b->first; c < b->first + b->count; c++) {
+            unsigned e = vl->cells[c].entry;
+            if (((e >> 15) & 1) == (unsigned)high) count[(e >> 13) & 3]++;
+        }
+        sceGuScissor(x + b->x0, y + b->y0, x + b->x1, y + b->y1);
+        for (line = 0; line < 4; line++) {
+            V16 *v, *o;
+            if (!count[line]) continue;
+            v = o = (V16 *)sceGuGetMemory((unsigned)count[line] * 2 * sizeof(V16));
+            for (c = b->first; c < b->first + b->count; c++) {
+                const VlCell *cl = &vl->cells[c];
+                unsigned e = cl->entry, t = e & 0x7FF;
+                unsigned short u0 = (unsigned short)((t & 63) * 8), v0 = (unsigned short)((t >> 6) * 8);
+                if (((e >> 15) & 1) != (unsigned)high || ((e >> 13) & 3) != (unsigned)line) continue;
+                o[0].x = (short)(x + cl->x); o[0].y = (short)(y + cl->y); o[0].z = 0;
+                o[1].x = (short)(x + cl->x + 8); o[1].y = (short)(y + cl->y + 8); o[1].z = 0;
+                o[0].u = (e & 0x0800) ? u0 + 8 : u0; o[1].u = (e & 0x0800) ? u0 : u0 + 8;
+                o[0].v = (e & 0x1000) ? v0 + 8 : v0; o[1].v = (e & 0x1000) ? v0 : v0 + 8;
+                o += 2;
+            }
+            sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)line);
+            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, count[line] * 2, 0, v);
+        }
+    }
+}
+
+static void pieces_pass(const ViewList *vl, int high, int x, int y)
+{
+    int k;
+    sceGuClutLoad(256 / 8, clut_pieces[high]);
+    sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+    for (k = 0; k < vl->npieces; k++) {
+        const VlPiece *p = &vl->pieces[k];
+        V16 *v = (V16 *)sceGuGetMemory(2 * sizeof(V16));
+        int y0 = p->y0 > 0 ? p->y0 : 0, y1 = p->y1 < vl->h ? p->y1 : vl->h;
+        if (y0 >= y1) continue;
+        sceGuScissor(x, y + y0, x + vl->w, y + y1);
+        sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+        sceGuTexImage(0, pow2(p->w), pow2(p->h), p->stride, p->px);
+        sceGuTexFlush();
+        v[0].u = 0; v[0].v = 0; v[0].x = (short)(x + p->x); v[0].y = (short)(y + p->y); v[0].z = 0;
+        v[1].u = (unsigned short)p->w; v[1].v = (unsigned short)p->h;
+        v[1].x = (short)(x + p->x + p->w); v[1].y = (short)(y + p->y + p->h); v[1].z = 0;
+        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+    }
+}
+
+static void view_list(const ViewList *vl, int x, int y)
+{
+    int i, high, k;
+    atlas_update(vl);
+    for (i = 0; i < 64; i++) clut_tiles[i] = (i & 15) ? abgr(vl->pal[i]) : 0;
+    for (i = 0; i < 256; i++) {
+        clut_pieces[0][i] = (i & 0xC0) == 0x80 ? abgr(vl->pal[i & 0x3F]) : 0;
+        clut_pieces[1][i] = (i & 0xC0) == 0xC0 ? abgr(vl->pal[i & 0x3F]) : 0;
+    }
+    sceKernelDcacheWritebackRange(clut_tiles, sizeof clut_tiles);
+    sceKernelDcacheWritebackRange(clut_pieces, sizeof clut_pieces);
+    if (vl->npieces) {
+        const VlPiece *last = &vl->pieces[vl->npieces - 1];
+        sceKernelDcacheWritebackRange((void *)vl->pieces[0].px,
+                                      (unsigned)(last->px + last->stride * last->h - vl->pieces[0].px));
+    }
+    /* the backdrop */
+    sceGuScissor(x, y, x + vl->w, y + vl->h);
+    sceGuClearColor(abgr(vl->backdrop));
+    sceGuClear(GU_COLOR_BUFFER_BIT);
+    sceGuEnable(GU_ALPHA_TEST);
+    sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    for (high = 0; high < 2; high++) {
+        tiles_pass(vl, 0, high, x, y);
+        tiles_pass(vl, 1, high, x, y);
+        pieces_pass(vl, high, x, y);
+    }
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuScissor(0, 0, SCR_W, SCR_H);
+    /* the finished pictures over it (status bar, present list) */
+    for (k = 0; k < vl->noverlays && k < 2; k++) {
+        const VlOverlay *o = &vl->overlays[k];
+        int r, c, w = o->w > 320 ? 320 : o->w, h = o->h > 232 ? 232 : o->h;
+        uint32_t *d = ovl_px[k];
+        V16 *v;
+        for (r = 0; r < h; r++)
+            for (c = 0; c < w; c++) d[r * 320 + c] = abgr(o->px[(size_t)r * o->pitch + c]);
+        sceKernelDcacheWritebackRange(d, (unsigned)(320 * h * 4));
+        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+        sceGuTexImage(0, 512, pow2(h), 320, d);
+        sceGuTexFlush();
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+        v = (V16 *)sceGuGetMemory(2 * sizeof(V16));
+        v[0].u = 0; v[0].v = 0; v[0].x = (short)(x + o->x); v[0].y = (short)(y + o->y); v[0].z = 0;
+        v[1].u = (unsigned short)w; v[1].v = (unsigned short)h;
+        v[1].x = (short)(x + o->x + w); v[1].y = (short)(y + o->y + h); v[1].z = 0;
+        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+    }
 }
 
 static const GfxBackend backend = {
-    "sceGu", tex_create, tex_update, tex_destroy, frame_begin, clip, quad, frame_end
+    "sceGu", tex_create, tex_update, tex_destroy, frame_begin, clip, quad, frame_end, view_list
 };
 
 const GfxBackend *gfx_gu_init(void)

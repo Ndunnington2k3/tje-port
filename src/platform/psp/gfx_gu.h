@@ -7,4 +7,6 @@ const GfxBackend *gfx_gu_init(void);
 void gfx_gu_vsync(int on);
 /* Show the frame just drawn (after the vertical blank when vsync is on). */
 void gfx_gu_show(void);
+/* (tests) the frame just drawn, 512 pixels a row, 0xAABBGGRR, before gfx_gu_show */
+const uint32_t *gfx_gu_drawn(void);
 #endif

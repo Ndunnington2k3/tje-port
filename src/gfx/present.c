@@ -1,6 +1,7 @@
 #include "gfx/present.h"
 #include "gfx/view.h"
 
+#include "gfx/viewlist.h"
 #include <stddef.h>
 
 static const GfxBackend *gfx;
@@ -18,6 +19,10 @@ static Target targets[PRESENT_TARGETS] = {
     {NULL, 0, 0, VIEW_BASE_W, VIEW_BASE_H, 0, VIEW_BASE_W, VIEW_BASE_H},
 };
 static Target *t = &targets[0];
+static const ViewList *list;   /* this frame's view as a list, or NULL */
+
+void present_set_list(const ViewList *vl) { list = vl; }
+int present_has_lists(void) { return gfx && gfx->view_list; }
 
 void present_select(int target)
 {
@@ -44,7 +49,7 @@ void present_shutdown(void)
 
 void present_set_frame(const uint32_t *pixels, int width, int height, int pitch)
 {
-    if (!gfx) return;
+    if (!gfx || !pixels) return;   /* (NULL: the frame is a list, present_set_list) */
     if (!t->frame_tex || width > t->tex_w || height > t->tex_h) {
         if (t->frame_tex) gfx->tex_destroy(t->frame_tex);
         t->tex_w = width > VIEW_BASE_W ? width : VIEW_BASE_W;
@@ -66,7 +71,11 @@ void present_draw(int win_w, int win_h)
     t->wanted_w = e.view_w;
     t->wanted_h = e.view_h;
     gfx->frame_begin(win_w, win_h);
-    if (t->have_frame && t->frame_tex) {
+    if (list && gfx->view_list) {
+        /* (the view at its own size, centred: drawn 1:1) */
+        gfx->view_list(list, (win_w - list->w) / 2, (win_h - list->h) / 2);
+        list = NULL;
+    } else if (t->have_frame && t->frame_tex) {
         if (t->frame_w == VIEW_BASE_W && t->frame_h == VIEW_BASE_H) {
             /* drawn the original way (menus etc.), or a 256-wide picture (the
              * Genesis' narrow mode), which fills the same area, as on a television */

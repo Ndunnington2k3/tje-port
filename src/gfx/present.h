@@ -23,6 +23,13 @@ void present_shutdown(void);
 /* Hand over the frame the video model made (0x00RRGGBB pixels). */
 void present_set_frame(const uint32_t *pixels, int width, int height, int pitch);
 
+/* This frame is a gameplay view given as a list (gfx/viewlist.h; only with a
+ * backend that has view_list): drawn by present_draw instead of the frame. */
+struct ViewList;
+void present_set_list(const struct ViewList *vl);
+/* Does the drawing backend draw lists? */
+int present_has_lists(void);
+
 /* Draw the latest frame into a target of win_w x win_h pixels (between the
  * backend's frame_begin and frame_end). Can be called again without a new
  * frame, e.g. while the window is being resized. */

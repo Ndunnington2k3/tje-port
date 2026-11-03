@@ -162,9 +162,20 @@ uint32_t vdp_palette_rgb(int i)
 }
 
 uint8_t vdp_tile_dirty[2048];
+uint8_t vdp_tile_dirty_gpu[2048];
 int vdp_stats_on;
 
-void vdp_tiles_all_dirty(void) { memset(vdp_tile_dirty, 1, sizeof vdp_tile_dirty); }
+void vdp_tiles_all_dirty(void)
+{
+    memset(vdp_tile_dirty, 1, sizeof vdp_tile_dirty);
+    memset(vdp_tile_dirty_gpu, 1, sizeof vdp_tile_dirty_gpu);
+}
+
+void vdp_tile_written(uint32_t a)
+{
+    vdp_tile_dirty[(a & 0xFFFF) >> 5] = 1;
+    vdp_tile_dirty_gpu[(a & 0xFFFF) >> 5] = 1;
+}
 
 static void stat_write(uint32_t a)
 {
@@ -172,6 +183,7 @@ static void stat_write(uint32_t a)
     uint32_t sat = (uint32_t)(vdp_reg[5] & 0x7F) << 9;
     a &= 0xFFFF;
     vdp_tile_dirty[a >> 5] = 1;   /* (decoded copies of this tile, e.g. gameview's, are stale) */
+    vdp_tile_dirty_gpu[a >> 5] = 1;
     if (!vdp_stats_on) return;
     if (a >= sat && a < sat + 0x280) st_writes[3]++;
     else if (a >= pa && a < pa + 0x2000) st_writes[1]++;
