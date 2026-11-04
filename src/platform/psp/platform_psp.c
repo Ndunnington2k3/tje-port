@@ -18,6 +18,7 @@
 #include "core/prof.h"
 
 #include <pspkernel.h>
+#include <pspiofilemgr.h>
 #include <pspctrl.h>
 #include <pspaudio.h>
 #include <psppower.h>
@@ -25,6 +26,7 @@
 #include <pspdebug.h>
 #include <pspdisplay.h>
 #include <pspgu.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -255,12 +257,43 @@ void plat_pacing(int by_clock, int adjust_us)
 
 /* (perf.log next to EBOOT.PBP, while a file perf.on is there: where each second's
  * time went - the game, drawing, waiting - for tuning on the real thing) */
-static FILE *perf_log;
-static int perf_checked;
+/* (The log is written in short appends, each file opened and closed again: the
+ * Memory Stick only records a file's length when it is closed, and quitting with
+ * Home closes nothing - an open log comes back empty. The time a write takes is
+ * left out of the figures.) */
+static int perf_on = -1;
+static char perf_path[300];
+static char perf_text[2048];
+static int perf_len;
 static uint64_t perf_last, perf_game, perf_draw, perf_wait;
 static unsigned perf_frames;
-
+static uint32_t perf_write_us;   /* (the last write, charged to "present" by the profiler) */
 static int perf_lists;
+
+static void perf_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void perf_printf(const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+    if (perf_len >= (int)sizeof perf_text - 1) return;
+    va_start(ap, fmt);
+    n = vsnprintf(perf_text + perf_len, sizeof perf_text - (size_t)perf_len, fmt, ap);
+    va_end(ap);
+    if (n > 0) perf_len += n;
+    if (perf_len > (int)sizeof perf_text - 1) perf_len = (int)sizeof perf_text - 1;
+}
+
+static void perf_write(void)
+{
+    uint32_t t0 = sceKernelGetSystemTimeLow();
+    SceUID fd = sceIoOpen(perf_path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+    if (fd >= 0) {
+        sceIoWrite(fd, perf_text, (SceSize)perf_len);
+        sceIoClose(fd);
+    }
+    perf_len = 0;
+    perf_write_us = sceKernelGetSystemTimeLow() - t0;
+}
 
 /* (at the top of perf.log: the clocks, the sound setting, and a few fixed loops
  * timed - how fast this PSP runs plain code and memory, against PPSSPP's numbers) */
@@ -270,67 +303,75 @@ static uint8_t bench_mem[1 << 20] __attribute__((aligned(64)));
 static void perf_header(void)
 {
     uint32_t t0, x = 1, i, j;
-    fprintf(perf_log, "cpu %d MHz, bus %d MHz; music chip %d\n", scePowerGetCpuClockFrequencyInt(),
-            scePowerGetBusClockFrequencyInt(), g_options.fm_sound);
+    perf_printf("cpu %d MHz, bus %d MHz; music chip %d\n", scePowerGetCpuClockFrequencyInt(),
+                scePowerGetBusClockFrequencyInt(), g_options.fm_sound);
+    perf_write();
     t0 = sceKernelGetSystemTimeLow();
     for (i = 0; i < 20000000u; i++) x = x * 1103515245u + 12345u;
     bench_sink = x;
-    fprintf(perf_log, "bench: 20M multiply-adds %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
+    perf_printf("bench: 20M multiply-adds %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
     t0 = sceKernelGetSystemTimeLow();
     for (j = 0; j < 200; j++)
         for (i = 0; i < 8192; i += 4) x += *(volatile uint32_t *)(bench_mem + i);
     bench_sink = x;
-    fprintf(perf_log, "bench: 8 KB read 200 times (cached) %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
+    perf_printf("bench: 8 KB read 200 times (cached) %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
     t0 = sceKernelGetSystemTimeLow();
     for (j = 0; j < 16; j++)
         for (i = 0; i < sizeof bench_mem; i += 64) x += *(volatile uint32_t *)(bench_mem + ((i * 97) & (sizeof bench_mem - 64)));
     bench_sink = x;
-    fprintf(perf_log, "bench: 256K cache misses %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
+    perf_printf("bench: 256K cache misses %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
     t0 = sceKernelGetSystemTimeLow();
     for (j = 0; j < 16; j++) memcpy(bench_mem + (512 << 10), bench_mem, 512 << 10);
-    fprintf(perf_log, "bench: 8 MB memcpy %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
-    fflush(perf_log);
+    perf_printf("bench: 8 MB memcpy %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
+    perf_write();
 }
 
 static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
 {
-    if (!perf_checked) {
+    if (perf_on < 0) {
         char path[300];
         FILE *on;
-        perf_checked = 1;
         snprintf(path, sizeof path, "%sperf.on", data_dir);
         on = fopen(path, "r");
+        perf_on = on != NULL;
         if (on) {
             fclose(on);
-            snprintf(path, sizeof path, "%sperf.log", data_dir);
-            perf_log = fopen(path, "w");
+            snprintf(perf_path, sizeof perf_path, "%sperf.log", data_dir);
+            sceIoRemove(perf_path);
         }
     }
-    if (!perf_log) return;
-    if (!perf_last) perf_header();
-    if (perf_last) perf_game += t_start - perf_last;
+    if (!perf_on) return;
+    if (!perf_last) {
+        perf_header();
+        perf_last = sceKernelGetSystemTimeWide();
+        return;
+    }
+    perf_game += t_start - perf_last;
     perf_draw += t_drawn - t_start;
     perf_wait += t_end - t_drawn;
     perf_last = t_end;
     if (++perf_frames == 60) {
-        fprintf(perf_log, "60 frames: game %.2f ms, draw %.2f, wait %.2f (a frame: 16.68)%s\n",
-                perf_game / 60000.0, perf_draw / 60000.0, perf_wait / 60000.0, perf_lists ? " [GE gameplay]" : "");
+        static unsigned seconds;
+        perf_printf("%4u s: game %.2f ms, draw %.2f, wait %.2f (a frame: 16.68)%s\n", ++seconds,
+                    perf_game / 60000.0, perf_draw / 60000.0, perf_wait / 60000.0, perf_lists ? " [GE gameplay]" : "");
 #ifdef TJE_PROF
         {
             static const char *names[PROF_N] = {"68k", "vdp lines", "z80", "fm", "sound other", "view", "present", "hooks"};
             int k;
-            fprintf(perf_log, "   ");
+            prof_us[PROF_PRESENT] -= prof_us[PROF_PRESENT] > perf_write_us ? perf_write_us : prof_us[PROF_PRESENT];
+            perf_printf("   ");
             for (k = 0; k < PROF_N; k++) {
-                fprintf(perf_log, " %s %.2f", names[k], prof_us[k] / 60000.0);
+                perf_printf(" %s %.2f", names[k], prof_us[k] / 60000.0);
                 prof_us[k] = 0;
             }
-            fprintf(perf_log, "\n");
+            perf_printf("\n");
         }
 #endif
         perf_lists = 0;
-        fflush(perf_log);
         perf_frames = 0;
         perf_game = perf_draw = perf_wait = 0;
+        perf_write();
+        perf_last = sceKernelGetSystemTimeWide();   /* (the write left out) */
     }
 }
 
