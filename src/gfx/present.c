@@ -23,6 +23,7 @@ static const ViewList *list;   /* this frame's view as a list, or NULL */
 
 void present_set_list(const ViewList *vl) { list = vl; }
 int present_has_lists(void) { return gfx && gfx->view_list; }
+void present_gpu_idle(void) { if (gfx && gfx->idle) gfx->idle(); }
 
 void present_select(int target)
 {
@@ -50,6 +51,7 @@ void present_shutdown(void)
 void present_set_frame(const uint32_t *pixels, int width, int height, int pitch)
 {
     if (!gfx || !pixels) return;   /* (NULL: the frame is a list, present_set_list) */
+    present_gpu_idle();            /* (the texture may still be being read) */
     if (!t->frame_tex || width > t->tex_w || height > t->tex_h) {
         if (t->frame_tex) gfx->tex_destroy(t->frame_tex);
         t->tex_w = width > VIEW_BASE_W ? width : VIEW_BASE_W;

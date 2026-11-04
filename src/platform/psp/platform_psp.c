@@ -414,12 +414,15 @@ static void list_check(void)
 
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
-    uint64_t t_start = sceKernelGetSystemTimeWide(), t_drawn;
+    /* the frame before (the GE drew it while this one ran) is shown first; this
+     * one is then given to the GE, to be shown next time */
+    uint64_t t_start = sceKernelGetSystemTimeWide(), t_shown, t_given;
+    gfx_gu_show();
+    t_shown = sceKernelGetSystemTimeWide();
     present_set_frame(pixels, width, height, pitch);
     present_draw(SCR_W, SCR_H);
-    t_drawn = sceKernelGetSystemTimeWide();
+    t_given = sceKernelGetSystemTimeWide();
     if (!pixels) { list_check(); perf_lists = 1; }
-    gfx_gu_show();
     if (clock_pacing) {
         /* (network play: by the clock, plat_pacing) */
         uint64_t now = sceKernelGetSystemTimeWide();
@@ -427,7 +430,9 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         if (now > next_us + 67000 || next_us > now + 67000) next_us = now;
         else if (next_us > now) sceKernelDelayThread((SceUInt)(next_us - now));
     }
-    perf_end(t_start, t_drawn, sceKernelGetSystemTimeWide());
+    /* ("draw": giving the GE this frame; "wait": for the GE and the vertical blank) */
+    t_shown = t_start + (t_given - t_shown);
+    perf_end(t_start, t_shown, sceKernelGetSystemTimeWide());
     {
         static unsigned n;
         if (++n % 300 == 0) printf("tje: %u frames, %u ms\n", n, plat_ms());

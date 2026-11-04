@@ -38,6 +38,10 @@ typedef struct GfxBackend {
     /* Optional (NULL: not offered): draw a gameplay view given as a list
      * (gfx/viewlist.h) at (x, y) of the target, between frame_begin and frame_end. */
     void (*view_list)(const struct ViewList *vl, int x, int y);
+    /* optional: wait until the GPU has finished with everything it was given
+     * (a GPU that draws while the next frame runs reads the view list's pieces
+     * and textures meanwhile: they are not to be changed before this) */
+    void (*idle)(void);
 } GfxBackend;
 
 #endif

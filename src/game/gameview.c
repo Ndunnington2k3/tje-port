@@ -1246,12 +1246,35 @@ static void hash_blocks(uint32_t (*src)[320])
 
 /* Returns 0 if the screen has neither a border nor a repeating pattern: it is
  * then shown at its original size. */
+/* (the picture around the original screen is kept from the frame before while
+ * the screen's background is the same - the inside is copied each frame; on a
+ * PSP working it all out again is several frames' worth of time) */
+static int ext_valid;            /* the picture's outside is that of ext_sig */
+static uint32_t ext_sig;
+
+static void copy_inside(void)
+{
+    const uint32_t *vfb = vdp_framebuffer();
+    int y, x0 = off_x < 0 ? -off_x : 0, x1 = 320, n;
+    if (x1 + off_x > pic_w) x1 = pic_w - off_x;
+    n = x1 - x0;
+    if (n <= 0) return;
+    for (y = 0; y < VDP_HEIGHT; y++) {
+        int r = y + off_y;
+        if (r < 0 || r >= pic_h) continue;
+        memcpy(picture + (size_t)r * GAMEVIEW_MAX_W + x0 + off_x, vfb + (size_t)y * VDP_FB_PITCH + x0, sizeof(uint32_t) * (size_t)n);
+    }
+}
+
 static int build_extended_screen(void)
 {
     const uint32_t *vfb = vdp_framebuffer();
     uint32_t (*fill)[320] = bg_pic;
     int b, px = 0, py = 0, x, y, pl;
+    uint32_t sig;
     if (map_mode) {
+        sig = 0x4D415055u ^ (uint32_t)pic_w * 31u ^ (uint32_t)pic_h * 7919u;
+        if (ext_valid && ext_sig == sig) { copy_inside(); return 1; }
         /* the map during play: the menus' starry sky around it */
         for (y = 0; y < pic_h; y++) {
             int ry = y - off_y;
@@ -1259,12 +1282,21 @@ static int build_extended_screen(void)
             for (x = 0; x < pic_w; x++) {
                 int rx = x - off_x;
                 if (rx >= 0 && rx < 320 && ry >= 0 && ry < VDP_HEIGHT) o[x] = vfb[(size_t)ry * VDP_FB_PITCH + (size_t)rx];
-                else o[x] = star_pic[((ry % 256) + 256) % 256][((rx % 512) + 512) % 512];
+                else o[x] = star_pic[ry & 255][rx & 511];
             }
         }
+        ext_valid = 1;
+        ext_sig = sig;
         return 1;
     }
     hash_blocks(bg_pic);
+    {
+        int bx, by;
+        sig = 2166136261u ^ (uint32_t)pic_w * 31u ^ (uint32_t)pic_h * 7919u;
+        for (by = 0; by < BH; by++)
+            for (bx = 0; bx < BW; bx++) sig = (sig ^ blocks[by][bx]) * 16777619u;
+        if (ext_valid && ext_sig == sig) { copy_inside(); return 1; }
+    }
     b = find_border();
     if (!b) {
         /* a repeating pattern: the whole picture, or one plane behind things on the
@@ -1277,8 +1309,10 @@ static int build_extended_screen(void)
             py = find_period(1);
             if (px && py) fill = plane_pic[pl];
         }
-        if (!(px && py)) return 0;
+        if (!(px && py)) { ext_valid = 0; return 0; }
     }
+    ext_valid = 1;
+    ext_sig = sig;
     for (y = 0; y < pic_h; y++) {
         int ry = y - off_y;
         uint32_t *o = picture + (size_t)y * GAMEVIEW_MAX_W;
@@ -1352,7 +1386,7 @@ void gameview_line(int line)
         return;
     }
     if (line == 0) {
-        int w, h;
+        int w, h, prev_ext = frame_ok == 3;
         display_on_at_top = (vdp_reg[1] & 0x40) != 0;
         g_gv_win_top_seen = 0;
         half_window_lines[0] = half_window_lines[1] = 0;
@@ -1418,6 +1452,7 @@ void gameview_line(int line)
             pic_h = want_h;
             off_x = (pic_w - 320) / 2;
             off_y = (pic_h - VDP_HEIGHT) / 2;
+            if (!prev_ext) ext_valid = 0;   /* (only kept between such frames) */
             frame_ok = 3;
             bg_line(0);
             return;
@@ -2150,6 +2185,7 @@ static void build_view_list(ViewList *vl, int player, int cam_x, int cam_y, int 
 static void vl_begin(ViewList *vl, int w, int h)
 {
     int x;
+    present_gpu_idle();   /* (the GPU may still be drawing the last list from the pieces) */
     vl_pool_used = 0;
     vl->w = w;
     vl->h = h;

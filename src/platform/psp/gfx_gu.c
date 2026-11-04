@@ -27,6 +27,7 @@ struct GfxTex {
 static unsigned int __attribute__((aligned(64))) list[192 * 1024];   /* (a view list: ~5000 sprites) */
 static int vsync = 1;
 
+static void gpu_idle(void);
 static int pow2(int v) { int p = 8; while (p < v) p <<= 1; return p; }
 
 static GfxTex *tex_create(int w, int h)
@@ -70,6 +71,7 @@ static void tex_destroy(GfxTex *t)
 static void frame_begin(int w, int h)
 {
     (void)w; (void)h;
+    gpu_idle();
     sceGuStart(GU_DIRECT, list);
     sceGuScissor(0, 0, SCR_W, SCR_H);
     sceGuClearColor(0xFF000000);
@@ -115,23 +117,40 @@ static void quad(GfxTex *t, int sx, int sy, int sw, int sh, int dx, int dy, int 
     }
 }
 
+/* The GE draws a frame while the CPU runs the next one: frame_end only starts
+ * it; the next frame waits for it (gpu_idle) before changing anything it reads
+ * (the list, textures, pieces) and shows it (gfx_gu_show). */
+static int gpu_busy, frame_waiting;
+
+static void gpu_idle(void)
+{
+    if (!gpu_busy) return;
+    sceGuSync(0, 0);
+    gpu_busy = 0;
+}
+
 static void frame_end(void)
 {
     sceGuFinish();
-    sceGuSync(0, 0);
+    gpu_busy = 1;
+    frame_waiting = 1;
 }
 
 static void *draw_buf = (void *)0;   /* (offset in VRAM of the buffer being drawn) */
 
 void gfx_gu_show(void)
 {
+    gpu_idle();
+    if (!frame_waiting) return;
     if (vsync) sceDisplayWaitVblankStart();
     draw_buf = sceGuSwapBuffers();
+    frame_waiting = 0;
 }
 
 const uint32_t *gfx_gu_drawn(void)
 {
     /* (the buffer just drawn, before gfx_gu_show: uncached VRAM) */
+    gpu_idle();
     return (const uint32_t *)(0x44000000u + (uint32_t)draw_buf);
 }
 
@@ -300,7 +319,7 @@ static void view_list(const ViewList *vl, int x, int y)
 }
 
 static const GfxBackend backend = {
-    "sceGu", tex_create, tex_update, tex_destroy, frame_begin, clip, quad, frame_end, view_list
+    "sceGu", tex_create, tex_update, tex_destroy, frame_begin, clip, quad, frame_end, view_list, gpu_idle
 };
 
 const GfxBackend *gfx_gu_init(void)

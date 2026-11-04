@@ -29,6 +29,8 @@ struct ViewList;
 void present_set_list(const struct ViewList *vl);
 /* Does the drawing backend draw lists? */
 int present_has_lists(void);
+/* Wait for the GPU to finish with what it was given (before changing a view list's pieces). */
+void present_gpu_idle(void);
 
 /* Draw the latest frame into a target of win_w x win_h pixels (between the
  * backend's frame_begin and frame_end). Can be called again without a new
