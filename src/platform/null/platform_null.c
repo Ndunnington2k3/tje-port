@@ -202,6 +202,11 @@ int plat_init(int argc, char **argv)
             /* each player's own picture as well, views of WxH game pixels; --shot
              * also saves them (path.p1.ppm, path.p2.ppm) */
             if (sscanf(argv[++i], "%dx%d", &tw_w, &tw_h) == 2) g_gv_windows = 1;
+            if (getenv("TJE_AS_NET_PLAYER")) {   /* (profiling: player 1's window drawn as lists, as on the PSP) */
+                extern int g_gv_net_player, g_gv_use_list;
+                g_gv_net_player = 0;
+                g_gv_use_list = 1;
+            }
         } else if (!strcmp(argv[i], "--random") && i + 1 < argc) {
             random_seed = (unsigned)atoi(argv[++i]) * 2654435761u + 1;
         } else if (argv[i][0] != '-') rom_path = argv[i];

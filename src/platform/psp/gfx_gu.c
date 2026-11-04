@@ -77,24 +77,22 @@ static void tex_destroy(GfxTex *t)
 #define NBUF 3
 static const unsigned buf_at[NBUF] = {0, BUF_W * SCR_H * 4, 2 * BUF_W * SCR_H * 4};
 static int draw_i;                          /* the buffer being drawn */
-static int shown_i = -1, shown_vc, prev_i = -1, prev_vc;   /* the last two given to the display, and when */
+static int disp_i = 1;                      /* the one on the screen */
+static int pend_i = -1, pend_vc;            /* the one given to be shown at the next blank, and when */
 
-static int displayed(void)
+static void displayed_now(void)
 {
-    /* (a buffer given at Vcount v is on the screen from the blank making it v + 1) */
-    int vc = (int)sceDisplayGetVcount();
-    if (shown_i < 0 || shown_vc < vc) return shown_i;
-    return prev_i;
+    /* (a buffer given at Vcount v is on the screen from the blank making it
+     * v + 1; another given before then took its place) */
+    if (pend_i >= 0 && (int)sceDisplayGetVcount() != pend_vc) { disp_i = pend_i; pend_i = -1; }
 }
 
 static void pick_draw(void)
 {
-    int i, d = displayed();
+    int i;
+    displayed_now();
     for (i = 0; i < NBUF; i++)
-        if (i != shown_i && i != d) { draw_i = i; return; }
-    /* (three given in one blank: the one on the screen is the only one free) */
-    sceDisplayWaitVblankStart();
-    draw_i = (shown_i + 1) % NBUF;
+        if (i != disp_i && i != pend_i) { draw_i = i; return; }
 }
 
 static void frame_begin(int w, int h)
@@ -172,19 +170,21 @@ void gfx_gu_show(void)
 {
     gpu_idle();
     if (!frame_waiting) return;
-    prev_i = shown_i;
-    prev_vc = shown_vc;
+    displayed_now();
     if (vsync) {
         sceDisplayWaitVblankStart();
         sceDisplaySetFrameBuf((uint8_t *)sceGeEdramGetAddr() + buf_at[draw_i], BUF_W, PSP_DISPLAY_PIXEL_FORMAT_8888,
                               PSP_DISPLAY_SETBUF_IMMEDIATE);
-        shown_vc = (int)sceDisplayGetVcount() - 1;   /* (on the screen already) */
+        disp_i = draw_i;   /* (on the screen already) */
+        pend_i = -1;
     } else {
         sceDisplaySetFrameBuf((uint8_t *)sceGeEdramGetAddr() + buf_at[draw_i], BUF_W, PSP_DISPLAY_PIXEL_FORMAT_8888,
                               PSP_DISPLAY_SETBUF_NEXTFRAME);
-        shown_vc = (int)sceDisplayGetVcount();
+        /* (counted from after the call: a blank during it may or may not have
+         * taken it - taken as not, the one on the screen kept safe) */
+        pend_vc = (int)sceDisplayGetVcount();
+        pend_i = draw_i;
     }
-    shown_i = draw_i;
     frame_waiting = 0;
 }
 
@@ -507,8 +507,8 @@ const GfxBackend *gfx_gu_init(void)
     sceGuDisplay(GU_TRUE);
     sceDisplaySetFrameBuf((uint8_t *)sceGeEdramGetAddr() + buf_at[1], BUF_W, PSP_DISPLAY_PIXEL_FORMAT_8888,
                           PSP_DISPLAY_SETBUF_IMMEDIATE);
-    shown_i = 1;
-    shown_vc = (int)sceDisplayGetVcount() - 1;
+    disp_i = 1;
+    pend_i = -1;
     return &backend;
 }
 

@@ -109,3 +109,4 @@ static void restored(void)
 }
 
 __attribute__((constructor)) static void sound_hooks_init(void) { snd_restored_hook = restored; }
+

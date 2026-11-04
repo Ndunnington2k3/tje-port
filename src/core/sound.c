@@ -11,6 +11,8 @@
 #include "ser.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* Clocks (master M = 53.69 MHz; 68000 = M/7):
  *   FM chip: input M/7, internal cycle M/42 -> 1/6 per 68k cycle; 24 per sample (53,267 Hz)
@@ -304,6 +306,7 @@ static uint32_t z80_now68(void)
 
 #ifdef TJE_DAC_TRACE
 #include <stdio.h>
+#include <stdlib.h>
 static uint32_t tr_first, tr_last, tr_reads, tr_dac, tr_t0, tr_tlast, tr_match;
 static uint8_t tr_lastrom;
 static int tr_on;
@@ -366,6 +369,7 @@ static int z80_running(void) { return !z80_busreq && !z80_reset_line; }
 
 #ifdef TJE_Z80_STATS
 #include <stdio.h>
+#include <stdlib.h>
 static unsigned long z80_steps, z80_halt_steps;
 __attribute__((destructor)) static void z80_report(void) { fprintf(stderr, "z80 steps %lu, halted %lu\n", z80_steps, z80_halt_steps); }
 #endif
@@ -402,6 +406,7 @@ static void z80_sync(uint32_t to)
             voice_len = (uint32_t)z80_ram[0x48] | ((uint32_t)z80_ram[0x49] << 8);
             voice_pos = 0;
             voice_on = voice_len > 0;
+            if (getenv("TJE_VOICE_LOG")) fprintf(stderr, "voice %06X len %u\n", (unsigned)voice_addr, (unsigned)voice_len);
             z80_ram[0x40] = 0;
             z80_ram[0x41] = 0;
             cpu.pc = 0x0097;

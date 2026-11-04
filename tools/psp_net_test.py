@@ -52,6 +52,7 @@ def main():
     ap.add_argument('--loss', type=int, default=0)
     ap.add_argument('--delay', type=int, default=0)
     ap.add_argument('--vlcheck', action='store_true', help='each GE picture compared with the list drawn in software')
+    ap.add_argument('--perf', action='store_true', help='perf.log on both (where the time goes)')
     a = ap.parse_args()
 
     os.makedirs(a.dir, exist_ok=True)
@@ -69,7 +70,9 @@ def main():
             open(os.path.join(game, 'vlcheck.on'), 'w').close()
         elif os.path.exists(os.path.join(game, 'vlcheck.on')):
             os.remove(os.path.join(game, 'vlcheck.on'))
-        for old in ('net.hash',):
+        if a.perf:
+            open(os.path.join(game, 'perf.on'), 'w').close()
+        for old in ('net.hash', 'perf.log'):
             if os.path.exists(os.path.join(game, old)):
                 os.remove(os.path.join(game, old))
         script = [(t + SHIFT, m) for t, m in script] + wander(40 + SHIFT, a.seconds - 1, n)

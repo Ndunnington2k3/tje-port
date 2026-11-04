@@ -1485,6 +1485,7 @@ extern int g_gv_use_list;
 static int vl_check_on(void);
 
 static void gameview_line_frame(int line);
+static int wants_vdp_line_(int line);
 void gameview_line(int line)
 {
     gameview_line_frame(line);
@@ -1626,7 +1627,9 @@ static void gameview_line_frame(int line)
     if (line < VDP_HEIGHT) line_window[line] = (uint8_t)(in_window ? 1 + ((vdp_reg[18] & 0x80) != 0) : 0);
     if ((in_window || nregions == 2 || g_gv_windows) && line < VDP_HEIGHT) {
         /* (split and two windows: every line, for held halves, menus and the bar) */
-        if (nregions == 2 || g_gv_windows || !(vdp_reg[18] & 0x80))
+        /* (two windows: only the lines the VDP draws - the others are not its
+         * picture and nothing here reads them) */
+        if ((nregions == 2 || g_gv_windows || !(vdp_reg[18] & 0x80)) && !(g_gv_windows && !wants_vdp_line_(line)))
             memcpy(top_window_lines[line], vdp_framebuffer() + (size_t)line * VDP_FB_PITCH, sizeof top_window_lines[0]);
     }
 }
@@ -4217,6 +4220,10 @@ int g_gv_need_vdp;   /* (tests comparing with the VDP's picture) */
 
 static int wants_vdp_line(int line)
 {
+    return wants_vdp_line_(line);
+}
+static int wants_vdp_line_(int line)
+{
     int wv, in_window;
     if (screen_list_frame && !vl_check_on() && line != 0 && !g_gv_need_vdp) return 0;   /* (drawn from a list) */
     if (g_gv_need_vdp || line == 0 || frame_ok != 1) return 1;
@@ -4232,6 +4239,12 @@ static int wants_vdp_line(int line)
         extern int g_in_game;
         if (!g_in_game) return 1;
         if (alone_riding()) return 1;
+        /* (each window draws its own view and status bar - from game memory: of
+         * the VDP's picture only a menu over a player's half and the present list
+         * from the top are shown) */
+        wv = (vdp_reg[18] & 0x1F) * 8;
+        in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;
+        return in_window && (!(vdp_reg[18] & 0x80) || rd8(MENU_FLAG(0)) || rd8(MENU_FLAG(1)));
     }
     wv = (vdp_reg[18] & 0x1F) * 8;
     in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;

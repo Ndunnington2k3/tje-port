@@ -67,6 +67,7 @@ static int callback_thread(SceSize args, void *argp)
 
 #define AUDIO_CHUNK 1024                 /* stereo frames per output block (21 ms) */
 #define RING        (AUDIO_CHUNK * 8)
+#define AUDIO_KEEP  2048                 /* the game's sound kept ahead (43 ms) */
 static int16_t ring[RING * 2];
 static volatile unsigned ring_r, ring_w;  /* in stereo frames, wrapping */
 static int audio_on = 1;
@@ -89,14 +90,33 @@ static int audio_thread(SceSize args, void *argp)
         int need = (int)((frac + (OUT_N - 1) * step) >> 16) + 2, get = need - have, i, from = have;
         uint32_t adv;
         if (get > 0) {
-            /* the game's sound (what there is of it) and the music over it */
-            int avail = (int)(ring_w - ring_r), take = avail < get ? avail : get;
+            /* the game's sound and the music over it. The game's is kept about
+             * AUDIO_KEEP frames ahead (it comes a frame at a time, this takes it
+             * in blocks): when it runs out (a slow frame), this waits for that much
+             * again rather than playing it in pieces; the frames a second of the
+             * game and of the output differ a hair - a frame now and then is left
+             * out or said twice to stay there */
+            static int priming = 1;
+            int avail = (int)(ring_w - ring_r), take, skip = 0;
+            if (priming && avail >= AUDIO_KEEP) priming = 0;
+            if (priming) take = 0;
+            else if (avail < get) { take = avail; priming = 1; }
+            else {
+                take = get;
+                if (avail > AUDIO_KEEP + 512 && avail > get + 1) skip = 1;
+                else if (avail < AUDIO_KEEP - 512) take = get - 1;
+            }
             for (i = 0; i < take; i++) {
                 unsigned k = (ring_r + (unsigned)i) % RING;
                 in[(from + i) * 2] = ring[k * 2];
                 in[(from + i) * 2 + 1] = ring[k * 2 + 1];
             }
-            ring_r += (unsigned)take;
+            ring_r += (unsigned)(take + skip);
+            if (take == get - 1 && take > 0) {
+                in[(from + take) * 2] = in[(from + take - 1) * 2];
+                in[(from + take) * 2 + 1] = in[(from + take - 1) * 2 + 1];
+                take++;
+            }
             memset(in + (from + take) * 2, 0, (size_t)(get - take) * 4);
             if (snd_native()) music_mix(in + from * 2, get);
             have = need;

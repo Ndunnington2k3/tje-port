@@ -30,6 +30,9 @@ static char dir[256] = "music/", sfx_dir[256] = "sfx/";
 static volatile int req_song = -1, req_seq;   /* (written by the game) */
 static volatile int paused;
 static int ticks, idle_frames;
+/* (the engine's frames since the song was asked for: the title's song is kept
+ * with the game - its sounds go with the intro's pictures) */
+static volatile uint32_t song_ticks;
 
 static volatile int dir_gen;
 void music_set_dir(const char *d)
@@ -49,15 +52,16 @@ void music_set_dir(const char *d)
 
 void music_song(int song)
 {
-    if (getenv("TJE_MUSIC_LOG")) fprintf(stderr, "music: song %d\n", song);
+    if (getenv("TJE_MUSIC_LOG")) { extern uint32_t g_frame; fprintf(stderr, "music: song %d at frame %u\n", song, (unsigned)g_frame); }
     req_song = song;
+    song_ticks = 0;
     req_seq++;
     paused = 0;
     idle_frames = 0;
     if (music_song_hook) music_song_hook(song);
 }
 
-void music_tick(void) { ticks++; }
+void music_tick(void) { ticks++; song_ticks++; }
 
 /* ---- the engine's FM sound effects: sfx/NN.wav, loaded when first played ---- */
 #define SFX_MAX 32
@@ -65,6 +69,7 @@ static volatile int sfx_req = -1, sfx_seq;
 void music_sfx(int id)
 {
     if (id < 0 || id >= SFX_MAX) return;   /* (0: the effect stopped) */
+    if (getenv("TJE_MUSIC_LOG")) { extern uint32_t g_frame; fprintf(stderr, "music: effect %d at frame %u\n", id, (unsigned)g_frame); }
     sfx_req = id;
     sfx_seq++;
 }
@@ -100,6 +105,21 @@ static void close_song(void)
     f = MF_NONE;
 }
 
+static int cur_song = -1, chained = -1;   /* (the reader's song; the one it went on to by itself) */
+static uint32_t chained_at;               /* (ring_w then) */
+static volatile uint32_t ring_w;
+
+/* The song the game starts when one ends, as the engine does (the levels' themes
+ * take turns with their second parts, n and n + 7): played straight on when the
+ * file ends before the game asks - a game running behind the music (a slow
+ * frame here and there) would otherwise leave a silence there. */
+static int song_after(int song)
+{
+    if (song >= 1 && song <= 5) return song + 7;
+    if (song >= 8 && song <= 12) return song - 7;
+    return -1;
+}
+
 static void open_song(int song)
 {
     char path[300];
@@ -107,6 +127,7 @@ static void open_song(int song)
     long at = 12;
     int have_fmt = 0, have_loop = 0, bits = 0;
     close_song();
+    cur_song = song;
     if (song < 0) return;
     snprintf(path, sizeof path, "%s%02d.wav", dir, song);
     f = mf_open(path);
@@ -169,7 +190,16 @@ static int next_frame(int16_t *lr)
         uint32_t end = loop_to ? loop_to : frames_total, want;
         int got;
         if (pos_frame >= end) {
-            if (!loop_to) { close_song(); return 0; }
+            if (!loop_to) {
+                int next = song_after(cur_song);
+                close_song();
+                if (next < 0) return 0;
+                open_song(next);
+                if (f == MF_NONE) return 0;
+                chained = next;
+                chained_at = ring_w;
+                return next_frame(lr);
+            }
             pos_frame = loop_from;
             mf_seek(f, data_at + (long)pos_frame * channels * 2);
         }
@@ -259,7 +289,7 @@ static void sfx_mix(int16_t *out, int frames)
  * itself. The reader owns the files, the mixer only the ring's read side. */
 #define RING_FRAMES 32768                     /* (0.68 s at 48 kHz) */
 static int16_t ring[RING_FRAMES * 2];
-static volatile uint32_t ring_w, ring_r, flush_to;
+static volatile uint32_t ring_r, flush_to;
 static volatile int ring_gen;
 int music_threaded;
 
@@ -270,8 +300,15 @@ int music_fill(void)
     static int sfx_gen = -1, sfx_next = SFX_MAX, song_gen = -1;
     /* (the folder changed: the song opened again from there) */
     if (song_gen != dir_gen) { song_gen = dir_gen; seq = req_seq - 1; }
+    if (seq != req_seq && req_song >= 0 && req_song == chained && f != MF_NONE &&
+        ring_w - chained_at < 48000u * 8u) {
+        /* (the song the file went on to by itself a moment ago: already playing) */
+        chained = -1;
+        seq = req_seq;
+    }
     if (seq != req_seq) {
         int want = req_seq;
+        chained = -1;
         open_song(req_song);
         if (f != MF_NONE) { next_frame(cur); next_frame(nxt); }
         flush_to = ring_w;
@@ -311,11 +348,16 @@ done:
 void music_mix(int16_t *out, int frames)
 {
     static int gen;
+    static uint32_t song_out;   /* (frames of the song played) */
     int i;
     if (!music_threaded) music_fill();
     sfx_mix(out, frames);
-    if (gen != ring_gen) { gen = ring_gen; ring_r = flush_to; }
-    if (paused || seq != req_seq) return;   /* (another song asked for: not the old one's rest while it opens) */
+    if (gen != ring_gen) { gen = ring_gen; ring_r = flush_to; song_out = 0; }
+    if (paused || seq != req_seq) return;
+    /* the title's song ahead of the game (its first frames are slow: starting
+     * up) by more than 0.15 s: it waits for the game */
+    if (req_song == 0 && song_out > song_ticks * 801u + 7200u) return;
+    song_out += (uint32_t)frames;   /* (another song asked for: not the old one's rest while it opens) */
     for (i = 0; i < frames && ring_r != ring_w; i++) {
         uint32_t k = ring_r % RING_FRAMES;
         int c;
