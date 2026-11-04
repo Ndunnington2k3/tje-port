@@ -267,19 +267,23 @@ int music_threaded;
 int music_fill(void)
 {
     int i, n, did = 0;
-    static int sfx_gen = -1;
-    if (sfx_gen != dir_gen) {
-        /* (the effects, all loaded here: the mixer can't wait for the Memory Stick) */
-        int id;
-        sfx_gen = dir_gen;
-        for (id = 1; id < SFX_MAX; id++) if (!sfx[id].pcm) sfx_load(id);
-    }
+    static int sfx_gen = -1, sfx_next = SFX_MAX, song_gen = -1;
+    /* (the folder changed: the song opened again from there) */
+    if (song_gen != dir_gen) { song_gen = dir_gen; seq = req_seq - 1; }
     if (seq != req_seq) {
         seq = req_seq;
         open_song(req_song);
         if (f != MF_NONE) { next_frame(cur); next_frame(nxt); }
         flush_to = ring_w;
         ring_gen++;
+        did = 1;
+    }
+    /* the effects, loaded here a few at a time once the song is going (the mixer
+     * can't wait for the Memory Stick) */
+    if (sfx_gen != dir_gen) { sfx_gen = dir_gen; sfx_next = 1; }
+    if (sfx_next < SFX_MAX && (f == MF_NONE || ring_w - ring_r > RING_FRAMES / 2)) {
+        int k;
+        for (k = 0; k < 4 && sfx_next < SFX_MAX; k++, sfx_next++) if (!sfx[sfx_next].pcm) sfx_load(sfx_next);
         did = 1;
     }
     if (f == MF_NONE) return did;

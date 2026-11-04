@@ -414,6 +414,19 @@ static void z80_sync(uint32_t to)
             if (enabled) ym_sync(z80_now68());
             voice_on = 0;
         }
+        /* The PSG effects' waits (LOC 018B: LD A,($40); OR A; JP NZ; DJNZ - 40
+         * T-states a turn, B turns): whole turns skipped the same way, the last one
+         * run (B 1: DJNZ falls through) */
+        if (cpu.pc == 0x018B && !cpu.iff1 && z80_ram[0x40] == 0 && cpu.b > 1) {
+            int32_t turns = z80_budget / (40 * 15);
+            if (turns > cpu.b - 1) turns = cpu.b - 1;
+            if (turns > 0) {
+                z80_budget -= turns * 40 * 15;
+                cpu.cyc += (unsigned long)turns * 40;
+                cpu.b = (uint8_t)(cpu.b - turns);
+                continue;
+            }
+        }
         if (cpu.pc == 0x0097 && !cpu.iff1 && z80_ram[0x40] != 1 && z80_ram[0x40] != 2) {
             int32_t turns = z80_budget / (57 * 15);
             if (turns > 0) {
