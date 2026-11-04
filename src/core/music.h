@@ -22,9 +22,15 @@
 void music_set_dir(const char *dir);       /* the folder holding NN.wav (default: "music/") */
 void music_song(int song);                 /* the game started song `song` (-1: none) */
 int music_current(void);                   /* the song last started (-1 none) */
+void music_sfx(int id);                    /* the engine started its FM sound effect id (sfx/NN.wav) */
 void music_tick(void);                     /* the music engine ran this frame */
 void music_frame(void);                    /* (once a frame: no engine for a while = paused) */
 void music_mix(int16_t *out, int frames);  /* add the music to 48 kHz stereo samples */
+/* The files are read ahead by music_fill: by music_mix itself, or - music_threaded
+ * set - by a thread of the platform's calling it now and then (returns 0 when there
+ * was nothing to do). */
+extern int music_threaded;
+int music_fill(void);
 
 /* (the recorder: told of each song started) */
 extern void (*music_song_hook)(int song);

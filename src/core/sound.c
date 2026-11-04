@@ -40,6 +40,7 @@ static int fm_core = SND_FM_ACCURATE, fm_div = 1;
 int snd_native(void) { return NATIVE; }
 int snd_music_external;
 void (*snd_restored_hook)(void);
+int snd_clean_chip;
 static void ym_replay(const uint8_t *regs);
 static void fm_reset(void)
 {
@@ -571,7 +572,7 @@ void snd_init(int on)
 {
     static int light_ready;
     enabled = on;
-    OPN2_SetChipType(ym3438_mode_ym2612);
+    OPN2_SetChipType(snd_clean_chip ? 0 : ym3438_mode_ym2612);
     if (!light_ready) {
         YM2612Init();
         YM2612Config(YM2612_DISCRETE);

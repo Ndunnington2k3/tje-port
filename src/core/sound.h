@@ -39,6 +39,9 @@ int snd_native(void);      /* the native sound is on */
 extern int snd_music_external;
 /* (called after a save state or snapshot is loaded: the music picks up the song) */
 extern void (*snd_restored_hook)(void);
+/* (Accurate FM: 1 = the YM3438, the later chip, without the YM2612's distortion of
+ * quiet sounds - the "ladder effect"; set before snd_init. The music recordings.) */
+extern int snd_clean_chip;
 
 /* 68000-side access to the sound hardware */
 uint32_t snd_z80_area_read(uint32_t a);          /* $A00000-$A0FFFF */

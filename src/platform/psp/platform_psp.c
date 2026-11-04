@@ -71,29 +71,60 @@ static int16_t ring[RING * 2];
 static volatile unsigned ring_r, ring_w;  /* in stereo frames, wrapping */
 static int audio_on = 1;
 
+/* The output: the PSP's own rate, 44.1 kHz, on a normal channel - the sound comes
+ * at 48 kHz (the game's and the music's) and is converted here, between each two
+ * samples (the SRC channel's own conversion was rough: a distorted sound). */
+#define OUT_N 1024
 static int audio_thread(SceSize args, void *argp)
 {
-    static int16_t block[AUDIO_CHUNK * 2];
+    static int16_t in[(OUT_N * 2 + 16) * 2], out[OUT_N * 2];
+    static int have;                       /* 48 kHz frames in `in` */
+    static uint32_t frac;                  /* 16.16 position in `in` */
+    const uint32_t step = (uint32_t)((48000u << 16) / 44100u);
+    int ch;
     (void)args; (void)argp;
-    if (sceAudioSRCChReserve(AUDIO_CHUNK, 48000, 2) < 0) return 0;
+    ch = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, OUT_N, PSP_AUDIO_FORMAT_STEREO);
+    if (ch < 0) return 0;
     while (!quit) {
-        unsigned have = ring_w - ring_r, i;
-        if (have >= AUDIO_CHUNK) {
-            for (i = 0; i < AUDIO_CHUNK; i++) {
-                unsigned k = (ring_r + i) % RING;
-                block[i * 2] = ring[k * 2];
-                block[i * 2 + 1] = ring[k * 2 + 1];
+        int need = (int)((frac + (OUT_N - 1) * step) >> 16) + 2, get = need - have, i, from = have;
+        uint32_t adv;
+        if (get > 0) {
+            /* the game's sound (what there is of it) and the music over it */
+            int avail = (int)(ring_w - ring_r), take = avail < get ? avail : get;
+            for (i = 0; i < take; i++) {
+                unsigned k = (ring_r + (unsigned)i) % RING;
+                in[(from + i) * 2] = ring[k * 2];
+                in[(from + i) * 2 + 1] = ring[k * 2 + 1];
             }
-            ring_r += AUDIO_CHUNK;
-        } else {
-            memset(block, 0, sizeof block);  /* (not enough yet: a moment of silence) */
+            ring_r += (unsigned)take;
+            memset(in + (from + take) * 2, 0, (size_t)(get - take) * 4);
+            if (snd_native()) music_mix(in + from * 2, get);
+            have = need;
         }
-        /* the recorded music (native sound): read and mixed here, off the game's
-         * thread */
-        if (snd_native()) music_mix(block, AUDIO_CHUNK);
-        sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, block);
+        for (i = 0; i < OUT_N; i++) {
+            uint32_t p = frac + (uint32_t)i * step, k = p >> 16;
+            int32_t f = (int32_t)((p & 0xFFFF) >> 1), c;
+            for (c = 0; c < 2; c++) {
+                int32_t a0 = in[k * 2 + c], a1 = in[(k + 1) * 2 + c];
+                out[i * 2 + c] = (int16_t)(a0 + (((a1 - a0) * f) >> 15));
+            }
+        }
+        adv = (frac + OUT_N * step) >> 16;
+        frac = (frac + OUT_N * step) & 0xFFFF;
+        memmove(in, in + adv * 2, (size_t)(have - (int)adv) * 4);
+        have -= (int)adv;
+        sceAudioOutputBlocking(ch, PSP_AUDIO_VOLUME_MAX, out);
     }
-    sceAudioSRCChRelease();
+    sceAudioChRelease(ch);
+    return 0;
+}
+
+/* the recorded music read ahead from the Memory Stick (music.c) */
+static int music_thread(SceSize args, void *argp)
+{
+    (void)args; (void)argp;
+    while (!quit)
+        if (!music_fill()) sceKernelDelayThread(8000);
     return 0;
 }
 
@@ -521,6 +552,9 @@ int plat_init(int argc, char **argv)
         g_gv_use_list = present_has_lists();   /* gameplay drawn by the GE from lists */
     }
     snd_music_external = 1;   /* (the audio thread mixes the music) */
+    music_threaded = 1;       /* (and this one reads it ahead) */
+    th = sceKernelCreateThread("music", music_thread, 0x16, 0x8000, PSP_THREAD_ATTR_USER, NULL);
+    if (th >= 0) sceKernelStartThread(th, 0, NULL);
     th = sceKernelCreateThread("audio", audio_thread, 0x12, 0x10000, PSP_THREAD_ATTR_USER, NULL);
     if (th >= 0) sceKernelStartThread(th, 0, NULL);
     return 0;

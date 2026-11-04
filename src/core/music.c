@@ -26,21 +26,30 @@ static void mf_close(MFile f) { fclose(f); }
 
 void (*music_song_hook)(int song);
 
-static char dir[256] = "music/";
+static char dir[256] = "music/", sfx_dir[256] = "sfx/";
 static volatile int req_song = -1, req_seq;   /* (written by the game) */
 static volatile int paused;
 static int ticks, idle_frames;
 
+static volatile int dir_gen;
 void music_set_dir(const char *d)
 {
     size_t n;
+    char was[256];
+    snprintf(was, sizeof was, "%s", dir);
     snprintf(dir, sizeof dir, "%s", d);
     n = strlen(dir);
     if (n && dir[n - 1] != '/' && dir[n - 1] != '\\' && n + 1 < sizeof dir) { dir[n] = '/'; dir[n + 1] = 0; }
+    /* the effects: sfx/ next to music/ */
+    snprintf(sfx_dir, sizeof sfx_dir, "%s", dir);
+    n = strlen(sfx_dir);
+    if (n >= 6 && !strcmp(sfx_dir + n - 6, "music/")) snprintf(sfx_dir + n - 6, sizeof sfx_dir - (n - 6), "sfx/");
+    if (strcmp(was, dir)) dir_gen++;
 }
 
 void music_song(int song)
 {
+    if (getenv("TJE_MUSIC_LOG")) fprintf(stderr, "music: song %d\n", song);
     req_song = song;
     req_seq++;
     paused = 0;
@@ -49,6 +58,16 @@ void music_song(int song)
 }
 
 void music_tick(void) { ticks++; }
+
+/* ---- the engine's FM sound effects: sfx/NN.wav, loaded when first played ---- */
+#define SFX_MAX 32
+static volatile int sfx_req = -1, sfx_seq;
+void music_sfx(int id)
+{
+    if (id < 0 || id >= SFX_MAX) return;   /* (0: the effect stopped) */
+    sfx_req = id;
+    sfx_seq++;
+}
 int music_current(void) { return req_song; }
 
 void music_frame(void)
@@ -168,27 +187,137 @@ static int next_frame(int16_t *lr)
     return 1;
 }
 
-void music_mix(int16_t *out, int frames)
+static struct { int16_t *pcm; uint32_t frames; int rate, tried; } sfx[SFX_MAX];
+static int sfx_cur = -1, sfx_seen = -1;
+static uint32_t sfx_pos, sfx_step;   /* 16.16 */
+
+static void sfx_load(int id)
+{
+    char path[300];
+    MFile g;
+    uint8_t h[12], c[8], fm[16];
+    long at = 12;
+    int ch = 0, bits = 0, rate = 0, pcm_ok = 0;
+    sfx[id].tried = 1;
+    snprintf(path, sizeof path, "%s%02d.wav", sfx_dir, id);
+    g = mf_open(path);
+    if (g == MF_NONE) return;
+    if (mf_read(g, h, 12) == 12 && !memcmp(h, "RIFF", 4))
+        for (;;) {
+            uint32_t len;
+            mf_seek(g, at);
+            if (mf_read(g, c, 8) != 8) break;
+            len = le32(c + 4);
+            if (!memcmp(c, "fmt ", 4) && mf_read(g, fm, 16) == 16) {
+                ch = fm[2] | (fm[3] << 8);
+                rate = (int)le32(fm + 4);
+                bits = fm[14] | (fm[15] << 8);
+                pcm_ok = (fm[0] | (fm[1] << 8)) == 1;
+            } else if (!memcmp(c, "data", 4) && pcm_ok && bits == 16 && (ch == 1 || ch == 2) && rate >= 4000) {
+                uint32_t n = len / (uint32_t)(ch * 2), i;
+                int16_t *p = (int16_t *)malloc((size_t)n * (size_t)ch * 2);
+                if (p && mf_read(g, p, (int)(n * (uint32_t)ch * 2)) == (int)(n * (uint32_t)ch * 2)) {
+                    if (ch == 2) for (i = 0; i < n; i++) p[i] = (int16_t)((p[i * 2] + p[i * 2 + 1]) / 2);
+                    sfx[id].pcm = p;
+                    sfx[id].frames = n;
+                    sfx[id].rate = rate;
+                } else free(p);
+                break;
+            }
+            at += 8 + (long)len + (len & 1);
+        }
+    mf_close(g);
+}
+
+static void sfx_mix(int16_t *out, int frames)
 {
     int i;
+    if (sfx_seen != sfx_seq) {
+        int id = sfx_req;
+        sfx_seen = sfx_seq;
+        sfx_cur = id > 0 && sfx[id].pcm ? id : -1;   /* (loaded by the reader, music_fill) */
+        sfx_pos = 0;
+        if (sfx_cur >= 0) sfx_step = (uint32_t)(((uint64_t)sfx[id].rate << 16) / 48000u);
+    }
+    if (sfx_cur < 0) return;
+    for (i = 0; i < frames; i++) {
+        uint32_t k = sfx_pos >> 16;
+        int32_t v, c;
+        if (k + 1 >= sfx[sfx_cur].frames) { sfx_cur = -1; return; }
+        v = sfx[sfx_cur].pcm[k] + (((int32_t)(sfx[sfx_cur].pcm[k + 1] - sfx[sfx_cur].pcm[k]) * (int32_t)((sfx_pos & 0xFFFF) >> 1)) >> 15);
+        for (c = 0; c < 2; c++) {
+            int32_t o = out[i * 2 + c] + v;
+            out[i * 2 + c] = (int16_t)(o > 32767 ? 32767 : o < -32768 ? -32768 : o);
+        }
+        sfx_pos += sfx_step;
+    }
+}
+
+/* ---- the ring between the reader (music_fill) and the mixer (music_mix) ----
+ * The files are read ahead into the ring - on the PSP by a thread of their own, a
+ * Memory Stick read taking longer than the sound can wait; elsewhere by music_mix
+ * itself. The reader owns the files, the mixer only the ring's read side. */
+#define RING_FRAMES 32768                     /* (0.68 s at 48 kHz) */
+static int16_t ring[RING_FRAMES * 2];
+static volatile uint32_t ring_w, ring_r, flush_to;
+static volatile int ring_gen;
+int music_threaded;
+
+/* the reader: next part of the song into the ring; 0 = nothing to do just now */
+int music_fill(void)
+{
+    int i, n, did = 0;
+    static int sfx_gen = -1;
+    if (sfx_gen != dir_gen) {
+        /* (the effects, all loaded here: the mixer can't wait for the Memory Stick) */
+        int id;
+        sfx_gen = dir_gen;
+        for (id = 1; id < SFX_MAX; id++) if (!sfx[id].pcm) sfx_load(id);
+    }
     if (seq != req_seq) {
         seq = req_seq;
         open_song(req_song);
         if (f != MF_NONE) { next_frame(cur); next_frame(nxt); }
+        flush_to = ring_w;
+        ring_gen++;
+        did = 1;
     }
-    if (f == MF_NONE || paused) return;
-    for (i = 0; i < frames; i++) {
+    if (f == MF_NONE) return did;
+    n = (int)(RING_FRAMES - 1 - (ring_w - ring_r));
+    if (n < 1024) return did;
+    for (i = 0; i < n; i++) {
+        uint32_t k = (ring_w + (uint32_t)i) % RING_FRAMES;
         int c;
-        for (c = 0; c < 2; c++) {
-            int32_t v = cur[c] + (int32_t)(((int32_t)(nxt[c] - cur[c]) * (int32_t)(frac >> 1)) >> 15) + out[i * 2 + c];
-            out[i * 2 + c] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
-        }
+        for (c = 0; c < 2; c++)
+            ring[k * 2 + c] = (int16_t)(cur[c] + (int32_t)(((int32_t)(nxt[c] - cur[c]) * (int32_t)(frac >> 1)) >> 15));
         frac += step;
         while (frac >= 0x10000u) {
             frac -= 0x10000u;
             cur[0] = nxt[0];
             cur[1] = nxt[1];
-            if (!next_frame(nxt)) { nxt[0] = nxt[1] = 0; if (f == MF_NONE) return; }
+            if (!next_frame(nxt)) { nxt[0] = nxt[1] = 0; if (f == MF_NONE) { i++; goto done; } }
         }
+    }
+done:
+    ring_w += (uint32_t)i;
+    return 1;
+}
+
+void music_mix(int16_t *out, int frames)
+{
+    static int gen;
+    int i;
+    if (!music_threaded) music_fill();
+    sfx_mix(out, frames);
+    if (gen != ring_gen) { gen = ring_gen; ring_r = flush_to; }
+    if (paused) return;
+    for (i = 0; i < frames && ring_r != ring_w; i++) {
+        uint32_t k = ring_r % RING_FRAMES;
+        int c;
+        for (c = 0; c < 2; c++) {
+            int32_t v = ring[k * 2 + c] + out[i * 2 + c];
+            out[i * 2 + c] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+        }
+        ring_r++;
     }
 }

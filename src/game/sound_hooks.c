@@ -10,6 +10,7 @@
 /* (the recorder: only this song may start, -1 any; told of the others asked for) */
 int g_music_record_song = -1;
 void (*g_music_record_held)(int song);
+void (*g_music_record_sfx_hook)(int id);
 
 #define SONG_ALT 0xFFE476u   /* word: nonzero = the second set of songs (+7) */
 
@@ -21,12 +22,16 @@ static int song_allowed(int song)
 }
 
 /* LOC_0003E3FA: start song n (a long argument; +7 with SONG_ALT set) */
+static int starting;   /* (inside a song start: its own loading of the defaults is not one) */
+
 TJE_OVERRIDE(0x03E3FA)
 void f_03E3FA(void)
 {
     int song = (int)(uint16_t)(ARG_L(0) + (rd16(SONG_ALT) ? 7u : 0u));
     if (!song_allowed(song)) RETURN();
+    starting++;
     orig_f_03E3FA();
+    starting--;
     music_song(song);
 }
 
@@ -36,8 +41,33 @@ void f_03E40E(void)
 {
     int song = (int)(uint16_t)ARG_L(0);
     if (!song_allowed(song)) RETURN();
+    starting++;
     orig_f_03E40E();
+    starting--;
     music_song(song);
+}
+
+/* RAMWritesRoutine1: the engine's defaults loaded - at power on, song 0's channels
+ * among them (the title music: no song is asked for) */
+TJE_OVERRIDE(0x03E384)
+void f_03E384_RAMWritesRoutine1(void)
+{
+    orig_f_03E384_RAMWritesRoutine1();
+    if (!starting && song_allowed(0)) music_song(0);
+}
+
+/* LOC_0003E494: the engine's FM sound effect ($E47C) started, on channels taken
+ * from the music for it. With the native sound: its recording, sfx/NN.wav. */
+#define SFX_REQUEST 0xFFE47Cu
+TJE_OVERRIDE(0x03E494)
+void f_03E494(void)
+{
+    int id = (int16_t)rd16(SFX_REQUEST);
+    orig_f_03E494();
+    if (id >= 0) {
+        if (id > 0 && g_music_record_sfx_hook) g_music_record_sfx_hook(id);
+        if (snd_native()) music_sfx(id);
+    }
 }
 
 /* LOC_0003E3A8: every channel's song data cleared (the music stopped) */
