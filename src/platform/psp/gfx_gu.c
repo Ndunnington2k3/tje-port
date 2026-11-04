@@ -12,6 +12,7 @@
 #include <pspdisplay.h>
 #include <pspgu.h>
 #include <malloc.h>
+#include <stdio.h>
 #include <string.h>
 
 #define BUF_W   512
@@ -40,7 +41,7 @@ static GfxTex *tex_create(int w, int h)
     t->ph = pow2(h);
     if (t->pw > 512 || t->ph > 512) { free(t); return NULL; }
     t->data = (uint32_t *)memalign(64, (size_t)t->pw * t->ph * 4);
-    if (!t->data) { free(t); return NULL; }
+    if (!t->data) { printf("gfx: no memory for a %dx%d texture\n", t->pw, t->ph); free(t); return NULL; }
     memset(t->data, 0, (size_t)t->pw * t->ph * 4);
     return t;
 }
@@ -93,6 +94,7 @@ static void quad(GfxTex *t, int sx, int sy, int sw, int sh, int dx, int dy, int 
     if (!t || sw <= 0 || sh <= 0) return;
     sceGuTexMode(GU_PSM_8888, 0, 0, 0);
     sceGuTexImage(0, t->pw, t->ph, t->pw, t->data);
+    sceGuTexFlush();   /* (the same address every frame, new pixels: not the GE's cached ones) */
     sceGuTexFunc(GU_TFX_REPLACE, (flags & GFX_OPAQUE) ? GU_TCC_RGB : GU_TCC_RGBA);
     sceGuTexFilter((flags & GFX_SMOOTH) ? GU_LINEAR : GU_NEAREST, (flags & GFX_SMOOTH) ? GU_LINEAR : GU_NEAREST);
     if (flags & GFX_OPAQUE) sceGuDisable(GU_ALPHA_TEST);

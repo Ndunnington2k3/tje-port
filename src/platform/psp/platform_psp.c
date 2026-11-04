@@ -339,8 +339,18 @@ static uint8_t bench_mem[1 << 20] __attribute__((aligned(64)));
 static void perf_header(void)
 {
     uint32_t t0, x = 1, i, j;
-    perf_printf("cpu %d MHz, bus %d MHz; music chip %d\n", scePowerGetCpuClockFrequencyInt(),
-                scePowerGetBusClockFrequencyInt(), g_options.fm_sound);
+    {
+        /* (the largest block malloc still gives) */
+        size_t lo = 0, hi = 64u << 20;
+        while (hi - lo > 16384) {
+            size_t mid = (lo + hi) / 2;
+            void *p = malloc(mid);
+            if (p) { free(p); lo = mid; } else hi = mid;
+        }
+        perf_printf("cpu %d MHz, bus %d MHz; music chip %d; heap free %u KB, system free %u KB\n",
+                    scePowerGetCpuClockFrequencyInt(), scePowerGetBusClockFrequencyInt(), g_options.fm_sound,
+                    (unsigned)(lo / 1024), (unsigned)(sceKernelTotalFreeMemSize() / 1024));
+    }
     perf_write();
     t0 = sceKernelGetSystemTimeLow();
     for (i = 0; i < 20000000u; i++) x = x * 1103515245u + 12345u;
@@ -553,7 +563,7 @@ int plat_init(int argc, char **argv)
     }
     snd_music_external = 1;   /* (the audio thread mixes the music) */
     music_threaded = 1;       /* (and this one reads it ahead) */
-    th = sceKernelCreateThread("music", music_thread, 0x16, 0x8000, PSP_THREAD_ATTR_USER, NULL);
+    th = sceKernelCreateThread("music", music_thread, 0x30, 0x8000, PSP_THREAD_ATTR_USER, NULL);   /* (below the game's: it runs while the game waits) */
     if (th >= 0) sceKernelStartThread(th, 0, NULL);
     th = sceKernelCreateThread("audio", audio_thread, 0x12, 0x10000, PSP_THREAD_ATTR_USER, NULL);
     if (th >= 0) sceKernelStartThread(th, 0, NULL);

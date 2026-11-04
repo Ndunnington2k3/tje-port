@@ -4,8 +4,15 @@
 
 #include <stdint.h>
 
+#ifdef __PSP__
+/* (the PSP's screen: no picture is bigger, and memory is short - a dozen
+ * pictures this size are kept) */
+#define GAMEVIEW_MAX_W 480
+#define GAMEVIEW_MAX_H 272
+#else
 #define GAMEVIEW_MAX_W 640
 #define GAMEVIEW_MAX_H 448
+#endif
 
 /* Called after the VDP has drawn each visible line (genesis_set_line_hook): draws
  * the same line from game memory, with the machine as it is at that moment. */
