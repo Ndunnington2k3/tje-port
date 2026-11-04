@@ -127,9 +127,12 @@ static void write_song(size_t from, size_t to, long loop_from)
 static int waiting;   /* frames waited for the last song to die away */
 static void ask(void)
 {
-    /* (no song meanwhile: the last one dies away first, not to be in this one) */
-    g_music_record_song = 999;
-    waiting = 1;
+    g_music_record_song = song;
+    /* ask for it as the game does: the VBlank starts it (+7 for songs 7.. comes
+     * from SONG_ALT, so it is left off and the number asked for is the table's) */
+    wr16(SONG_ALT, 0);
+    wr8(FLAG_8, 0xFF);
+    wr8(FLAG_7, (uint32_t)song);
 }
 
 static void next_song(void)

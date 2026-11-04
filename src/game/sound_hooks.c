@@ -65,3 +65,16 @@ void f_03F656(void)
     if (snd_native()) RETURN();
     orig_f_03F656();
 }
+
+/* A save state or snapshot loaded (a saved game, network play joining): the song
+ * the game is playing, from its start unless it is the one playing already. */
+#define FLAG_8 0xFF802Du
+static void restored(void)
+{
+    int song = (int)rd8(FLAG_8);
+    if (song >= 0x80) song = -1;
+    else if (rd16(SONG_ALT)) song += 7;
+    if (song != music_current()) music_song(song);
+}
+
+__attribute__((constructor)) static void sound_hooks_init(void) { snd_restored_hook = restored; }

@@ -49,6 +49,7 @@ void music_song(int song)
 }
 
 void music_tick(void) { ticks++; }
+int music_current(void) { return req_song; }
 
 void music_frame(void)
 {

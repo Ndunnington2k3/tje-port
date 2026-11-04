@@ -39,6 +39,7 @@ static int fm_core = SND_FM_ACCURATE, fm_div = 1;
 #define NATIVE (fm_core == SND_FM_NATIVE)
 int snd_native(void) { return NATIVE; }
 int snd_music_external;
+void (*snd_restored_hook)(void);
 static void ym_replay(const uint8_t *regs);
 static void fm_reset(void)
 {
@@ -670,6 +671,7 @@ void snd_load_state(const uint8_t *zram, const uint8_t *regs)
     z80_pos = ym_pos = R.cycles;
     z80_budget = 0;
     ym_replay(regs);
+    if (snd_restored_hook) snd_restored_hook();
 }
 
 /* ---- snapshots ---------------------------------------------------------- */
@@ -738,4 +740,5 @@ void snd_load(Ser *s)
     ym_frac = 0;
     ym_debt = 0;
     ym_replay(regs);
+    if (snd_restored_hook) snd_restored_hook();
 }

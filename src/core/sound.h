@@ -37,6 +37,8 @@ int snd_native(void);      /* the native sound is on */
 /* (the platform mixes the recorded music itself, music_render, e.g. on its audio
  * thread: snd_end_frame leaves it out) */
 extern int snd_music_external;
+/* (called after a save state or snapshot is loaded: the music picks up the song) */
+extern void (*snd_restored_hook)(void);
 
 /* 68000-side access to the sound hardware */
 uint32_t snd_z80_area_read(uint32_t a);          /* $A00000-$A0FFFF */
