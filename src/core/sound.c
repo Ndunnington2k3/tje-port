@@ -263,6 +263,21 @@ static uint32_t z80_now68(void)
     return z80_pos;
 }
 
+#ifdef TJE_DAC_TRACE
+#include <stdio.h>
+static uint32_t tr_first, tr_last, tr_reads, tr_dac, tr_t0, tr_tlast, tr_match;
+static uint8_t tr_lastrom;
+static int tr_on;
+static void tr_flush(void)
+{
+    if (tr_on && tr_dac)
+        fprintf(stderr, "  -> rom %06X..%06X (%u reads), %u DAC writes over %u cycles (%u match the byte read)\n",
+                tr_first, tr_last, tr_reads, tr_dac, tr_tlast - tr_t0, tr_match);
+    tr_reads = tr_dac = tr_match = 0;
+    tr_first = 0xFFFFFFFF; tr_last = 0;
+    tr_on = 1;
+}
+#endif
 static uint8_t z80_read(void *ud, uint16_t a)
 {
     (void)ud;
@@ -272,6 +287,15 @@ static uint8_t z80_read(void *ud, uint16_t a)
         /* Z80 reads through the 68000 bus wait for it: ~3 extra Z80 cycles on average.
          * Without this, sample (speech) playback runs a few percent fast. */
         cpu.cyc += 3;
+#ifdef TJE_DAC_TRACE
+        {
+            uint32_t ad = z80_bank | (a & 0x7FFF);
+            if (ad < tr_first) tr_first = ad;
+            if (ad > tr_last) tr_last = ad;
+            tr_reads++;
+            tr_lastrom = (uint8_t)rd8(ad);
+        }
+#endif
         return (uint8_t)rd8(z80_bank | (a & 0x7FFF));
     }
     return 0xFF;
@@ -281,6 +305,15 @@ static void z80_write(void *ud, uint16_t a, uint8_t v)
 {
     (void)ud;
     if (a < 0x4000) { z80_ram[a & 0x1FFF] = v; return; }
+#ifdef TJE_DAC_TRACE
+    if (a == 0x4001 && ym_latch[0] == 0x2A) {
+        uint32_t t = z80_now68();
+        if (!tr_dac) tr_t0 = t;
+        tr_tlast = t;
+        tr_dac++;
+        if (v == tr_lastrom) tr_match++;
+    }
+#endif
     if (a < 0x6000) { ym_shadow_write(a, v); if (enabled) ym_write(a, v, z80_now68()); return; }
     if (a < 0x6100) { z80_bank = ((z80_bank >> 1) | ((uint32_t)(v & 1) << 23)) & 0xFF8000u; return; }
     if (a == 0x7F11 || a == 0x7F13 || a == 0x7F15 || a == 0x7F17) { snd_psg_write(v); return; }
@@ -317,6 +350,18 @@ static void z80_sync(uint32_t to)
     while (z80_budget > 0) {
         unsigned long c0 = cpu.cyc;
         int32_t used;
+        /* The driver's idle loop (LOC 0097: LD A,($40); CP 1; JP Z; CP 2; JP Z;
+         * JP 0097 - 57 T-states) only reads the command byte, which only the
+         * 68000 changes, and only between syncs: whole turns of it are skipped
+         * (interrupts are off in this driver). Exactly as if run. */
+        if (cpu.pc == 0x0097 && !cpu.iff1 && z80_ram[0x40] != 1 && z80_ram[0x40] != 2) {
+            int32_t turns = z80_budget / (57 * 15);
+            if (turns > 0) {
+                z80_budget -= turns * 57 * 15;
+                cpu.cyc += (unsigned long)turns * 57;
+                continue;
+            }
+        }
         zs_budget = z80_budget;     /* (the time at the start of this instruction) */
 #ifdef TJE_Z80_STATS
         { z80_steps++; if (cpu.halted) z80_halt_steps++; }
@@ -348,7 +393,18 @@ uint32_t snd_z80_area_read(uint32_t a)
 void snd_z80_area_write(uint32_t a, uint32_t v)
 {
     a &= 0xFFFF;
-    if (a < 0x4000) { z80_sync(R.cycles); z80_ram[a & 0x1FFF] = (uint8_t)v; return; }
+    if (a < 0x4000) {
+        z80_sync(R.cycles);
+#ifdef TJE_DAC_TRACE
+        if (a == 0x40 && v) {
+            tr_flush();
+            fprintf(stderr, "frame %u: cmd %u id %02X addr %02X%02X%02X len %02X%02X\n", g_frame, v, z80_ram[0x42],
+                    z80_ram[0x46], z80_ram[0x45], z80_ram[0x44], z80_ram[0x49], z80_ram[0x48]);
+        }
+#endif
+        z80_ram[a & 0x1FFF] = (uint8_t)v;
+        return;
+    }
     if (a < 0x6000) {
         z80_sync(R.cycles);
         ym_shadow_write(a, v);
