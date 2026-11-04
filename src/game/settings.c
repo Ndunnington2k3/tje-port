@@ -17,7 +17,7 @@ static struct { const char *name; int *value; int max; } const option_list[] = {
     {"clean_transitions", &g_options.clean_transitions, 1},
     {"native_view", &g_options.native_view, 1},
     {"extend_screens", &g_options.extend_screens, 1},
-    {"fm_sound", &g_options.fm_sound, FM_SOUND_LIGHT3},   /* 0 accurate, 1-3 light (full/half/third rate) */
+    {"fm_sound", &g_options.fm_sound, FM_SOUND_RECORDED},   /* 0 accurate, 1-3 light (full/half/third rate), 4 recorded */
 };
 
 void data_path(const char *name, char *out, size_t size)

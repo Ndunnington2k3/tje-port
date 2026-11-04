@@ -180,13 +180,13 @@ typedef struct { int value; const char *name; int *setting; int row; } Toggle;
 static const Toggle toggles[] = {
     {OPT_QUICK, "Quick Start", &g_options.quick_start, 14},
     {OPT_CLEAN, "Clean Transitions", &g_options.clean_transitions, 16},
-    {OPT_FM, "Music Chip", &g_options.fm_sound, 18},
+    {OPT_FM, "Music", &g_options.fm_sound, 18},
 };
 /* the values shown: On/Off, or the FM chip emulation's */
-static const char *const fm_names[] = {"Accurate", "Light", "Light, half", "Light, third"};
+static const char *const fm_names[] = {"Chip, accurate", "Chip, light", "Chip, half", "Chip, third", "Recorded"};
 static const char *toggle_text(int i)
 {
-    if (toggles[i].value == OPT_FM) return fm_names[*toggles[i].setting & 3];
+    if (toggles[i].value == OPT_FM) return fm_names[(unsigned)*toggles[i].setting % 5u];
     return *toggles[i].setting ? "On" : "Off";
 }
 #define NTOGGLES ((int)(sizeof toggles / sizeof toggles[0]))
@@ -202,7 +202,7 @@ static int options_action(Menu *m, int dir)
     int *value_items = (int *)m->user, i;
     for (i = 0; i < NTOGGLES; i++)
         if (m->item[m->sel].value == toggles[i].value) {
-            if (toggles[i].value == OPT_FM) *toggles[i].setting = (*toggles[i].setting + (dir < 0 ? 3 : 1)) % 4;
+            if (toggles[i].value == OPT_FM) *toggles[i].setting = (*toggles[i].setting + (dir < 0 ? 4 : 1)) % 5;
             else *toggles[i].setting = !*toggles[i].setting;
             apply_options();
             menu_set_text(m, value_items[i], toggle_text(i));

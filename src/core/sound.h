@@ -26,7 +26,17 @@ int snd_enabled(void);
  * does is the same with either. */
 #define SND_FM_ACCURATE 0
 #define SND_FM_LIGHT    1
+/* SND_FM_NATIVE: no FM chip at all. The music comes from recordings (core/music.h,
+ * started by the game's own song changes), the driver's samples (speech, effects:
+ * 8-bit sounds in the ROM) are played straight from the ROM instead of by the Z80
+ * a byte at a time, the PSG as before. */
+#define SND_FM_NATIVE   2
 void snd_set_fm(int core, int div);
+int snd_native(void);      /* the native sound is on */
+
+/* (the platform mixes the recorded music itself, music_render, e.g. on its audio
+ * thread: snd_end_frame leaves it out) */
+extern int snd_music_external;
 
 /* 68000-side access to the sound hardware */
 uint32_t snd_z80_area_read(uint32_t a);          /* $A00000-$A0FFFF */

@@ -1,5 +1,6 @@
 #include "sound.h"
 #include "prof.h"
+#include "music.h"
 #include "m68k_rt.h"
 #include "genesis.h"
 
@@ -35,9 +36,13 @@ static ym3438_t ym;
  * calculation per output sample, fm_div chip samples each) */
 static int fm_core = SND_FM_ACCURATE, fm_div = 1;
 #define LIGHT (fm_core == SND_FM_LIGHT)
+#define NATIVE (fm_core == SND_FM_NATIVE)
+int snd_native(void) { return NATIVE; }
+int snd_music_external;
 static void ym_replay(const uint8_t *regs);
 static void fm_reset(void)
 {
+    if (NATIVE) return;
     if (LIGHT) YM2612ResetChip();
     else OPN2_Reset(&ym);
 }
@@ -166,6 +171,35 @@ static void light_sync(uint32_t delta)
     }
 }
 
+/* ---- native: the driver's samples from the ROM ----------------------------
+ * The driver (Z80, command 2) plays 8-bit unsigned sounds from the ROM through the
+ * FM chip's DAC, a byte every ~895 68000 cycles (8.57 kHz). Here the sound is
+ * played from the ROM directly; the Z80 only sees the command taken. */
+#define VOICE_CYCLES 895u                 /* 68000 cycles a byte */
+#define VOICE_GAIN   36                   /* the DAC's level against the FM chip's (x 9/16 of 64) */
+static uint32_t voice_addr, voice_len, voice_pos;   /* voice_pos: 16.16 bytes */
+static int voice_on;
+
+static void native_sync(uint32_t delta)
+{
+    uint32_t period = 144u * (uint32_t)fm_div, n, step = (period << 16) / VOICE_CYCLES;
+    ym_frac += delta;
+    n = ym_frac / period;
+    ym_frac %= period;
+    while (n--) {
+        int32_t v = 0;
+        if (voice_on) {
+            uint32_t i = voice_pos >> 16;
+            if (i >= voice_len) voice_on = 0;
+            else {
+                v = ((int32_t)rd8(voice_addr + i) - 128) * VOICE_GAIN;
+                voice_pos += step;
+            }
+        }
+        emit_sample(v, v);
+    }
+}
+
 static void ym_sync(uint32_t to)
 {
     int32_t delta = (int32_t)(to - ym_pos);
@@ -173,6 +207,7 @@ static void ym_sync(uint32_t to)
     if (delta <= 0) return;
     ym_pos = to;
     if (LIGHT) { PROF_PUSH(PROF_FM); light_sync((uint32_t)delta); PROF_POP(); return; }
+    if (NATIVE) { PROF_PUSH(PROF_FM); native_sync((uint32_t)delta); PROF_POP(); return; }
     ym_frac += (uint32_t)delta;
     n = ym_frac / 6;
     ym_frac %= 6;
@@ -200,6 +235,7 @@ static uint8_t ym_read(uint32_t port)
 {
     /* Busy flag is cleared: polling loops would otherwise wait on time that only
      * advances between scanlines. Timer flags are real. */
+    if (NATIVE) return 0;
     if (LIGHT) return (uint8_t)(YM2612Read() & 0x7F);
     return (uint8_t)(OPN2_Read(&ym, port & 3) & 0x7F);
 }
@@ -224,6 +260,7 @@ static void ym_write(uint32_t port, uint32_t v, uint32_t when)
     if ((port & 3) == 1 && stat_addr0 == 0x2B && (v & 0x80)) snd_stat_dac_enable++;
 #endif
     ym_sync(when);
+    if (NATIVE) return;
     if (LIGHT) { YM2612Write(port & 3, v & 0xFF); return; }
     OPN2_Write(&ym, port & 3, (Bit8u)v);
     /* give the chip a few cycles to latch it before any following write */
@@ -354,6 +391,27 @@ static void z80_sync(uint32_t to)
          * JP 0097 - 57 T-states) only reads the command byte, which only the
          * 68000 changes, and only between syncs: whole turns of it are skipped
          * (interrupts are off in this driver). Exactly as if run. */
+        if (NATIVE && cpu.pc == 0x00E5) {
+            /* command 2 taken (LOC 00E5): the sound named at $44-$46 (address) and
+             * $48-$49 (length) is played here; the driver back in its idle loop, as
+             * after the sound (or another command cutting it short) */
+            if (enabled) ym_sync(z80_now68());
+            voice_addr = (uint32_t)z80_ram[0x44] | ((uint32_t)z80_ram[0x45] << 8) | ((uint32_t)z80_ram[0x46] << 16);
+            voice_len = (uint32_t)z80_ram[0x48] | ((uint32_t)z80_ram[0x49] << 8);
+            voice_pos = 0;
+            voice_on = voice_len > 0;
+            z80_ram[0x40] = 0;
+            z80_ram[0x41] = 0;
+            cpu.pc = 0x0097;
+            z80_budget -= 60 * 15;      /* (about the driver's own setting up) */
+            cpu.cyc += 60;
+            continue;
+        }
+        if (NATIVE && cpu.pc == 0x00A7 && voice_on) {
+            /* command 1 (a PSG sound, LOC 00A7) cuts a sample short, as on the DAC */
+            if (enabled) ym_sync(z80_now68());
+            voice_on = 0;
+        }
         if (cpu.pc == 0x0097 && !cpu.iff1 && z80_ram[0x40] != 1 && z80_ram[0x40] != 2) {
             int32_t turns = z80_budget / (57 * 15);
             if (turns > 0) {
@@ -463,6 +521,7 @@ int snd_end_frame(const int16_t **out)
      * linear interpolation */
     const uint32_t step = (uint32_t)((53267.0 / fm_div / SND_OUTPUT_RATE) * 65536.0);
     int n = 0;
+    music_frame();
     if (!enabled) { *out = out_buf; return 0; }
     ym_sync(R.cycles);
     while (n < NATIVE_MAX) {
@@ -502,6 +561,7 @@ int snd_end_frame(const int16_t **out)
         resample_pos -= consumed << 16;
         native_len = 0;
     }
+    if (NATIVE && !snd_music_external) music_mix(out_buf, n);
     *out = out_buf;
     return n;
 }
@@ -524,11 +584,13 @@ void snd_set_fm(int core, int div)
 {
     if (div < 1) div = 1;
     if (div > 3) div = 3;
-    if (core != SND_FM_LIGHT) div = 1;
+    if (core == SND_FM_NATIVE) div = 3;           /* (the PSG and samples at 18 kHz) */
+    else if (core != SND_FM_LIGHT) div = 1;
     if (core == fm_core && div == fm_div) return;
     if (enabled) ym_sync(R.cycles);
     fm_core = core;
     fm_div = div;
+    voice_on = 0;
     YM2612SetDivider(div);
     ym_frac = 0;
     ym_slot = 0;

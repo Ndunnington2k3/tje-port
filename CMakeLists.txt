@@ -61,6 +61,7 @@ add_library(tje_core STATIC
     src/core/io.c
     src/core/sound.c
     src/core/prof.c
+    src/core/music.c
     src/gfx/view.c
     src/gfx/present.c
     src/gfx/gfx_gl.c
@@ -90,7 +91,7 @@ else()
 endif()
 
 if(TJE_BUILD_HEADLESS)
-    add_executable(tje_headless src/main.c src/platform/null/platform_null.c src/platform/common/net_udp.c)
+    add_executable(tje_headless src/main.c src/platform/null/platform_null.c src/platform/null/music_record.c src/platform/common/net_udp.c)
     target_link_libraries(tje_headless PRIVATE tje_core)
     if(WIN32)
         target_link_libraries(tje_headless PRIVATE ws2_32)

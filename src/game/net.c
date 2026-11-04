@@ -22,6 +22,7 @@
  * waits (and shows why after a moment).
  */
 #include "net.h"
+#include "core/sound.h"
 #include "game.h"
 #include "gameview.h"
 #include "save.h"
@@ -33,7 +34,7 @@
 #include <string.h>
 
 #define NET_PROTO       1
-#define NET_BUILD       2           /* change when anything changes what the game does */
+#define NET_BUILD       3           /* change when anything changes what the game does */
 #define NET_DELAY       3
 #define RING            16384       /* frames of inputs kept (4.5 minutes) */
 #define SNAP_EVERY      120         /* frames between the host's snapshots */
@@ -226,6 +227,7 @@ static void end_session(void)
     g_fast_forward = 0;
     seen_ahead16 = their_seen_ahead16 = 0;
     plat_pacing(0, 0);
+    options_apply();   /* (the sound back to this machine's own, if the host's was used) */
 }
 
 void net_leave(const char *why)
@@ -359,6 +361,7 @@ static void make_package(int kind, uint32_t join_to)
     if (!raw) return;
     w32(&p, 0x424E4A54u);
     w32(&p, (uint32_t)kind);
+    w32(&p, (uint32_t)snd_native());   /* (the host's sound: the recorded music leaves the drum sounds out) */
     w32(&p, snap_frame);
     w32(&p, (uint32_t)delay);
     w16(&p, snap_pad[0]);
@@ -420,6 +423,13 @@ static void apply_package(void)
     p = raw;
     if (n < 40 || r32(&p) != 0x424E4A54u) { free(raw); net_leave("The game sent was damaged."); return; }
     kind = r32(&p);
+    /* the sound as the host's: with the recorded music the game leaves its drum
+     * sounds out, which changes its timing a little */
+    if ((int)r32(&p) != snd_native()) {
+        if (snd_native()) snd_set_fm(SND_FM_LIGHT, 2);
+        else snd_set_fm(SND_FM_NATIVE, 3);
+        logf_("sound switched to match the host's (%s)", snd_native() ? "recorded" : "chip");
+    }
     fs = r32(&p);
     delay = (int)r32(&p);
     resume_pad[0] = r16(&p);

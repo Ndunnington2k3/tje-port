@@ -16,6 +16,8 @@
 #include "game/gameview.h"
 #include "game/options.h"
 #include "core/prof.h"
+#include "core/sound.h"
+#include "core/music.h"
 
 #include <pspkernel.h>
 #include <pspiofilemgr.h>
@@ -86,6 +88,9 @@ static int audio_thread(SceSize args, void *argp)
         } else {
             memset(block, 0, sizeof block);  /* (not enough yet: a moment of silence) */
         }
+        /* the recorded music (native sound): read and mixed here, off the game's
+         * thread */
+        if (snd_native()) music_mix(block, AUDIO_CHUNK);
         sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, block);
     }
     sceAudioSRCChRelease();
@@ -515,6 +520,7 @@ int plat_init(int argc, char **argv)
         extern int g_gv_use_list;
         g_gv_use_list = present_has_lists();   /* gameplay drawn by the GE from lists */
     }
+    snd_music_external = 1;   /* (the audio thread mixes the music) */
     th = sceKernelCreateThread("audio", audio_thread, 0x12, 0x10000, PSP_THREAD_ATTR_USER, NULL);
     if (th >= 0) sceKernelStartThread(th, 0, NULL);
     return 0;

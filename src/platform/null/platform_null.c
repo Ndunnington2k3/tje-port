@@ -15,6 +15,7 @@
  *     --dumpram F:path     save the 64 KB of work RAM at frame F (repeatable)
  *     --dumpvram F:path    save VRAM, CRAM and the VDP registers at frame F
  *     --wav path.wav       emulate sound and record it to a WAV file
+ *     --record-music DIR   record every song for the native sound (music_record.c)
  *     --audio              emulate sound (Z80, FM, PSG) without recording it
  *     --save F:slot        at frame F, save the game to slot 0-2 (port save feature)
  *     --load F:slot        at frame F, load slot 0-2
@@ -82,6 +83,11 @@ extern int g_gameview_reason;
 static char captures[16][32];
 static int ncaptures, next_capture, capturing, capture_ready;
 static char bindings[2][8][2][32];
+void record_music_init(const char *dir);
+int record_music_active(void);
+void record_music_audio(const int16_t *samples, int n);
+void record_music_frame(void);
+
 static struct { unsigned frame, addr, val; } pokes[MAX_EVENTS];
 static int npokes;
 static FILE *wav;
@@ -160,6 +166,8 @@ int plat_init(int argc, char **argv)
             snprintf(captures[ncaptures++], sizeof captures[0], "%s", argv[++i]);
         } else if (!strcmp(argv[i], "--audio")) {
             audio_flag = 1;
+        } else if (!strcmp(argv[i], "--record-music") && i + 1 < argc) {
+            record_music_init(argv[++i]);
         } else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
             wav = fopen(argv[++i], "wb");
             if (wav) { static const uint8_t hdr[44] = {0}; fwrite(hdr, 1, 44, wav); }
@@ -239,10 +247,11 @@ void plat_shutdown(void)
     }
 }
 
-int plat_audio_enabled(void) { return wav != NULL || audio_flag; }
+int plat_audio_enabled(void) { return wav != NULL || audio_flag || record_music_active(); }
 
 void plat_audio(const int16_t *samples, int frames)
 {
+    record_music_audio(samples, frames);
     int i;
     if (!wav) return;
     for (i = 0; i < frames * 2; i++) {  /* little-endian int16 */
@@ -391,6 +400,7 @@ static uint64_t now_us(void)
 
 void plat_present(const uint32_t *pixels, int width, int height, int pitch)
 {
+    record_music_frame();
     int i;
 
     if (realtime) {

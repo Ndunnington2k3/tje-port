@@ -22,7 +22,7 @@ typedef struct {
     int fm_sound;
 } GameOptions;
 
-enum { FM_SOUND_ACCURATE, FM_SOUND_LIGHT, FM_SOUND_LIGHT2, FM_SOUND_LIGHT3 };
+enum { FM_SOUND_ACCURATE, FM_SOUND_LIGHT, FM_SOUND_LIGHT2, FM_SOUND_LIGHT3, FM_SOUND_RECORDED };   /* RECORDED: the native sound (core/music.h) */
 
 extern GameOptions g_options;
 
