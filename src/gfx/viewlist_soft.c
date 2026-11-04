@@ -3,20 +3,22 @@
 #include "gfx/viewlist.h"
 #include <stddef.h>
 
+static void piece(const ViewList *vl, const VlPiece *p, int high, uint32_t *out, int pitch);
 static void cell(const ViewList *vl, const VlCell *c, const VlBatch *b, int high, uint32_t *out, int pitch)
 {
     unsigned e = c->entry, tile = e & 0x7FF;
     int r, i, line = (int)((e >> 13) & 3);
+    const uint8_t *tiles = (c->ext & 1) ? vl->cache : vl->vram;
     if (((e >> 15) & 1) != (unsigned)high) return;
     for (r = 0; r < 8; r++) {
         int y = c->y + r, tr = (e & 0x1000) ? 7 - r : r;
-        const uint8_t *row = vl->vram + tile * 32 + tr * 4;
+        const uint8_t *row = tiles + tile * 32 + tr * 4;
         if (y < b->y0 || y >= b->y1 || y < 0 || y >= vl->h) continue;
         for (i = 0; i < 8; i++) {
             int x = c->x + i, ti = (e & 0x0800) ? 7 - i : i, v;
             if (x < b->x0 || x >= b->x1 || x < 0 || x >= vl->w) continue;
             v = (ti & 1) ? (row[ti >> 1] & 15) : (row[ti >> 1] >> 4);
-            if (v) out[(size_t)y * pitch + x] = vl->pal[line * 16 + v];
+            if (v && !(v == 15 && (c->ext & 2))) out[(size_t)y * pitch + x] = vl->pal[line * 16 + v];
         }
     }
 }
@@ -47,9 +49,11 @@ void viewlist_render_soft(const ViewList *vl, uint32_t *out, int pitch)
                 const VlBatch *b = &vl->batches[k];
                 int c;
                 if (b->layer != layer) continue;
+                if (b->piece >= 0) { piece(vl, &vl->pieces[b->piece], high, out, pitch); continue; }
                 for (c = b->first; c < b->first + b->count; c++) cell(vl, &vl->cells[c], b, high, out, pitch);
             }
-        for (k = 0; k < vl->npieces; k++) piece(vl, &vl->pieces[k], high, out, pitch);
+        if (!vl->pieces_in_batches)
+            for (k = 0; k < vl->npieces; k++) piece(vl, &vl->pieces[k], high, out, pitch);
     }
     for (k = 0; k < vl->noverlays; k++) {
         const VlOverlay *o = &vl->overlays[k];

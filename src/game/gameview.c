@@ -12,6 +12,7 @@
  */
 #include "game.h"
 #include "gameview.h"
+#include "core/prof.h"
 #include "options.h"
 #include "core/vdp.h"
 #include "gfx/present.h"
@@ -441,8 +442,92 @@ typedef struct {
     int rank;                /* drawing order: lower in front (the game's order) */
     int cy0, cy1;            /* rows it may cover (its half of a split screen) */
     int ui;                  /* drawn over the present list too (the list's own icons) */
+    /* (pieces_as_cells: the piece as cells of tiles - VRAM's, or the ROM graphics'
+     * cache's - for a GPU; px then not filled, piece_px makes it) */
+    int ncells;
+    struct { int8_t dx, dy; uint16_t entry, ext; } cells[16];
     uint8_t px[PIECE_MAX_PX];
 } Piece;
+
+/* ---- the objects' ROM graphics as tiles, for a GPU -----------------------------
+ * The game decodes an object's frame into VRAM only for objects on its screen;
+ * the others are drawn from the ROM (add_frame). For a GPU those are decoded
+ * once into a cache of tiles (the ROM never changes): an object's pieces are then
+ * cells like the VRAM's. Filled up: emptied and started again. */
+static int pieces_as_cells;
+static uint8_t sc_tiles[VL_CACHE_TILES * 32] __attribute__((aligned(64)));
+static uint8_t sc_changed[VL_CACHE_TILES];
+static int sc_used;
+#define SC_SLOTS 4096
+static struct { uint32_t src; uint8_t flags, tiles; uint16_t base; } sc_tab[SC_SLOTS];
+static void unpack(uint32_t src, int flags, int tiles, uint8_t *out);
+
+static int sc_tiles_for(uint32_t src, int flags, int tiles)
+{
+    uint32_t h = (src * 2654435761u ^ (uint32_t)flags * 40503u ^ (uint32_t)tiles) % SC_SLOTS;
+    int n;
+    flags &= 0xC0;
+    for (n = 0; n < SC_SLOTS; n++, h = (h + 1) % SC_SLOTS) {
+        if (!sc_tab[h].tiles) break;
+        if (sc_tab[h].src == src && sc_tab[h].flags == flags && sc_tab[h].tiles == tiles) return sc_tab[h].base;
+    }
+    if (sc_used + tiles > VL_CACHE_TILES || n == SC_SLOTS) {
+        memset(sc_tab, 0, sizeof sc_tab);
+        sc_used = 0;
+        h = (src * 2654435761u ^ (uint32_t)flags * 40503u ^ (uint32_t)tiles) % SC_SLOTS;
+    }
+    sc_tab[h].src = src;
+    sc_tab[h].flags = (uint8_t)flags;
+    sc_tab[h].tiles = (uint8_t)tiles;
+    sc_tab[h].base = (uint16_t)sc_used;
+    unpack(src, flags, tiles, sc_tiles + (size_t)sc_used * 32);
+    memset(sc_changed + sc_used, 1, (size_t)tiles);
+    sc_used += tiles;
+    return sc_tab[h].base;
+}
+
+/* a piece's cells as the VDP lays out a sprite of hs x vs cells: tile (attr &
+ * 0x7FF) + column * vs + row, the whole flipped by attr's flips */
+static void piece_sprite_cells(Piece *p, uint32_t attr, int hs, int vs, uint16_t ext)
+{
+    int c, r;
+    p->ncells = 0;
+    for (c = 0; c < hs; c++)
+        for (r = 0; r < vs; r++) {
+            int colx = (attr & 0x0800) ? hs - 1 - c : c, rowy = (attr & 0x1000) ? vs - 1 - r : r;
+            uint32_t tile = ((attr & 0x7FF) + (uint32_t)(colx * vs + rowy)) & 0x7FF;
+            p->cells[p->ncells].dx = (int8_t)(c * 8);
+            p->cells[p->ncells].dy = (int8_t)(r * 8);
+            p->cells[p->ncells].entry = (uint16_t)((attr & 0xF800) | tile);
+            p->cells[p->ncells].ext = ext;
+            p->ncells++;
+        }
+}
+
+/* the pixels of a piece kept as cells (when a pixel of it is needed) */
+static void piece_px(Piece *p)
+{
+    int k, r, i;
+    if (!p->ncells) return;
+    memset(p->px, 0, (size_t)(p->w * p->h));
+    for (k = 0; k < p->ncells; k++) {
+        unsigned e = p->cells[k].entry, ext = p->cells[k].ext;
+        const uint8_t *tiles = (ext & 1) ? sc_tiles : vdp_vram;
+        uint8_t hi = (uint8_t)(PIX_OPAQUE | ((e & 0x8000) ? PIX_PRIO : 0) | ((e >> 9) & 0x30));
+        for (r = 0; r < 8; r++) {
+            int y = p->cells[k].dy + r, tr = (e & 0x1000) ? 7 - r : r;
+            const uint8_t *row = tiles + (e & 0x7FF) * 32 + tr * 4;
+            if (y < 0 || y >= p->h) continue;
+            for (i = 0; i < 8; i++) {
+                int x = p->cells[k].dx + i, ti = (e & 0x0800) ? 7 - i : i, v;
+                if (x < 0 || x >= p->w) continue;
+                v = (ti & 1) ? (row[ti >> 1] & 15) : (row[ti >> 1] >> 4);
+                if (v && !(v == 15 && (ext & 2))) p->px[y * p->w + x] = (uint8_t)(hi | v);
+            }
+        }
+    }
+    p->ncells = 0;
+}
 
 static Piece pieces[MAX_PIECES];
 int g_gv_cam_x, g_gv_cam_y;   /* (tests) */
@@ -560,6 +645,12 @@ static void add_frame(uint32_t o, uint32_t fr, int x, int y, int z, int attr, in
             uint32_t ent = 0xFFB65Au + (uint32_t)slot * 8;
             int ssz = ob8(ent + 2), sattr = (int)ob16(ent + 4);
             if (slot && ((ssz >> 2) & 3) + 1 == cw && (ssz & 3) + 1 == ch) {
+                if (pieces_as_cells) {
+                    piece_sprite_cells(p, (uint32_t)sattr, cw, ch, 0);
+                    npieces++;
+                    continue;
+                }
+                p->ncells = 0;
                 for (py = 0; py < p->h; py++) {
                     int row = (sattr & 0x1000) ? p->h - 1 - py : py, c;
                     for (c = 0; c < cw; c++) {
@@ -573,6 +664,25 @@ static void add_frame(uint32_t o, uint32_t fr, int x, int y, int z, int attr, in
                 npieces++;
                 continue;
             }
+        }
+        p->ncells = 0;
+        if (pieces_as_cells && !(o && z < 0 && (int8_t)ob8(o + 0x5E) <= 1 && !(ob8(o + 0x55) & 0x20))) {
+            /* (from the cache: the tiles as the frame lays them out, the piece
+             * flipped across by its attribute) */
+            int base = sc_tiles_for(ob32(pc + 6), flags, cw * ch), c, r;
+            uint16_t ext = (uint16_t)(1 | ((o && (ob8(o + 0x4D) & 0x20)) ? 2 : 0));
+            for (c = 0; c < cw; c++)
+                for (r = 0; r < ch; r++) {
+                    int col = flip ? cw - 1 - c : c;
+                    p->cells[p->ncells].dx = (int8_t)(c * 8);
+                    p->cells[p->ncells].dy = (int8_t)(r * 8);
+                    p->cells[p->ncells].entry = (uint16_t)((flip ? 0x0800 : 0) | ((attr & 0x8000) ? 0x8000 : 0) | ((flags & 3) << 13) |
+                                                           ((base + col * ch + r) & 0x7FF));
+                    p->cells[p->ncells].ext = ext;
+                    p->ncells++;
+                }
+            npieces++;
+            continue;
         }
         unpack(ob32(pc + 6), flags, cw * ch, data);
         /* in water (below ground level, players only): the rows under the
@@ -679,6 +789,8 @@ static void add_shadow(int cls, int x, int y, int x0, int y0, int x1, int y1, in
     p->x = x - (hs * 4);
     p->y = y - 4;
     if (p->x + p->w <= x0 || p->x >= x1 || p->y + p->h <= y0 || p->y >= y1) return;
+    p->ncells = 0;
+    if (pieces_as_cells) { piece_sprite_cells(p, sattr, hs, vs, 0); npieces++; return; }
     for (py = 0; py < p->h; py++) {
         int c;
         for (c = 0; c < hs; c++) {
@@ -831,6 +943,12 @@ int g_gv_kept;                  /* (tests) this frame repeats the last picture (
 static void render_views_picture(void);
 /* the gameplay view as a list for the GPU (when the platform draws lists) */
 static ViewList vlist;
+static ViewList wlist;            /* (network play: this machine's window, apart from the screens' lists) */
+static ViewList *shown_list = &vlist;   /* the list last given to present */
+static ViewList sl_other;          /* (screens: built in whichever of vlist and this isn't shown, so a
+                                    * frame that can't be one keeps the shown one whole) */
+static ViewList *sl_into = &vlist;
+static void set_list(ViewList *vl) { shown_list = vl; present_set_list(vl); }
 static int list_ready;        /* this frame's picture is the list */
 static int last_was_list;
 extern int g_in_game;   /* the last picture made here, kept while the VDP is frozen */
@@ -1373,7 +1491,7 @@ void gameview_line(int line)
     if (line == 0) {
         extern int g_gv_windows;
         if (screen_list_off) screen_list_off--;
-        screen_list_frame = (g_gv_use_list || vl_check_on()) && !g_gv_windows && !screen_list_off &&
+        screen_list_frame = (g_gv_use_list || vl_check_on()) && !screen_list_off &&
                             (frame_ok == 0 || frame_ok == 2 || frame_ok == 3) && vdp_live_picture() && vdp_width() == 320;
     }
 }
@@ -1525,7 +1643,10 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
         if (!views_done) {
             static int stale_run;
             sl_stale = 0;
+            sl_into = shown_list == &vlist ? &sl_other : &vlist;
+            PROF_PUSH(PROF_SLIST);
             ok = build_screen_frame();
+            PROF_POP();
             if (!ok && sl_stale && ++stale_run <= 3 && last_ok && last_was_list) ok = 2;   /* (keep the last) */
             if (ok != 2) stale_run = 0;
             views_done = 1;
@@ -1534,8 +1655,8 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
         }
         if (g_gv_use_list) {
             if (ok == 2) {
-                vlist.frozen = 1;
-                present_set_list(&vlist);
+                shown_list->frozen = 1;
+                set_list(shown_list);
                 *pixels = NULL;
                 *width = last_w;
                 *height = last_h;
@@ -1545,12 +1666,12 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
             if (ok) {
                 last_ok = 1;
                 last_was_list = 1;
-                last_w = vlist.w;
-                last_h = vlist.h;
-                present_set_list(&vlist);
+                last_w = sl_into->w;
+                last_h = sl_into->h;
+                set_list(sl_into);
                 *pixels = NULL;
-                *width = vlist.w;
-                *height = vlist.h;
+                *width = sl_into->w;
+                *height = sl_into->h;
                 *pitch = GAMEVIEW_MAX_W;
                 return 1;
             }
@@ -1558,8 +1679,8 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
             screen_list_off = 60;
             printf("screen list: no (%s, kind %d)\n", sl_stale ? "stale" : sl_why, frame_ok);
             if (last_ok && last_was_list) {
-                vlist.frozen = 1;
-                present_set_list(&vlist);
+                shown_list->frozen = 1;
+                set_list(shown_list);
                 *pixels = NULL;
                 *width = last_w;
                 *height = last_h;
@@ -1580,8 +1701,8 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
             if (last_was_list) {
                 /* (the list again, with the GPU's copy of the tiles kept as it was:
                  * the game is rebuilding them behind the held picture) */
-                vlist.frozen = 1;
-                present_set_list(&vlist);
+                shown_list->frozen = 1;
+                set_list(shown_list);
                 *pixels = NULL;
             }
             *width = last_w;
@@ -1634,7 +1755,7 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
     *pixels = picture;
     if (list_ready) {
         /* (the GPU draws the view from the list) */
-        present_set_list(&vlist);
+        set_list(&vlist);
         *pixels = NULL;
     }
     *width = pic_w;
@@ -1674,7 +1795,7 @@ int gameview_frame(const uint32_t **pixels, int *width, int *height, int *pitch)
         static uint32_t box[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
         int w = *width, h = *height;
         draw_message(box, w, h, net_message);
-        vl_overlay_clip(&vlist, (w - 240) / 2, (h - 56) / 2, 240, 56,
+        vl_overlay_clip(shown_list, (w - 240) / 2, (h - 56) / 2, 240, 56,
                         box + (size_t)((h - 56) / 2) * GAMEVIEW_MAX_W + (w - 240) / 2, GAMEVIEW_MAX_W);
     } else if (net_message[0]) {
         /* (over a copy: the pictures above are kept for the next frame) */
@@ -1912,6 +2033,8 @@ static void view_screen_sprites(int e_from, int e_to, int top, int h, int x0, in
         p->w = hs * 8;
         p->h = vs * 8;
         if (p->x + p->w <= x0 || p->x >= x1 || p->y + p->h <= y0 || p->y >= y1) continue;
+        p->ncells = 0;
+        if (pieces_as_cells) { piece_sprite_cells(p, (uint32_t)attr, hs, vs, 0); npieces++; continue; }
         for (py = 0; py < p->h; py++) {
             int row = (attr & 0x1000) ? p->h - 1 - py : py;
             for (c = 0; c < hs; c++) {
@@ -2078,7 +2201,7 @@ int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int scr
  * worked out exactly as there, the pixels are left to the GPU. */
 
 int g_gv_use_list;            /* the platform draws views as lists (gameview_list) */
-const ViewList *gameview_last_list(void) { return &vlist; }
+const ViewList *gameview_last_list(void) { return shown_list; }
 static int vl_check = -1;     /* (tests, TJE_VLCHECK) */
 static int vl_check_on(void) { if (vl_check < 0) vl_check = getenv("TJE_VLCHECK") != NULL; return vl_check; }
 int vl_checked, vl_bad_frames;
@@ -2100,6 +2223,20 @@ static void vl_batch(ViewList *vl, int layer, int x0, int y0, int x1, int y1)
     b->x0 = x0; b->y0 = y0; b->x1 = x1; b->y1 = y1;
     b->first = vl->ncells;
     b->count = 0;
+    b->piece = -1;
+}
+
+static inline void vl_cell_ext(ViewList *vl, int x, int y, uint32_t entry, uint16_t ext)
+{
+    VlCell *c;
+    if (!(entry & 0x7FF) && !(ext & 1)) return;
+    if (vl->ncells >= VL_MAX_CELLS || !vl_batch_open) return;
+    c = &vl->cells[vl->ncells++];
+    c->x = (int16_t)x;
+    c->y = (int16_t)y;
+    c->entry = (uint16_t)entry;
+    c->ext = ext;
+    vl->batches[vl->nbatches - 1].count++;
 }
 
 static inline void vl_cell(ViewList *vl, int x, int y, uint32_t entry)
@@ -2110,6 +2247,7 @@ static inline void vl_cell(ViewList *vl, int x, int y, uint32_t entry)
     c->x = (int16_t)x;
     c->y = (int16_t)y;
     c->entry = (uint16_t)entry;
+    c->ext = 0;
     vl->batches[vl->nbatches - 1].count++;
 }
 
@@ -2172,10 +2310,12 @@ static void build_view_list(ViewList *vl, int player, int cam_x, int cam_y, int 
     r.tiles = player ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
     r.level = rd8(player ? EARLS_LEVEL : TOEJAMS_LEVEL);
     floor_sync(r.tiles, r.level);
+    pieces_as_cells = 1;   /* (the objects as cells: no pixels made on the CPU) */
     view_collect(r.level, cam_x, cam_y, vx - ox, vy - oy, vx + w - ox, vy + h - oy);
     if (band) view_band(vx - ox, vy - oy, vx + w - ox, vy + h - oy);
     else if (screen_h == VDP_HEIGHT / 2 && game_cam >= 0 && !view_skip_half_hud)
         view_half_hud(game_cam ? VDP_HEIGHT / 2 : 0, vx - ox, vy - oy, vx + w - ox, vy + h - oy);
+    pieces_as_cells = 0;
     /* plane B */
     vl_batch(vl, 0, vx, vy, vx + w, vy + h);
     vl_plane_b(vl, cam_x, cam_y, ox, oy);
@@ -2211,31 +2351,73 @@ static void build_view_list(ViewList *vl, int player, int cam_x, int cam_y, int 
         }
         order[j + 1] = k;
     }
-    for (i = 0; i < n && vl->npieces < VL_MAX_PIECES; i++) {
-        const Piece *p = &pieces[order[i]];
-        VlPiece *q = &vl->pieces[vl->npieces];
-        int stride = (p->w + 15) & ~15, row;
-        uint8_t *dst = vl_piece_pool + vl_pool_used;
-        if (vl_pool_used + (size_t)stride * (size_t)p->h > sizeof vl_piece_pool) break;
-        vl_pool_used += ((size_t)stride * (size_t)p->h + 63) & ~(size_t)63;
-        for (row = 0; row < p->h; row++) memcpy(dst + row * stride, p->px + row * p->w, (size_t)p->w);
-        q->stride = stride;
-        q->x = p->x + ox;
-        q->y = p->y + oy;
-        q->w = p->w;
-        q->h = p->h;
-        q->y0 = (p->cy0 < -(1 << 19) ? -(1 << 19) : p->cy0) + oy;
-        q->y1 = (p->cy1 > (1 << 19) ? (1 << 19) : p->cy1) + oy;
-        if (q->y0 < vy) q->y0 = vy;
-        if (q->y1 > vy + h) q->y1 = vy + h;
-        q->px = dst;
-        vl->npieces++;
-    }
     /* Sprite against sprite is decided before sprite against plane (the one in
      * front wins whatever the priorities; then its priority counts): drawn in
      * passes by priority, a sprite behind with priority would show through one in
-     * front without. Such pixels behind are cleared (rare: only where pieces of
-     * different priority overlap). */
+     * front without. Where pieces of different priority overlap (rare) both are
+     * made pixels and the pixels behind cleared, below. */
+    {
+        int j;
+        for (i = 0; i < n; i++) {
+            Piece *bk = &pieces[order[i]];
+            for (j = i + 1; j < n; j++) {
+                Piece *fr = &pieces[order[j]];
+                int bp, fp;
+                if (bk->x >= fr->x + fr->w || fr->x >= bk->x + bk->w || bk->y >= fr->y + fr->h || fr->y >= bk->y + bk->h) continue;
+                bp = bk->ncells ? (bk->cells[0].entry & 0x8000) != 0 : 2;
+                fp = fr->ncells ? (fr->cells[0].entry & 0x8000) != 0 : 2;
+                if (bp == 0 || fp == 1) continue;                 /* (the one behind without, or in front with: fine) */
+                piece_px(bk);
+                piece_px(fr);
+            }
+        }
+    }
+    vl->pieces_in_batches = 1;
+    {
+        int cy0 = 1 << 30, cy1 = 0, open = 0;
+        for (i = 0; i < n; i++) {
+            const Piece *p = &pieces[order[i]];
+            int y0 = (p->cy0 < -(1 << 19) ? -(1 << 19) : p->cy0) + oy, y1 = (p->cy1 > (1 << 19) ? (1 << 19) : p->cy1) + oy, k;
+            if (y0 < vy) y0 = vy;
+            if (y1 > vy + h) y1 = vy + h;
+            if (y0 >= y1) continue;
+            if (p->ncells) {
+                /* cells: in a batch with the pieces before it clipped alike */
+                if (!open || y0 != cy0 || y1 != cy1) {
+                    vl_batch(vl, 2, vx, y0, vx + w, y1);
+                    if (vl_batch_open) vl->batches[vl->nbatches - 1].piece = -1;
+                    cy0 = y0;
+                    cy1 = y1;
+                    open = 1;
+                }
+                for (k = 0; k < p->ncells; k++) vl_cell_ext(vl, p->x + ox + p->cells[k].dx, p->y + oy + p->cells[k].dy, p->cells[k].entry, p->cells[k].ext);
+                continue;
+            }
+            {
+                /* pixels (a player wading; pieces overlapping with different
+                 * priorities): a piece of its own */
+                VlPiece *q = &vl->pieces[vl->npieces];
+                int stride = (p->w + 15) & ~15, row;
+                uint8_t *dst = vl_piece_pool + vl_pool_used;
+                if (vl->npieces >= VL_MAX_PIECES || vl_pool_used + (size_t)stride * (size_t)p->h > sizeof vl_piece_pool) continue;
+                vl_pool_used += ((size_t)stride * (size_t)p->h + 63) & ~(size_t)63;
+                for (row = 0; row < p->h; row++) memcpy(dst + row * stride, p->px + row * p->w, (size_t)p->w);
+                q->stride = stride;
+                q->x = p->x + ox;
+                q->y = p->y + oy;
+                q->w = p->w;
+                q->h = p->h;
+                q->y0 = y0;
+                q->y1 = y1;
+                q->px = dst;
+                vl_batch(vl, 2, vx, y0, vx + w, y1);
+                if (vl_batch_open) vl->batches[vl->nbatches - 1].piece = vl->npieces;
+                vl->npieces++;
+                open = 0;
+            }
+        }
+    }
+    /* (the pixels behind cleared, between pieces made pixels) */
     for (i = 0; i < vl->npieces; i++) {
         VlPiece *bk = &vl->pieces[i];
         int j;
@@ -2269,10 +2451,14 @@ static void vl_begin(ViewList *vl, int w, int h)
     for (x = 0; x < 64; x++) vl->pal[x] = vdp_palette_rgb(x);
     vl->vram = vdp_vram;
     vl->tiles_changed = vdp_tile_dirty_gpu;
+    vl->cache = sc_tiles;
+    vl->cache_changed = sc_changed;
+    vl->pieces_in_batches = 0;
     vl->frozen = 0;
     vl->ncells = vl->nbatches = vl->npieces = vl->noverlays = 0;
 }
 
+static uint32_t ovl_stamp;   /* (the stamp for overlays added now) */
 static void vl_overlay(ViewList *vl, int x, int y, int w, int h, const uint32_t *px, int pitch)
 {
     VlOverlay *o;
@@ -2280,6 +2466,7 @@ static void vl_overlay(ViewList *vl, int x, int y, int w, int h, const uint32_t 
     o = &vl->overlays[vl->noverlays++];
     o->x = x; o->y = y; o->w = w; o->h = h; o->px = px; o->pitch = pitch;
     o->keyed = 0;
+    o->stamp = ovl_stamp;
     o->tile_w = o->tile_h = o->tx0 = o->ty0 = 0;
 }
 
@@ -2464,7 +2651,7 @@ static int build_screen_list(ViewList *vl, int ox, int oy, int wide, int sprites
     {
         static uint32_t keyed[8][320 * VDP_HEIGHT];
         static const uint8_t *was_px[8];
-        static uint32_t was_sum[8];
+        static uint32_t was_sum[8], gen[8];
         int i;
         for (i = 0; i < 8; i++) {
             int x, y, w, h, n;
@@ -2478,9 +2665,12 @@ static int build_screen_list(ViewList *vl, int ox, int oy, int wide, int sprites
                 for (n = 0; n < w * h; n++) keyed[i][n] = px[n] ? 0xFF000000u | rgb[px[n] & 15] : 0;
                 was_px[i] = px;
                 was_sum[i] = sum;
+                gen[i]++;
             }
             n = vl->noverlays;
+            ovl_stamp = gen[i] * 16u + (uint32_t)i + 1;
             vl_overlay_clip(vl, ox + x, oy + y, w, h, keyed[i], w);
+            ovl_stamp = 0;
             if (vl->noverlays > n) vl->overlays[vl->noverlays - 1].keyed = 1;
         }
     }
@@ -2614,12 +2804,54 @@ static int ext_copy_cells(ViewList *vl, int ox, int oy, int pattern, int only_pl
 /* the pattern's tile (the top left px x py blocks of the screen, the fill's
  * planes as now), repeated in four strips around the original screen */
 static uint32_t pattern_tile[128 * 128];
+/* the scroll plane_row draws with now (the scroll table's first entries, VSRAM) */
+static uint32_t scroll_now_sig(void)
+{
+    uint32_t hs = (uint32_t)(vdp_reg[13] & 0x3F) << 10, h = 2166136261u;
+    int i, n = (vdp_reg[11] & 3) ? 224 * 4 : 4;
+    for (i = 0; i < n; i++) h = (h ^ vdp_vram[(hs + (uint32_t)i) & 0xFFFF]) * 16777619u;
+    for (i = 0; i < 4; i++) h = (h ^ (uint32_t)vdp_vsram[i]) * 16777619u;
+    return h;
+}
+
+/* what planes A and B show (their maps and the tiles there, the scroll of the top
+ * line, the palette): the same, the same picture */
+static uint32_t planes_sig(void)
+{
+    static const int sizes[4] = {32, 64, 32, 128};
+    int k, n = sizes[vdp_reg[16] & 3] * sizes[(vdp_reg[16] >> 4) & 3], i;
+    uint32_t h = 2166136261u;
+    const VdpLineState *st = &vdp_lines[0];
+    uint32_t bases[2] = {(uint32_t)(vdp_reg[2] & 0x38) << 10, (uint32_t)(vdp_reg[4] & 7) << 13};
+    if (n > 4096) n = 4096;
+    for (k = 0; k < 2; k++)
+        for (i = 0; i < n; i++) {
+            uint32_t ea = (bases[k] + (uint32_t)i * 2) & 0xFFFF;
+            uint32_t e = ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1];
+            h = (h ^ e) * 16777619u;
+            h = (h ^ vdp_tile_ver[e & 0x7FF]) * 16777619u;
+        }
+    (void)st;
+    h = (h ^ scroll_now_sig()) * 16777619u;
+    h = (h ^ vdp_cram_version ^ ((uint32_t)vdp_reg[7] << 16) ^ ((uint32_t)vdp_reg[16] << 24) ^ ((uint32_t)vdp_reg[11] << 8)) * 16777619u;
+    return h;
+}
+
 static int ext_pattern_overlays(ViewList *vl, int ox, int oy)
 {
     int tw = ext_dec.px * 8, th = ext_dec.py * 8, x, y, i, n;
     uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
     static uint8_t a[128], b[128];
+    static uint32_t was_sig, gen;
+    static int was_tw, was_th, was_fill = -1;
+    uint32_t sig;
     if (tw > 128 || th > 128) { sl_why = "pattern-size"; return 0; }
+    /* (the pattern's tile drawn again only when what it is drawn from changed) */
+    sig = planes_sig();
+    if (sig != was_sig || tw != was_tw || th != was_th || ext_dec.fill != was_fill) {
+        was_sig = sig; was_tw = tw; was_th = th; was_fill = ext_dec.fill;
+        gen++;
+    } else goto drawn;
     for (y = 0; y < th; y++) {
         memset(a, 0, sizeof a);
         memset(b, 0, sizeof b);
@@ -2635,6 +2867,8 @@ static int ext_pattern_overlays(ViewList *vl, int ox, int oy)
             pattern_tile[y * 128 + x] = vdp_palette_rgb(c & 0x3F);
         }
     }
+drawn:
+    ovl_stamp = 0x20000000u | (gen & 0x0FFFFFFFu);
     for (i = 0; i < 4; i++) {
         int rx = i == 3 ? ox + 320 : 0, ry = i == 0 ? 0 : i == 1 ? oy + VDP_HEIGHT : oy;
         int rw = i < 2 ? vl->w : i == 2 ? ox : vl->w - ox - 320, rh = i == 0 ? oy : i == 1 ? vl->h - oy - VDP_HEIGHT : VDP_HEIGHT;
@@ -2648,6 +2882,7 @@ static int ext_pattern_overlays(ViewList *vl, int ox, int oy)
             o->ty0 = oy;
         }
     }
+    ovl_stamp = 0;
     return 1;
 }
 
@@ -2663,11 +2898,60 @@ static void outside_strips(ViewList *vl, int ox, int oy, const uint32_t *pic)
     vl_overlay_clip(vl, ox + 320, oy, vl->w - ox - 320, VDP_HEIGHT, pic + (size_t)oy * GAMEVIEW_MAX_W + ox + 320, GAMEVIEW_MAX_W);
 }
 
+/* what the border rows (b cells at the top and bottom) are drawn from: the map
+ * rows they show of planes A and B and the window, and the tiles there */
+static uint32_t border_rows_sig(int b)
+{
+    static const int sizes[4] = {32, 64, 0, 128};
+    int pw = sizes[vdp_reg[16] & 3], ph = sizes[(vdp_reg[16] >> 4) & 3], k, y, c;
+    uint32_t h = 2166136261u;
+    uint32_t bases[3] = {(uint32_t)(vdp_reg[2] & 0x38) << 10, (uint32_t)(vdp_reg[4] & 7) << 13, (uint32_t)(vdp_reg[3] & 0x3E) << 10};
+    if (!pw) pw = 32;
+    if (!ph) ph = 32;
+    for (k = 0; k < 3; k++) {
+        int last_row = -1, cols = k == 2 ? 64 : pw, rows = k == 2 ? 32 : ph;
+        for (y = 0; y < VDP_HEIGHT; y++) {
+            int row;
+            if (y == b * 8) y = VDP_HEIGHT - b * 8;
+            row = k == 2 ? y >> 3 : (((y + vdp_vsram[k == 1]) >> 3) & (rows - 1));   /* (as plane_row: VSRAM now) */
+            if (row == last_row) continue;
+            last_row = row;
+            for (c = 0; c < cols; c++) {
+                uint32_t ea = (bases[k] + (uint32_t)(row * cols + c) * 2) & 0xFFFF;
+                uint32_t e = ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1];
+                h = (h ^ e) * 16777619u;
+                h = (h ^ vdp_tile_ver[e & 0x7FF]) * 16777619u;
+            }
+        }
+    }
+    return h;
+}
+
 static int ext_border_overlays(ViewList *vl, int ox, int oy)
 {
-    static uint32_t last_sum, last_key;
+    static uint32_t last_sum, last_key, last_vram, gen;
+    static uint16_t last_cram;
+    static uint8_t last_reg[32];
+    static VdpLineState last_top, last_bottom;
+    static int have;
     int b = ext_dec.b, span = BW - 2 * b, y, x;
     uint32_t sum = 2166136261u, key = (uint32_t)(vl->w * 1000 + vl->h) ^ ((uint32_t)b << 24);
+    uint32_t sig = border_rows_sig(b) ^ scroll_now_sig();
+    /* (nothing the border rows are drawn from changed: as last time) */
+    if (have && key == last_key && sig == last_vram && vdp_cram_version == last_cram &&
+        vdp_lines_alike(&vdp_lines[0], &last_top) && vdp_lines_alike(&vdp_lines[VDP_HEIGHT - 1], &last_bottom) &&
+        !memcmp(vdp_reg, last_reg, 15) && !memcmp(vdp_reg + 16, last_reg + 16, 3)) {   /* (not 15, the step; 19-23, DMA) */
+        ovl_stamp = 0x80000000u | gen;
+        outside_strips(vl, ox, oy, border_out);
+        ovl_stamp = 0;
+        return 1;
+    }
+    have = 1;
+    last_vram = sig;
+    last_cram = vdp_cram_version;
+    last_top = vdp_lines[0];
+    memcpy(last_reg, vdp_reg, sizeof last_reg);
+    last_bottom = vdp_lines[VDP_HEIGHT - 1];
     for (y = 0; y < b * 8; y++) { bg_line(y); bg_line(VDP_HEIGHT - 1 - y); }
     for (y = 0; y < b * 8; y++)
         for (x = 0; x < 320; x++) {
@@ -2675,6 +2959,7 @@ static int ext_border_overlays(ViewList *vl, int ox, int oy)
             sum = (sum ^ bg_pic[VDP_HEIGHT - 1 - y][x]) * 16777619u;
         }
     if (sum != last_sum || key != last_key) {
+        gen++;
         for (y = 0; y < vl->h; y++) {
             int ry = y - oy;
             uint32_t *o = border_out + (size_t)y * GAMEVIEW_MAX_W;
@@ -2694,7 +2979,9 @@ static int ext_border_overlays(ViewList *vl, int ox, int oy)
         last_sum = sum;
         last_key = key;
     }
+    ovl_stamp = 0x80000000u | gen;
     outside_strips(vl, ox, oy, border_out);
+    ovl_stamp = 0;
     return 1;
 }
 
@@ -2711,12 +2998,14 @@ static void ext_star_overlays(ViewList *vl, int ox, int oy)
         stars_for_w = vl->w;
         stars_for_h = vl->h;
     }
+    ovl_stamp = 0x40000000u | (uint32_t)(vl->w * 1000 + vl->h);
     vl_overlay_clip(vl, 0, 0, vl->w, oy, star_out, GAMEVIEW_MAX_W);
     vl_overlay_clip(vl, 0, oy + VDP_HEIGHT, vl->w, vl->h - oy - VDP_HEIGHT,
                     star_out + (size_t)(oy + VDP_HEIGHT) * GAMEVIEW_MAX_W, GAMEVIEW_MAX_W);
     vl_overlay_clip(vl, 0, oy, ox, VDP_HEIGHT, star_out + (size_t)oy * GAMEVIEW_MAX_W, GAMEVIEW_MAX_W);
     vl_overlay_clip(vl, ox + 320, oy, vl->w - ox - 320, VDP_HEIGHT,
                     star_out + (size_t)oy * GAMEVIEW_MAX_W + ox + 320, GAMEVIEW_MAX_W);
+    ovl_stamp = 0;
 }
 
 /* (tests, TJE_VLCHECK) the list drawn in software against the picture drawn the
@@ -2728,12 +3017,12 @@ static void screen_list_check(void)
     const uint32_t *pic;
     int pitch, x, y;
     long bad = 0;
-    if (vlist.w == 320 && vlist.h == VDP_HEIGHT && (frame_ok == 0 || pic_w != 320)) { pic = vdp_framebuffer(); pitch = VDP_FB_PITCH; }
+    if (sl_into->w == 320 && sl_into->h == VDP_HEIGHT && (frame_ok == 0 || pic_w != 320)) { pic = vdp_framebuffer(); pitch = VDP_FB_PITCH; }
     else { pic = picture; pitch = GAMEVIEW_MAX_W; }
-    if (frame_ok != 0 && (vlist.w != pic_w || vlist.h != pic_h) && pic == picture) return;
-    viewlist_render_soft(&vlist, ref, GAMEVIEW_MAX_W);
-    for (y = 0; y < vlist.h; y++)
-        for (x = 0; x < vlist.w; x++)
+    if (frame_ok != 0 && (sl_into->w != pic_w || sl_into->h != pic_h) && pic == picture) return;
+    viewlist_render_soft(sl_into, ref, GAMEVIEW_MAX_W);
+    for (y = 0; y < sl_into->h; y++)
+        for (x = 0; x < sl_into->w; x++)
             bad += (ref[(size_t)y * GAMEVIEW_MAX_W + x] & 0xFFFFFF) != (pic[(size_t)y * pitch + x] & 0xFFFFFF);
     g_sl_checked++;
     if (bad) {
@@ -2746,16 +3035,16 @@ static void screen_list_check(void)
                 snprintf(path, sizeof path, "%s_%u_%s.ppm", getenv("TJE_SLDUMP"), g_frame, i ? "list" : "pic");
                 f = fopen(path, "wb");
                 if (!f) continue;
-                fprintf(f, "P6 %d %d 255\n", vlist.w, vlist.h);
-                for (y = 0; y < vlist.h; y++)
-                    for (x = 0; x < vlist.w; x++) {
+                fprintf(f, "P6 %d %d 255\n", sl_into->w, sl_into->h);
+                for (y = 0; y < sl_into->h; y++)
+                    for (x = 0; x < sl_into->w; x++) {
                         uint32_t c = i ? ref[(size_t)y * GAMEVIEW_MAX_W + x] : pic[(size_t)y * pitch + x];
                         fputc((int)((c >> 16) & 255), f); fputc((int)((c >> 8) & 255), f); fputc((int)(c & 255), f);
                     }
                 fclose(f);
             }
         }
-        fprintf(stderr, "slcheck: frame %u (kind %d, %dx%d): %ld pixels differ\n", g_frame, frame_ok, vlist.w, vlist.h, bad);
+        fprintf(stderr, "slcheck: frame %u (kind %d, %dx%d): %ld pixels differ\n", g_frame, frame_ok, sl_into->w, sl_into->h, bad);
     }
     if (g_sl_checked % 500 == 0) fprintf(stderr, "slcheck: %d screens, %d differ\n", g_sl_checked, g_sl_bad);
 }
@@ -2765,27 +3054,27 @@ static int build_screen_frame(void)
 {
     static const int psz[4] = {32, 64, 32, 128};
     if (frame_ok == 0) {
-        vl_begin(&vlist, 320, VDP_HEIGHT);
-        return build_screen_list(&vlist, 0, 0, -1, 0);
+        vl_begin(sl_into, 320, VDP_HEIGHT);
+        return build_screen_list(sl_into, 0, 0, -1, 0);
     }
-    vl_begin(&vlist, pic_w, pic_h);
-    if (frame_ok == 2) return build_screen_list(&vlist, off_x, off_y, g_gameview_extend_screen == 2 ? 0 : 1, 1);
+    vl_begin(sl_into, pic_w, pic_h);
+    if (frame_ok == 2) return build_screen_list(sl_into, off_x, off_y, g_gameview_extend_screen == 2 ? 0 : 1, 1);
     /* frame_ok 3 */
     if (map_mode) {
-        if (!build_screen_list(&vlist, off_x, off_y, -1, 0)) return 0;
-        ext_star_overlays(&vlist, off_x, off_y);
+        if (!build_screen_list(sl_into, off_x, off_y, -1, 0)) return 0;
+        PROF_PUSH(PROF_OVL); ext_star_overlays(sl_into, off_x, off_y); PROF_POP();
         return 1;
     }
     ext_decide();
     if (ext_dec.b) {
         sl_why = "";
-        if (!ext_copy_cells(&vlist, off_x, off_y, 0, -1)) {
+        if (!ext_copy_cells(sl_into, off_x, off_y, 0, -1)) {
             /* (scrolled part of a cell: the border as pictures) */
-            vl_begin(&vlist, pic_w, pic_h);
-            if (!build_screen_list(&vlist, off_x, off_y, -1, 0)) return 0;
-            return ext_border_overlays(&vlist, off_x, off_y);
+            vl_begin(sl_into, pic_w, pic_h);
+            if (!build_screen_list(sl_into, off_x, off_y, -1, 0)) return 0;
+            { int r; PROF_PUSH(PROF_OVL); r = ext_border_overlays(sl_into, off_x, off_y); PROF_POP(); return r; }
         }
-        return build_screen_list(&vlist, off_x, off_y, -1, 0);
+        return build_screen_list(sl_into, off_x, off_y, -1, 0);
     }
     if (ext_dec.px && ext_dec.py) {
         int pw = psz[vdp_reg[16] & 3], ph = psz[(vdp_reg[16] >> 4) & 3];
@@ -2795,15 +3084,15 @@ static int build_screen_frame(void)
         if (wide < -1) {
             /* (the planes don't repeat so: the pattern's tile, drawn here as the
              * screen shows it now, repeated around the original screen) */
-            if (!build_screen_list(&vlist, off_x, off_y, -1, 0)) return 0;
-            return ext_pattern_overlays(&vlist, off_x, off_y);
+            if (!build_screen_list(sl_into, off_x, off_y, -1, 0)) return 0;
+            { int r; PROF_PUSH(PROF_OVL); r = ext_pattern_overlays(sl_into, off_x, off_y); PROF_POP(); return r; }
         }
         if (vdp_reg[17] & 0x1F) { sl_why = "pattern-window"; return 0; }
-        return build_screen_list(&vlist, off_x, off_y, wide, 0);
+        return build_screen_list(sl_into, off_x, off_y, wide, 0);
     }
     /* (no outside: shown at its own size) */
-    vl_begin(&vlist, 320, VDP_HEIGHT);
-    return build_screen_list(&vlist, 0, 0, -1, 0);
+    vl_begin(sl_into, 320, VDP_HEIGHT);
+    return build_screen_list(sl_into, 0, 0, -1, 0);
 }
 
 /* The status bar (window rows from..to-1 of the original screen) with its icon
@@ -3664,9 +3953,9 @@ static int win_list[2], win_list_overlays;
 static void window_kept_list(int player, const uint32_t **pixels)
 {
     if (!win_list[player]) return;
-    vlist.frozen = 1;
-    vlist.noverlays = win_list_overlays;
-    present_set_list(&vlist);
+    wlist.frozen = 1;
+    wlist.noverlays = win_list_overlays;
+    set_list(&wlist);
     *pixels = NULL;
 }
 
@@ -3683,7 +3972,7 @@ static void window_compare(const uint32_t *out, int w, int h)
     static uint32_t ref[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
     long bad = 0;
     int x, y;
-    viewlist_render_soft(&vlist, ref, GAMEVIEW_MAX_W);
+    viewlist_render_soft(&wlist, ref, GAMEVIEW_MAX_W);
     for (y = 0; y < h; y++)
         for (x = 0; x < w; x++)
             bad += ref[(size_t)y * GAMEVIEW_MAX_W + x] != out[(size_t)y * GAMEVIEW_MAX_W + x];
@@ -3828,8 +4117,8 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     /* (the band of sprites across the middle: the hint box; with a menu open it is
      * part of the menu's frame, which comes with the menu below) */
     if (as_list) {
-        vl_begin(&vlist, w, h);
-        build_view_list(&vlist, p, cam_x, cam_y, -1, VDP_HEIGHT, 0, 0, w, h,
+        vl_begin(&wlist, w, h);
+        build_view_list(&wlist, p, cam_x, cam_y, -1, VDP_HEIGHT, 0, 0, w, h,
                         !split && !rd8(MENU_FLAG(0)) && !rd8(MENU_FLAG(1)));
     }
     if (!as_list || window_check(player)) {
@@ -3867,7 +4156,7 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
                     /* (a run of such lines: one overlay) */
                     int end = line + 1;
                     while (end < menu_to && line_window[end] && !window_row_filler(end / 8)) end++;
-                    vl_overlay_clip(&vlist, ox, oy + line - menu_from, 320, end - line, top_window_lines[line], 320);
+                    vl_overlay_clip(&wlist, ox, oy + line - menu_from, 320, end - line, top_window_lines[line], 320);
                     if (window_check(player))
                         for (; line < end; line++) paste_line(out, w, h, oy + line - menu_from, ox, line, 0, h);
                     line = end - 1;
@@ -3879,7 +4168,7 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     if (rd8(TOEJAMS_LEVEL) != FINAL_LEVEL) {
         static uint32_t bar[BAR_H][320];
         int n = build_bar(bar, p), xs = ox < 0 ? -ox : 0, xd = ox < 0 ? 0 : ox, cnt = 320 - xs;
-        if (as_list) vl_overlay_clip(&vlist, ox, h - n, 320, n, &bar[0][0], 320);
+        if (as_list) vl_overlay_clip(&wlist, ox, h - n, 320, n, &bar[0][0], 320);
         if (as_list && !window_check(player)) n = 0;
         if (xd + cnt > w) cnt = w - xd;
         for (line = 0; line < n && cnt > 0; line++)
@@ -3889,16 +4178,16 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     if (soft_pause[p].open && p == player) {
         draw_soft_pause(out, w, h, p);
         if (as_list)   /* (the box: SPW x SPH tiles, centred) */
-            vl_overlay_clip(&vlist, (w - 160) / 2, (h - 56) / 2, 160, 56,
+            vl_overlay_clip(&wlist, (w - 160) / 2, (h - 56) / 2, 160, 56,
                             out + (size_t)((h - 56) / 2) * GAMEVIEW_MAX_W + (w - 160) / 2, GAMEVIEW_MAX_W);
     }
     *pixels = out;
     *pitch = GAMEVIEW_MAX_W;
     if (as_list) {
-        win_list_overlays = vlist.noverlays;
+        win_list_overlays = wlist.noverlays;
         if (window_check(player)) window_compare(out, w, h);
         if (g_gv_use_list) {
-            present_set_list(&vlist);
+            set_list(&wlist);
             *pixels = NULL;
         }
     }

@@ -81,7 +81,7 @@ void music_frame(void)
 
 /* ---- the player (music_mix's thread) ---------------------------------------- */
 static MFile f = MF_NONE;
-static int seq = -1;
+static volatile int seq = -1;   /* (the request the ring has; the mixer reads it) */
 static long data_at;                       /* file offset of the samples */
 static uint32_t frames_total, loop_from, loop_to;   /* sample frames */
 static int channels, rate;
@@ -271,11 +271,12 @@ int music_fill(void)
     /* (the folder changed: the song opened again from there) */
     if (song_gen != dir_gen) { song_gen = dir_gen; seq = req_seq - 1; }
     if (seq != req_seq) {
-        seq = req_seq;
+        int want = req_seq;
         open_song(req_song);
         if (f != MF_NONE) { next_frame(cur); next_frame(nxt); }
         flush_to = ring_w;
         ring_gen++;
+        seq = want;   /* (last: the mixer takes the ring again from here) */
         did = 1;
     }
     /* the effects, loaded here a few at a time once the song is going (the mixer
@@ -314,7 +315,7 @@ void music_mix(int16_t *out, int frames)
     if (!music_threaded) music_fill();
     sfx_mix(out, frames);
     if (gen != ring_gen) { gen = ring_gen; ring_r = flush_to; }
-    if (paused) return;
+    if (paused || seq != req_seq) return;   /* (another song asked for: not the old one's rest while it opens) */
     for (i = 0; i < frames && ring_r != ring_w; i++) {
         uint32_t k = ring_r % RING_FRAMES;
         int c;

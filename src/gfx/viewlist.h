@@ -24,16 +24,22 @@
 #include <stdint.h>
 
 #define VL_MAX_CELLS    12288
-#define VL_MAX_BATCHES  64
+#define VL_MAX_BATCHES  192
 #define VL_MAX_PIECES   96
 #define VL_MAX_OVERLAYS 16
 
-typedef struct { int16_t x, y; uint16_t entry; } VlCell;   /* top-left in the picture */
+/* A cell: top-left in the picture; entry as a plane's (tile, flips, palette line,
+ * priority); ext bit 0: the tile is the cache's (ViewList.cache: tiles drawn from
+ * the ROM, an object's frame the game has no sprites for), bit 1: colour 15
+ * see-through too (an object flashing). */
+typedef struct { int16_t x, y; uint16_t entry, ext; } VlCell;
+#define VL_CACHE_TILES 2048
 
 typedef struct {
     int layer;                     /* 0 plane B, 1 plane A / window, 2 sprites (cells listed back first) */
     int x0, y0, x1, y1;            /* drawn only inside (picture pixels, x1/y1 excluded) */
     int first, count;              /* its cells */
+    int piece;                     /* layer 2: >= 0, this piece instead (pieces[piece]) */
 } VlBatch;
 
 typedef struct {
@@ -47,6 +53,7 @@ typedef struct {
     int x, y, w, h, pitch;         /* in the picture; pitch in pixels */
     const uint32_t *px;            /* 0x00RRGGBB, all drawn; keyed: 0xFFRRGGBB, 0 = see-through */
     int keyed;
+    uint32_t stamp;                /* not 0: the same pixels as an overlay before with this px and stamp */
     /* tiled: tile_w x tile_h pixels at px repeated over the rectangle, picture
      * pixel (X, Y) showing tile pixel ((X - tx0) mod tile_w, (Y - ty0) mod tile_h);
      * tile_w 0: px is the rectangle's picture */
@@ -59,6 +66,9 @@ typedef struct ViewList {
     uint32_t pal[64];              /* the four palette lines, 0x00RRGGBB */
     const uint8_t *vram;           /* the tiles: 32 bytes each, high nibble first */
     uint8_t *tiles_changed;        /* tiles written since a GPU last read them (it clears them) */
+    const uint8_t *cache;          /* VL_CACHE_TILES more tiles, as vram (cells with ext bit 0) */
+    uint8_t *cache_changed;        /* (as tiles_changed) */
+    int pieces_in_batches;         /* the pieces are drawn by layer-2 batches, in their order */
     int frozen;                    /* keep the GPU's copy of the tiles as it is (picture held) */
     VlCell cells[VL_MAX_CELLS];
     int ncells;

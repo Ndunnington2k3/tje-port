@@ -402,7 +402,7 @@ static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
                     perf_game / 60000.0, perf_draw / 60000.0, perf_wait / 60000.0, perf_lists ? " [GE gameplay]" : "");
 #ifdef TJE_PROF
         {
-            static const char *names[PROF_N] = {"68k", "vdp lines", "z80", "fm", "sound other", "view", "present", "hooks"};
+            static const char *names[PROF_N] = {"68k", "vdp lines", "z80", "fm", "sound other", "view", "present", "hooks", "(list", "overlays", "ge)"};
             int k;
             prof_us[PROF_PRESENT] -= prof_us[PROF_PRESENT] > perf_write_us ? perf_write_us : prof_us[PROF_PRESENT];
             perf_printf("   ");

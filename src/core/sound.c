@@ -513,6 +513,7 @@ void snd_reset_write(uint32_t v)
         cpu.port_out = z80_out;
         if (enabled) { ym_sync(R.cycles); fm_reset(); }
         memset(ym_shadow, 0, sizeof ym_shadow);
+        voice_on = 0;   /* (native sound: the driver's sample stops with the Z80) */
     }
     z80_reset_line = assert_reset;
 }

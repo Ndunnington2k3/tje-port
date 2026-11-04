@@ -76,6 +76,7 @@ void f_03E3A8(void)
 {
     orig_f_03E3A8();
     music_song(-1);
+    music_sfx(0);   /* (the effect's channels are cleared too) */
 }
 
 /* the music engine, once a frame while the music plays */

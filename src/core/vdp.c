@@ -175,6 +175,7 @@ uint32_t vdp_palette_rgb(int i)
 
 uint8_t vdp_tile_dirty[2048];
 uint8_t vdp_tile_dirty_gpu[2048];
+uint32_t vdp_tile_ver[2048];
 int vdp_stats_on;
 
 void vdp_tiles_all_dirty(void)
@@ -187,6 +188,7 @@ void vdp_tile_written(uint32_t a)
 {
     vdp_tile_dirty[(a & 0xFFFF) >> 5] = 1;
     vdp_tile_dirty_gpu[(a & 0xFFFF) >> 5] = 1;
+    vdp_tile_ver[(a & 0xFFFF) >> 5]++;
 }
 
 static void stat_write(uint32_t a)
@@ -196,8 +198,12 @@ static void stat_write(uint32_t a)
     a &= 0xFFFF;
     vdp_tile_dirty[a >> 5] = 1;   /* (decoded copies of this tile, e.g. gameview's, are stale) */
     vdp_tile_dirty_gpu[a >> 5] = 1;
-    if (a < sat || a >= sat + 0x280) vdp_vram_changes++;
-    else vdp_sat_changes++;
+    vdp_tile_ver[a >> 5]++;
+    uint32_t hs = (uint32_t)(vdp_reg[13] & 0x3F) << 10;
+    if (a >= sat && a < sat + 0x280) vdp_sat_changes++;
+    else if (!(a >= hs && a < hs + 0x380 && !(vdp_reg[11] & 3))) vdp_vram_changes++;
+    /* (the scroll table in full-screen scroll mode: not counted, its values are in
+     * vdp_lines) */
     if (!vdp_stats_on) return;
     if (a >= sat && a < sat + 0x280) st_writes[3]++;
     else if (a >= pa && a < pa + 0x2000) st_writes[1]++;

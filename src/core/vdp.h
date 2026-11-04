@@ -91,6 +91,7 @@ extern uint8_t vdp_vram[0x10000];
 extern uint8_t vdp_tile_dirty[2048];
 /* The same for a GPU's copy of the tiles (gfx/viewlist.h), cleared by it. */
 extern uint8_t vdp_tile_dirty_gpu[2048];
+extern uint32_t vdp_tile_ver[2048];   /* each tile: counts writes to it (wraps) */
 /* Port code writing VRAM directly: the tile at this address has changed. */
 void vdp_tile_written(uint32_t a);
 void vdp_tiles_all_dirty(void);
