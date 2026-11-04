@@ -45,6 +45,8 @@ void vdp_freeze(int frames);
  * pixels are not copied: keep them alive while shown. Cleared on reset. */
 void vdp_overlay(int slot, int x, int y, int w, int h, const uint8_t *pixels, const uint16_t colors[16]);
 void vdp_overlay_off(int slot);
+/* Is overlay `slot` shown? Then where, and its pixels and colours (0x00RRGGBB). */
+int vdp_overlay_get(int slot, int *x, int *y, int *w, int *h, const uint8_t **px, const uint32_t **rgb);
 
 /* Since the last call: VRAM words written to [other, plane A, plane B, sprite table],
  * and lines drawn with the display off. Resets the counters. */
@@ -62,6 +64,24 @@ int vdp_frozen(void);
 uint32_t vdp_palette_rgb(int i);
 /* A Genesis colour word (0000BBB0GGG0RRR0) as 0x00RRGGBB. */
 uint32_t vdp_color_rgb(uint16_t c);
+
+/* What each line of the frame was drawn with (kept for every line, drawn or not):
+ * a renderer drawing the frame afterwards from VRAM (a GPU) reads it. Lines with
+ * the same values form bands drawn alike. */
+typedef struct {
+    uint8_t on;                 /* the display on (and the picture live: clean transitions) */
+    uint8_t reg[20];            /* registers 0-19 as at this line */
+    int16_t hsa, hsb;           /* horizontal scroll of planes A and B (full-screen mode) */
+    uint16_t vsa, vsb;          /* vertical scroll (full-screen mode) */
+    uint16_t cram_ver;          /* vdp_cram_version at this line */
+    uint32_t vram_chg, sat_chg; /* vdp_vram_changes, vdp_sat_changes at this line (not compared by vdp_lines_alike) */
+} VdpLineState;
+extern VdpLineState vdp_lines[VDP_HEIGHT];
+extern uint16_t vdp_cram_version;   /* counts CRAM writes */
+extern uint32_t vdp_vram_changes;   /* counts VRAM writes outside the sprite table (tiles, planes) */
+extern uint32_t vdp_sat_changes;    /* counts writes to the sprite table */
+/* Same values on both lines (drawn alike)? */
+int vdp_lines_alike(const VdpLineState *a, const VdpLineState *b);
 
 /* Raw access for tools/debugging and future native renderers */
 extern uint8_t vdp_vram[0x10000];

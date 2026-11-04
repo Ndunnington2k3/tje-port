@@ -20,8 +20,10 @@ def presses(lst):
     return ','.join('%.2f:0x%x:0.1' % (t, m) for t, m in lst)
 
 
-# Who screen at ~16 s; Network Play is the 5th row
-TO_NET = [(15, START), (16.5, DOWN), (16.8, DOWN), (17.1, DOWN), (17.4, DOWN), (17.8, CROSS)]
+# the title screen from ~10 s: Start there starts the intro, Start again skips it to
+# the Who screen; Network Play is its 5th row
+TO_NET = [(13, START), (14.5, START), (16.5, DOWN), (16.8, DOWN), (17.1, DOWN), (17.4, DOWN), (17.8, CROSS)]
+SHIFT = 0.0   # (all the times above and below move with the title screen's)
 HOST = TO_NET + [(19.5, CROSS), (21.5, CROSS),            # Host Game, Open Room
                  (32.0, CROSS),                             # lobby: New game (the joiner is in)
                  (35.0, CROSS)]                             # What: random world
@@ -70,7 +72,7 @@ def main():
         for old in ('net.hash',):
             if os.path.exists(os.path.join(game, old)):
                 os.remove(os.path.join(game, old))
-        script = script + wander(40, a.seconds - 1, n)
+        script = [(t + SHIFT, m) for t, m in script] + wander(40 + SHIFT, a.seconds - 1, n)
         args = [a.ppsspp, '--memstick=' + os.path.join(a.dir, name), '--instance', str(n),
                 '--sync-file', sync, '--sync-count', '2', '--nickname', name.upper(),
                 '--timeout-emulated=%g' % a.seconds, '--press=' + presses(script)]
@@ -81,7 +83,7 @@ def main():
         if a.delay:
             args.append('--adhoc-delay=%d' % a.delay)
         if a.shots:
-            ts = [18.5, 20.5, 23, 28, 31, 34, 37, 45, a.seconds - 2]
+            ts = [12, 14, 15.5, 16, 18.5, 20.5, 23, 28, 31, 34, 37, 45, a.seconds - 2]
             args.append('--screenshot-at=' + ','.join('%g:%s' % (t, os.path.join(a.dir, '%s_%04.1f.png' % (name, t)))
                                                       for t in ts))
         args.append(os.path.join(game, 'EBOOT.PBP'))

@@ -13,6 +13,9 @@ uint8_t vdp_vram[0x10000];
 uint16_t vdp_cram[64];
 uint16_t vdp_vsram[40];
 uint8_t vdp_reg[32];
+VdpLineState vdp_lines[VDP_HEIGHT];
+uint16_t vdp_cram_version;
+uint32_t vdp_vram_changes, vdp_sat_changes;
 
 static uint32_t framebuffer[VDP_MAX_WIDTH * VDP_HEIGHT];
 static uint32_t palette_rgb[64];
@@ -49,6 +52,15 @@ void vdp_overlay(int slot, int x, int y, int w, int h, const uint8_t *pixels, co
     overlay[slot].px = pixels;
     for (i = 0; i < 16; i++) overlay[slot].rgb[i] = genesis_rgb(colors[i]);
     overlay[slot].on = pixels != NULL;
+}
+
+int vdp_overlay_get(int slot, int *x, int *y, int *w, int *h, const uint8_t **px, const uint32_t **rgb)
+{
+    if (slot < 0 || slot >= OVERLAYS || !overlay[slot].on) return 0;
+    *x = overlay[slot].x; *y = overlay[slot].y; *w = overlay[slot].w; *h = overlay[slot].h;
+    *px = overlay[slot].px;
+    *rgb = overlay[slot].rgb;
+    return 1;
 }
 
 void vdp_overlay_off(int slot)
@@ -184,6 +196,8 @@ static void stat_write(uint32_t a)
     a &= 0xFFFF;
     vdp_tile_dirty[a >> 5] = 1;   /* (decoded copies of this tile, e.g. gameview's, are stale) */
     vdp_tile_dirty_gpu[a >> 5] = 1;
+    if (a < sat || a >= sat + 0x280) vdp_vram_changes++;
+    else vdp_sat_changes++;
     if (!vdp_stats_on) return;
     if (a >= sat && a < sat + 0x280) st_writes[3]++;
     else if (a >= pa && a < pa + 0x2000) st_writes[1]++;
@@ -225,6 +239,7 @@ static void port_write(uint32_t v)
         int i = (addr >> 1) & 0x3F;
         vdp_cram[i] = (uint16_t)(v & 0x0EEE);
         update_palette(i);
+        vdp_cram_version++;
         break;
     }
     case 5: {
@@ -495,6 +510,12 @@ static void render_sprites(uint8_t *out, int line, int width)
 int (*vdp_line_wanted)(int line);
 int vdp_lines_skipped;
 
+int vdp_lines_alike(const VdpLineState *a, const VdpLineState *b)
+{
+    return a->on == b->on && !memcmp(a->reg, b->reg, sizeof a->reg) && a->hsa == b->hsa && a->hsb == b->hsb &&
+           a->vsa == b->vsa && a->vsb == b->vsb && a->cram_ver == b->cram_ver;
+}
+
 void vdp_render_line(int line)
 {
     uint8_t la[VDP_MAX_WIDTH], lb[VDP_MAX_WIDTH], ls[VDP_MAX_WIDTH];
@@ -514,6 +535,22 @@ void vdp_render_line(int line)
         frame_visible = frames_on >= 2;
     }
     if (line == 0) vdp_lines_skipped = 0;
+    {
+        /* what this line is drawn with (vdp_lines) */
+        VdpLineState *st = &vdp_lines[line];
+        uint32_t hsaddr = ((uint32_t)(vdp_reg[13] & 0x3F) << 10) & 0xFFFF;
+        int ha = ((vdp_vram[hsaddr] << 8) | vdp_vram[hsaddr + 1]) & 0x3FF;
+        int hb = ((vdp_vram[hsaddr + 2] << 8) | vdp_vram[hsaddr + 3]) & 0x3FF;
+        st->on = (vdp_reg[1] & 0x40) && !(clean_transitions && !frame_visible) && !freeze_frames;
+        memcpy(st->reg, vdp_reg, sizeof st->reg);
+        st->hsa = (int16_t)(ha & 0x200 ? ha - 0x400 : ha);
+        st->hsb = (int16_t)(hb & 0x200 ? hb - 0x400 : hb);
+        st->vsa = vdp_vsram[0];
+        st->vsb = vdp_vsram[1];
+        st->cram_ver = vdp_cram_version;
+        st->vram_chg = vdp_vram_changes;
+        st->sat_chg = vdp_sat_changes;
+    }
     if (freeze_frames)
         return;                                    /* keep showing the last picture */
     if (vdp_line_wanted && !vdp_line_wanted(line)) {

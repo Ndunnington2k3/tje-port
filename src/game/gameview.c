@@ -1358,7 +1358,27 @@ static void hold_line(int line)
     }
 }
 
+/* (screens other than gameplay as lists: this frame is one; frames before trying
+ * again after one that couldn't be) */
+static int screen_list_frame, screen_list_off;
+static int sl_stale;   /* (the last build failed only for that: the picture before is kept) */
+static const char *sl_why = "";   /* (why the last couldn't be a list) */
+extern int g_gv_use_list;
+static int vl_check_on(void);
+
+static void gameview_line_frame(int line);
 void gameview_line(int line)
+{
+    gameview_line_frame(line);
+    if (line == 0) {
+        extern int g_gv_windows;
+        if (screen_list_off) screen_list_off--;
+        screen_list_frame = (g_gv_use_list || vl_check_on()) && !g_gv_windows && !screen_list_off &&
+                            (frame_ok == 0 || frame_ok == 2 || frame_ok == 3) && vdp_live_picture() && vdp_width() == 320;
+    }
+}
+
+static void gameview_line_frame(int line)
 {
     const Region *r;
     int y, in_window, wv;
@@ -1368,6 +1388,7 @@ void gameview_line(int line)
     }
     if (frame_ok == 3 && line != 0) {                 /* another screen, wider */
         if (line < 0 || line >= VDP_HEIGHT) return;
+        if (screen_list_frame && !vl_check_on()) return;   /* (a list: drawn at the end of the frame) */
         if (!vdp_live_picture() || vdp_width() != 320) { frame_ok = 0; return; }
         bg_line(line);
         if (line == VDP_HEIGHT - 1 && !build_extended_screen()) frame_ok = 0;
@@ -1375,6 +1396,7 @@ void gameview_line(int line)
     }
     if (frame_ok == 2 && line != 0) {                 /* a wider screen with a repeating background */
         if (line < 0 || line >= VDP_HEIGHT) return;
+        if (screen_list_frame && !vl_check_on()) return;
         if (!vdp_live_picture() || (vdp_reg[17] & 0x1F) || (vdp_reg[18] & 0x1F)) {
             frame_ok = 0;
             return;
@@ -1491,10 +1513,61 @@ void gameview_line(int line)
     }
 }
 
+static void screen_list_check(void);
+static int build_screen_frame(void);
 static int frame_main(const uint32_t **pixels, int *width, int *height, int *pitch)
 {
     g_gv_gameplay = 0;
     g_gv_kept = 0;
+    if (screen_list_frame) {
+        /* a screen other than gameplay, drawn from a list (once a frame) */
+        static int ok;
+        if (!views_done) {
+            static int stale_run;
+            sl_stale = 0;
+            ok = build_screen_frame();
+            if (!ok && sl_stale && ++stale_run <= 3 && last_ok && last_was_list) ok = 2;   /* (keep the last) */
+            if (ok != 2) stale_run = 0;
+            views_done = 1;
+            if (vl_check_on() && ok == 1) screen_list_check();
+            if (vl_check_on() && !ok) fprintf(stderr, "slcheck: frame %u: no list (%s, kind %d)\n", g_frame, sl_stale ? "stale" : sl_why, frame_ok);
+        }
+        if (g_gv_use_list) {
+            if (ok == 2) {
+                vlist.frozen = 1;
+                present_set_list(&vlist);
+                *pixels = NULL;
+                *width = last_w;
+                *height = last_h;
+                *pitch = GAMEVIEW_MAX_W;
+                return 1;
+            }
+            if (ok) {
+                last_ok = 1;
+                last_was_list = 1;
+                last_w = vlist.w;
+                last_h = vlist.h;
+                present_set_list(&vlist);
+                *pixels = NULL;
+                *width = vlist.w;
+                *height = vlist.h;
+                *pitch = GAMEVIEW_MAX_W;
+                return 1;
+            }
+            /* (can't: the usual way for a while; this frame keeps the last picture) */
+            screen_list_off = 60;
+            printf("screen list: no (%s, kind %d)\n", sl_stale ? "stale" : sl_why, frame_ok);
+            if (last_ok && last_was_list) {
+                vlist.frozen = 1;
+                present_set_list(&vlist);
+                *pixels = NULL;
+                *width = last_w;
+                *height = last_h;
+                *pitch = GAMEVIEW_MAX_W;
+                return 1;
+            }
+        }
+    }
     if (!frame_ok) {
         /* while the VDP keeps its last picture (clean transitions), keep ours; and
          * keep it too for a frame the display was switched off part way down (the
@@ -2007,10 +2080,12 @@ int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int scr
 int g_gv_use_list;            /* the platform draws views as lists (gameview_list) */
 const ViewList *gameview_last_list(void) { return &vlist; }
 static int vl_check = -1;     /* (tests, TJE_VLCHECK) */
+static int vl_check_on(void) { if (vl_check < 0) vl_check = getenv("TJE_VLCHECK") != NULL; return vl_check; }
 int vl_checked, vl_bad_frames;
 static uint8_t vl_piece_pool[VL_MAX_PIECES * 2048] __attribute__((aligned(64)));
 static size_t vl_pool_used;
 
+static int vl_batch_open;   /* (cells go to the last batch begun - none if it was empty) */
 static void vl_batch(ViewList *vl, int layer, int x0, int y0, int x1, int y1)
 {
     VlBatch *b;
@@ -2018,7 +2093,8 @@ static void vl_batch(ViewList *vl, int layer, int x0, int y0, int x1, int y1)
     if (y0 < 0) y0 = 0;
     if (x1 > vl->w) x1 = vl->w;
     if (y1 > vl->h) y1 = vl->h;
-    if (vl->nbatches >= VL_MAX_BATCHES || x0 >= x1 || y0 >= y1) { vl->nbatches = vl->nbatches; return; }
+    if (vl->nbatches >= VL_MAX_BATCHES || x0 >= x1 || y0 >= y1) { vl_batch_open = 0; return; }
+    vl_batch_open = 1;
     b = &vl->batches[vl->nbatches++];
     b->layer = layer;
     b->x0 = x0; b->y0 = y0; b->x1 = x1; b->y1 = y1;
@@ -2029,7 +2105,7 @@ static void vl_batch(ViewList *vl, int layer, int x0, int y0, int x1, int y1)
 static inline void vl_cell(ViewList *vl, int x, int y, uint32_t entry)
 {
     VlCell *c;
-    if (!(entry & 0x7FF) || vl->ncells >= VL_MAX_CELLS) return;   /* (tile 0: see-through, nothing to draw) */
+    if (!(entry & 0x7FF) || vl->ncells >= VL_MAX_CELLS || !vl_batch_open) return;   /* (tile 0: see-through, nothing to draw) */
     c = &vl->cells[vl->ncells++];
     c->x = (int16_t)x;
     c->y = (int16_t)y;
@@ -2203,6 +2279,8 @@ static void vl_overlay(ViewList *vl, int x, int y, int w, int h, const uint32_t 
     if (vl->noverlays >= VL_MAX_OVERLAYS || w <= 0 || h <= 0) return;
     o = &vl->overlays[vl->noverlays++];
     o->x = x; o->y = y; o->w = w; o->h = h; o->px = px; o->pitch = pitch;
+    o->keyed = 0;
+    o->tile_w = o->tile_h = o->tx0 = o->ty0 = 0;
 }
 
 /* (an overlay clipped to the list's picture) */
@@ -2213,6 +2291,519 @@ static void vl_overlay_clip(ViewList *vl, int x, int y, int w, int h, const uint
     if (x + w > vl->w) w = vl->w - x;
     if (y + h > vl->h) h = vl->h - y;
     vl_overlay(vl, x, y, w, h, px, pitch);
+}
+
+/* ==== Screens other than gameplay as lists ======================================
+ * The VDP's picture of the frame (menus, cutscenes, the ride between floors, the
+ * map) for a GPU: its planes, window and sprites as cells of VRAM tiles, drawn from
+ * what each line was drawn with (vdp_lines): the lines alike form bands, each band
+ * its own batches. Nothing of the picture is worked out pixel by pixel. Screens the
+ * lists can't show as the VDP does (a palette changed part way down, scroll modes
+ * the game doesn't use, sprite masking) are drawn the usual way. */
+
+#define SL_MAX_BANDS 12
+
+/* the cells of a plane over the batch just begun: plane at `base` (pw x ph cells),
+ * scrolled hs across and vs down; the original screen's (0, 0) at (ox, oy) */
+static void vl_vdp_plane(ViewList *vl, uint32_t base, int pw, int ph, int hs, int vs, int ox, int oy)
+{
+    const VlBatch *b = &vl->batches[vl->nbatches - 1];
+    /* screen pixel (x, y) shows plane pixel (x - hs, y + vs) */
+    int kx0 = (b->x0 - ox - hs) >> 3, kx1 = (b->x1 - 1 - ox - hs) >> 3;
+    int ky0 = (b->y0 - oy + vs) >> 3, ky1 = (b->y1 - 1 - oy + vs) >> 3, kx, ky;
+    for (ky = ky0; ky <= ky1; ky++)
+        for (kx = kx0; kx <= kx1; kx++) {
+            uint32_t ea = (base + (uint32_t)((ky & (ph - 1)) * pw + (kx & (pw - 1))) * 2) & 0xFFFF;
+            vl_cell(vl, kx * 8 + hs + ox, ky * 8 - vs + oy, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1]);
+        }
+}
+
+/* the window's cells over the batch just begun (no scrolling) */
+static void vl_vdp_window(ViewList *vl, uint32_t base, int ox, int oy)
+{
+    const VlBatch *b = &vl->batches[vl->nbatches - 1];
+    int cx0 = (b->x0 - ox) >> 3, cx1 = (b->x1 - 1 - ox) >> 3, cy0 = (b->y0 - oy) >> 3, cy1 = (b->y1 - 1 - oy) >> 3, cx, cy;
+    for (cy = cy0; cy <= cy1; cy++)
+        for (cx = cx0; cx <= cx1; cx++) {
+            uint32_t ea = (base + (uint32_t)(cy * 64 + cx) * 2) & 0xFFFF;
+            if (cx < 0 || cx >= 40 || cy < 0 || cy >= 28) continue;
+            vl_cell(vl, cx * 8 + ox, cy * 8 + oy, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1]);
+        }
+}
+
+/* the sprites' cells over the batch just begun, the ones behind first (the
+ * sprite table at `base`, followed from entry 0 as the VDP does) */
+static void vl_vdp_sprites(ViewList *vl, uint32_t base, int ox, int oy)
+{
+    int order[80], n = 0, link = 0, k;
+    do {
+        order[n++] = link;
+        link = vdp_vram[(base + (uint32_t)link * 8 + 3) & 0xFFFF] & 0x7F;
+    } while (link != 0 && n < 80);
+    for (k = n - 1; k >= 0; k--) {
+        const uint8_t *e = &vdp_vram[(base + (uint32_t)order[k] * 8) & 0xFFFF];
+        int sy = (((e[0] << 8) | e[1]) & 0x3FF) - 128, hs = ((e[2] >> 2) & 3) + 1, vs = (e[2] & 3) + 1;
+        uint32_t attr = ((uint32_t)e[4] << 8) | e[5];
+        int sx = (((e[6] << 8) | e[7]) & 0x1FF) - 128, c, r;
+        for (c = 0; c < hs; c++)
+            for (r = 0; r < vs; r++) {
+                int colx = (attr & 0x0800) ? hs - 1 - c : c, rowy = (attr & 0x1000) ? vs - 1 - r : r;
+                uint32_t tile = ((attr & 0x7FF) + (uint32_t)(colx * vs + rowy)) & 0x7FF;
+                vl_cell(vl, sx + c * 8 + ox, sy + r * 8 + oy, (attr & 0xF800) | tile);
+            }
+    }
+}
+
+/* Sprite masking (a sprite at x 0 after another on its lines hides the rest of
+ * the line): the lists don't show it. Does this frame use it? */
+static int sprites_masking(uint32_t base)
+{
+    int n = 0, link = 0, i, j;
+    struct { int y0, y1, x; } sp[80];
+    do {
+        const uint8_t *e = &vdp_vram[(base + (uint32_t)link * 8) & 0xFFFF];
+        sp[n].y0 = (((e[0] << 8) | e[1]) & 0x3FF) - 128;
+        sp[n].y1 = sp[n].y0 + ((e[2] & 3) + 1) * 8;
+        sp[n].x = (((e[6] << 8) | e[7]) & 0x1FF) - 128;
+        n++;
+        link = e[3] & 0x7F;
+    } while (link != 0 && n < 80);
+    for (i = 1; i < n; i++) {
+        if (sp[i].x != -128 || sp[i].y1 <= 0 || sp[i].y0 >= VDP_HEIGHT) continue;
+        for (j = 0; j < i; j++)
+            if (sp[j].y0 < sp[i].y1 && sp[i].y0 < sp[j].y1) return 1;
+    }
+    return 0;
+}
+
+/* The VDP's picture of this frame into vl: the original screen at (ox, oy).
+ * wide: -1 nothing outside it; 0 or 1 plane A or B, 2 both, drawn over the whole
+ * list (a repeating background); sprites_wide: sprites outside it too.
+ * Returns 0 if it can't be drawn so. */
+static int build_screen_list(ViewList *vl, int ox, int oy, int wide, int sprites_wide)
+{
+    static const int psz[4] = {32, 64, 32, 128};
+    int from[SL_MAX_BANDS], to[SL_MAX_BANDS], nb = 0, k, line;
+    int wa = wide == 0 || wide == 2, wb = wide == 1 || wide == 2;   /* (planes drawn wide) */
+    uint16_t cram = 0xFFFF;
+    /* bands of lines drawn alike */
+    for (line = 0; line < VDP_HEIGHT; line++) {
+        if (nb && vdp_lines_alike(&vdp_lines[line], &vdp_lines[from[nb - 1]])) { to[nb - 1] = line + 1; continue; }
+        if (nb == SL_MAX_BANDS) { sl_why = "bands"; return 0; }
+        from[nb] = line;
+        to[nb] = line + 1;
+        nb++;
+    }
+    for (k = 0; k < nb; k++) {
+        const VdpLineState *st = &vdp_lines[from[k]];
+        if (!st->on) continue;
+        if (!(st->reg[12] & 1) || (st->reg[11] & 7)) { sl_why = "mode"; return 0; }            /* (H32, scroll by cell/line/column) */
+        cram = st->cram_ver;   /* (a palette changed part way down: shown as at the end) */
+        if (st->reg[7] != vdp_lines[from[0]].reg[7]) { sl_why = "backdrop"; return 0; }
+    }
+    (void)cram;
+    if (sprites_masking((uint32_t)(vdp_reg[5] & 0x7E) << 9)) { sl_why = "masking"; return 0; }
+    /* (the tiles or planes changed after lines were shown: the screen being
+     * rebuilt - those lines can't be drawn from what is there now) */
+    for (k = 0; k < nb; k++)
+        if (vdp_lines[from[k]].on && (vdp_lines[to[k] - 1].vram_chg != vdp_vram_changes ||
+                                      vdp_lines[from[k]].sat_chg != vdp_sat_changes)) { sl_stale = 1; return 0; }
+    vl->backdrop = vdp_palette_rgb(vdp_lines[from[0]].reg[7] & 0x3F);
+    for (k = 0; k < nb; k++) {
+        const VdpLineState *st = &vdp_lines[from[k]];
+        const uint8_t *rg = st->reg;
+        int pw = psz[rg[16] & 3], ph = psz[(rg[16] >> 4) & 3];
+        uint32_t base_a = (uint32_t)(rg[2] & 0x38) << 10, base_b = (uint32_t)(rg[4] & 7) << 13;
+        uint32_t base_w = (uint32_t)(rg[3] & 0x3C) << 10;
+        int y0 = oy + from[k], y1 = oy + to[k], wv = (rg[18] & 0x1F) * 8, down = rg[18] & 0x80;
+        int wh = (rg[17] & 0x1F) * 16, right = rg[17] & 0x80, wx0 = 0, wx1 = 0, wy0, wy1, part;
+        int x_in0 = ox, x_in1 = ox + 320;
+        /* (the band's rows reach out to the list's edge above the first line and
+         * below the last, where a plane is drawn wide) */
+        int ey0 = (k == 0 && wide >= 0) ? 0 : y0, ey1 = (k == nb - 1 && wide >= 0) ? vl->h : y1;
+        if (!st->on) continue;
+        /* plane B */
+        vl_batch(vl, 0, wb ? 0 : x_in0, wb ? ey0 : y0, wb ? vl->w : x_in1, wb ? ey1 : y1);
+        vl_vdp_plane(vl, base_b, pw, ph, st->hsb, (int)(st->vsb & 0x3FF), ox, oy);
+        /* plane A, but where the window is: its rows (wy0..wy1, the window's
+         * vertical part) and, beside them, its columns (wx0..wx1) */
+        if (down) { wy0 = wv; wy1 = VDP_HEIGHT; } else { wy0 = 0; wy1 = wv; }
+        if (wh) { if (right) { wx0 = wh; wx1 = 320; } else { wx0 = 0; wx1 = wh > 320 ? 320 : wh; } }
+        for (part = 0; part < 3; part++) {
+            /* the band split at the window's rows: above, in, below */
+            int r0 = part == 0 ? from[k] : part == 1 ? (wy0 > from[k] ? wy0 : from[k]) : (wy1 > from[k] ? wy1 : from[k]);
+            int r1 = part == 0 ? (wy0 < to[k] ? wy0 : to[k]) : part == 1 ? (wy1 < to[k] ? wy1 : to[k]) : to[k];
+            int ar0 = oy + r0, ar1 = oy + r1;
+            if (r1 <= r0) continue;
+            if (part == 1) {
+                vl_batch(vl, 1, x_in0, ar0, x_in1, ar1);
+                vl_vdp_window(vl, base_w, ox, oy);
+                continue;
+            }
+            if (wa) {
+                /* (plane A wide: its rows reach the list's edges too) */
+                if (r0 == 0 && k == 0) ar0 = 0;
+                if (r1 == VDP_HEIGHT || (k == nb - 1 && r1 == to[k])) ar1 = vl->h;
+            }
+            if (wx1 > wx0) {
+                vl_batch(vl, 1, ox + wx0, ar0, ox + wx1, ar1);
+                vl_vdp_window(vl, base_w, ox, oy);
+                if (wx0 > 0) { vl_batch(vl, 1, wa ? 0 : x_in0, ar0, ox + wx0, ar1); vl_vdp_plane(vl, base_a, pw, ph, st->hsa, (int)(st->vsa & 0x3FF), ox, oy); }
+                if (wx1 < 320) { vl_batch(vl, 1, ox + wx1, ar0, wa ? vl->w : x_in1, ar1); vl_vdp_plane(vl, base_a, pw, ph, st->hsa, (int)(st->vsa & 0x3FF), ox, oy); }
+            } else {
+                vl_batch(vl, 1, wa ? 0 : x_in0, ar0, wa ? vl->w : x_in1, ar1);
+                vl_vdp_plane(vl, base_a, pw, ph, st->hsa, (int)(st->vsa & 0x3FF), ox, oy);
+            }
+        }
+        /* the sprites */
+        vl_batch(vl, 2, sprites_wide ? 0 : x_in0, sprites_wide ? ey0 : y0, sprites_wide ? vl->w : x_in1, sprites_wide ? ey1 : y1);
+        vl_vdp_sprites(vl, (uint32_t)(rg[5] & 0x7E) << 9, ox, oy);
+    }
+    if (vl->nbatches >= VL_MAX_BATCHES || vl->ncells >= VL_MAX_CELLS) { sl_why = "full"; return 0; }
+    /* the port's own pictures over the VDP's (vdp_overlay: the title art) */
+    {
+        static uint32_t keyed[8][320 * VDP_HEIGHT];
+        static const uint8_t *was_px[8];
+        static uint32_t was_sum[8];
+        int i;
+        for (i = 0; i < 8; i++) {
+            int x, y, w, h, n;
+            const uint8_t *px;
+            const uint32_t *rgb;
+            uint32_t sum = 0;
+            if (!vdp_overlay_get(i, &x, &y, &w, &h, &px, &rgb)) continue;
+            if (w > 320 || h > VDP_HEIGHT || w <= 0 || h <= 0) { sl_why = "overlay"; return 0; }
+            for (n = 0; n < 16; n++) sum = sum * 31u + rgb[n];
+            if (was_px[i] != px || was_sum[i] != sum) {
+                for (n = 0; n < w * h; n++) keyed[i][n] = px[n] ? 0xFF000000u | rgb[px[n] & 15] : 0;
+                was_px[i] = px;
+                was_sum[i] = sum;
+            }
+            n = vl->noverlays;
+            vl_overlay_clip(vl, ox + x, oy + y, w, h, keyed[i], w);
+            if (vl->noverlays > n) vl->overlays[vl->noverlays - 1].keyed = 1;
+        }
+    }
+    return 1;
+}
+
+/* ---- the widened screens as lists ----
+ * How the outside is filled (gameview's border or pattern, build_extended_screen)
+ * is worked out from the picture as before, but only when the screen's tiles,
+ * planes or palette change (never just for a scroll): the background is then drawn
+ * on the CPU once. From that:
+ *  - a pattern: the planes it comes from are drawn wide, when each repeats in its
+ *    own map with the pattern's period (then that is the same picture);
+ *  - a border: the border's cells copied out, block by block (the planes scrolled
+ *    by whole cells: the blocks are then cells);
+ *  - the map: the stars, kept as a picture, around it.
+ * Anything else: drawn the usual way. */
+static struct { int valid, b, px, py, fill; uint32_t key; } ext_dec;
+
+static uint32_t ext_key(void)
+{
+    /* (the planes' maps and how they're set: not the tiles' pixels, which change
+     * with a twinkling star, nor the scroll) */
+    static const int psz[4] = {32, 64, 32, 128};
+    static const int regs[] = {2, 3, 4, 12, 16, 17, 18};
+    uint32_t h = 2166136261u, bases[3];
+    int i, k, n = psz[vdp_reg[16] & 3] * psz[(vdp_reg[16] >> 4) & 3] * 2;
+    h = (h ^ (uint32_t)(pic_w * 1000 + pic_h)) * 16777619u;
+    for (i = 0; i < (int)(sizeof regs / sizeof regs[0]); i++) h = (h ^ vdp_reg[regs[i]]) * 16777619u;
+    bases[0] = (uint32_t)(vdp_reg[2] & 0x38) << 10;
+    bases[1] = (uint32_t)(vdp_reg[4] & 7) << 13;
+    bases[2] = (uint32_t)(vdp_reg[3] & 0x3C) << 10;
+    for (k = 0; k < 3; k++) {
+        const uint32_t *w = (const uint32_t *)&vdp_vram[bases[k] & 0xFFFC];
+        int words = (k == 2 ? 64 * 28 * 2 : n) / 4;
+        if ((bases[k] & 0xFFFC) + (uint32_t)words * 4 > 0x10000) words = (int)((0x10000 - (bases[k] & 0xFFFC)) / 4);
+        for (i = 0; i < words; i++) h = (h ^ w[i]) * 16777619u;
+    }
+    return h;
+}
+
+static void ext_decide(void)
+{
+    int line, pl;
+    uint32_t key = ext_key();
+    if (ext_dec.valid && ext_dec.key == key) return;
+    ext_dec.valid = 1;
+    ext_dec.key = key;
+    for (line = 0; line < VDP_HEIGHT; line++) bg_line(line);
+    hash_blocks(bg_pic);
+    ext_dec.b = find_border();
+    ext_dec.px = ext_dec.py = 0;
+    ext_dec.fill = -1;
+    if (!ext_dec.b) {
+        ext_dec.px = find_period(0);
+        ext_dec.py = find_period(1);
+        for (pl = 0; pl < 2 && !(ext_dec.px && ext_dec.py); pl++) {
+            hash_blocks(plane_pic[pl]);
+            ext_dec.px = find_period(0);
+            ext_dec.py = find_period(1);
+            if (ext_dec.px && ext_dec.py) ext_dec.fill = pl;
+        }
+    }
+}
+
+/* Does the plane at base (pw x ph cells) repeat every px x py cells in its map? */
+static int plane_repeats(uint32_t base, int pw, int ph, int px, int py)
+{
+    int x, y;
+    if (pw % px || ph % py) return 0;
+    for (y = 0; y < ph; y++)
+        for (x = 0; x < pw; x++) {
+            uint32_t a = (base + (uint32_t)(y * pw + x) * 2) & 0xFFFF;
+            uint32_t r = (base + (uint32_t)(y * pw + (x + px) % pw) * 2) & 0xFFFF;
+            uint32_t d = (base + (uint32_t)(((y + py) % ph) * pw + x) * 2) & 0xFFFF;
+            if (vdp_vram[a] != vdp_vram[r] || vdp_vram[a + 1] != vdp_vram[r + 1] ||
+                vdp_vram[a] != vdp_vram[d] || vdp_vram[a + 1] != vdp_vram[d + 1]) return 0;
+        }
+    return 1;
+}
+
+/* the border's cells (or the pattern's: pattern set) copied out over the list
+ * (outside the original screen); only_plane: -1 both planes, else just that one
+ * (0 A, 1 B) */
+static int ext_copy_cells(ViewList *vl, int ox, int oy, int pattern, int only_plane)
+{
+    static const int psz[4] = {32, 64, 32, 128};
+    const VdpLineState *st = &vdp_lines[0];
+    int pw = psz[vdp_reg[16] & 3], ph = psz[(vdp_reg[16] >> 4) & 3], b = ext_dec.b, span = BW - 2 * b, layer;
+    int px = ext_dec.px, py = ext_dec.py;
+    uint32_t base_a = (uint32_t)(vdp_reg[2] & 0x38) << 10, base_b = (uint32_t)(vdp_reg[4] & 7) << 13;
+    int hs[2], vs[2];
+    hs[0] = st->hsa; hs[1] = st->hsb; vs[0] = st->vsa & 0x3FF; vs[1] = st->vsb & 0x3FF;
+    if ((hs[0] | hs[1] | vs[0] | vs[1]) & 7) { sl_why = "border-scroll"; return 0; }
+    if (vdp_reg[17] & 0x1F) { sl_why = "border-window"; return 0; }                           /* (a window beside: not here) */
+    for (layer = 0; layer < 2; layer++) {
+        /* layer 0: plane B, 1: plane A or the window */
+        int bx, by, bx0 = floor_div(-ox, 8), bx1 = floor_div(vl->w - ox - 1, 8), by0 = floor_div(-oy, 8), by1 = floor_div(vl->h - oy - 1, 8);
+        int pi = layer ? 0 : 1;
+        if (only_plane >= 0 && only_plane != pi) continue;
+        vl_batch(vl, layer, 0, 0, vl->w, vl->h);
+        for (by = by0; by <= by1; by++)
+            for (bx = bx0; bx <= bx1; bx++) {
+                uint32_t h, ea, e;
+                int sbx, sby, wv, in_win;
+                if (bx >= 0 && bx < BW && by >= 0 && by < BH) continue;   /* (the original screen) */
+                if (pattern) {
+                    sbx = ((bx % px) + px) % px;
+                    sby = ((by % py) + py) % py;
+                } else {
+                    h = mix((uint32_t)bx * 2654435761u ^ (uint32_t)by * 2246822519u);
+                    sbx = b + (int)(h % (uint32_t)span);
+                    sby = (int)((h >> 16) % (uint32_t)b);
+                    if ((h >> 8) & 1) sby = BH - 1 - sby;
+                }
+                wv = (vdp_reg[18] & 0x1F) * 8;
+                in_win = (vdp_reg[18] & 0x80) ? sby * 8 >= wv : sby * 8 < wv;
+                if (layer && in_win && only_plane < 0) {
+                    ea = ((((uint32_t)(vdp_reg[3] & 0x3C) << 10)) + (uint32_t)(sby * 64 + sbx) * 2) & 0xFFFF;
+                } else {
+                    int tx = ((sbx * 8 - hs[pi]) >> 3) & (pw - 1), ty = ((sby * 8 + vs[pi]) >> 3) & (ph - 1);
+                    ea = ((pi ? base_b : base_a) + (uint32_t)(ty * pw + tx) * 2) & 0xFFFF;
+                }
+                e = ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1];
+                vl_cell(vl, bx * 8 + ox, by * 8 + oy, e);
+            }
+    }
+    return 1;
+}
+
+/* the pattern's tile (the top left px x py blocks of the screen, the fill's
+ * planes as now), repeated in four strips around the original screen */
+static uint32_t pattern_tile[128 * 128];
+static int ext_pattern_overlays(ViewList *vl, int ox, int oy)
+{
+    int tw = ext_dec.px * 8, th = ext_dec.py * 8, x, y, i, n;
+    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    static uint8_t a[128], b[128];
+    if (tw > 128 || th > 128) { sl_why = "pattern-size"; return 0; }
+    for (y = 0; y < th; y++) {
+        memset(a, 0, sizeof a);
+        memset(b, 0, sizeof b);
+        if (ext_dec.fill != 1) plane_row(a, 0, 0, tw, y, 0);
+        if (ext_dec.fill != 0) plane_row(b, 0, 0, tw, y, 1);
+        for (x = 0; x < tw; x++) {
+            uint8_t pa = a[x], pb = b[x], c;
+            if ((pa & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pa;
+            else if ((pb & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pb;
+            else if (pa & PIX_OPAQUE) c = pa;
+            else if (pb & PIX_OPAQUE) c = pb;
+            else { pattern_tile[y * 128 + x] = backdrop; continue; }
+            pattern_tile[y * 128 + x] = vdp_palette_rgb(c & 0x3F);
+        }
+    }
+    for (i = 0; i < 4; i++) {
+        int rx = i == 3 ? ox + 320 : 0, ry = i == 0 ? 0 : i == 1 ? oy + VDP_HEIGHT : oy;
+        int rw = i < 2 ? vl->w : i == 2 ? ox : vl->w - ox - 320, rh = i == 0 ? oy : i == 1 ? vl->h - oy - VDP_HEIGHT : VDP_HEIGHT;
+        n = vl->noverlays;
+        vl_overlay_clip(vl, rx, ry, rw, rh, pattern_tile, 128);
+        if (vl->noverlays > n) {
+            VlOverlay *o = &vl->overlays[vl->noverlays - 1];
+            o->tile_w = tw;
+            o->tile_h = th;
+            o->tx0 = ox;
+            o->ty0 = oy;
+        }
+    }
+    return 1;
+}
+
+/* the border carried outwards when the planes are scrolled part of a cell (the
+ * screen's border rows drawn as the software way does, bg_line, and the outside
+ * filled from them - again only when they change), in four strips */
+static uint32_t border_out[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+static void outside_strips(ViewList *vl, int ox, int oy, const uint32_t *pic)
+{
+    vl_overlay_clip(vl, 0, 0, vl->w, oy, pic, GAMEVIEW_MAX_W);
+    vl_overlay_clip(vl, 0, oy + VDP_HEIGHT, vl->w, vl->h - oy - VDP_HEIGHT, pic + (size_t)(oy + VDP_HEIGHT) * GAMEVIEW_MAX_W, GAMEVIEW_MAX_W);
+    vl_overlay_clip(vl, 0, oy, ox, VDP_HEIGHT, pic + (size_t)oy * GAMEVIEW_MAX_W, GAMEVIEW_MAX_W);
+    vl_overlay_clip(vl, ox + 320, oy, vl->w - ox - 320, VDP_HEIGHT, pic + (size_t)oy * GAMEVIEW_MAX_W + ox + 320, GAMEVIEW_MAX_W);
+}
+
+static int ext_border_overlays(ViewList *vl, int ox, int oy)
+{
+    static uint32_t last_sum, last_key;
+    int b = ext_dec.b, span = BW - 2 * b, y, x;
+    uint32_t sum = 2166136261u, key = (uint32_t)(vl->w * 1000 + vl->h) ^ ((uint32_t)b << 24);
+    for (y = 0; y < b * 8; y++) { bg_line(y); bg_line(VDP_HEIGHT - 1 - y); }
+    for (y = 0; y < b * 8; y++)
+        for (x = 0; x < 320; x++) {
+            sum = (sum ^ bg_pic[y][x]) * 16777619u;
+            sum = (sum ^ bg_pic[VDP_HEIGHT - 1 - y][x]) * 16777619u;
+        }
+    if (sum != last_sum || key != last_key) {
+        for (y = 0; y < vl->h; y++) {
+            int ry = y - oy;
+            uint32_t *o = border_out + (size_t)y * GAMEVIEW_MAX_W;
+            for (x = 0; x < vl->w; x++) {
+                int rx = x - ox, bx, by, sbx, sby;
+                uint32_t h;
+                if (rx >= 0 && rx < 320 && ry >= 0 && ry < VDP_HEIGHT) { x = ox + 319; continue; }
+                bx = floor_div(rx, 8);
+                by = floor_div(ry, 8);
+                h = mix((uint32_t)bx * 2654435761u ^ (uint32_t)by * 2246822519u);
+                sbx = b + (int)(h % (uint32_t)span);
+                sby = (int)((h >> 16) % (uint32_t)b);
+                if ((h >> 8) & 1) sby = BH - 1 - sby;
+                o[x] = bg_pic[sby * 8 + (ry - by * 8)][sbx * 8 + (rx - bx * 8)];
+            }
+        }
+        last_sum = sum;
+        last_key = key;
+    }
+    outside_strips(vl, ox, oy, border_out);
+    return 1;
+}
+
+/* the map's stars around it: kept as a picture, shown in four strips */
+static int stars_for_w, stars_for_h;
+static uint32_t star_out[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+static void ext_star_overlays(ViewList *vl, int ox, int oy)
+{
+    int x, y;
+    if (stars_for_w != vl->w || stars_for_h != vl->h) {
+        for (y = 0; y < vl->h; y++)
+            for (x = 0; x < vl->w; x++)
+                star_out[(size_t)y * GAMEVIEW_MAX_W + x] = star_pic[(y - oy) & 255][(x - ox) & 511];
+        stars_for_w = vl->w;
+        stars_for_h = vl->h;
+    }
+    vl_overlay_clip(vl, 0, 0, vl->w, oy, star_out, GAMEVIEW_MAX_W);
+    vl_overlay_clip(vl, 0, oy + VDP_HEIGHT, vl->w, vl->h - oy - VDP_HEIGHT,
+                    star_out + (size_t)(oy + VDP_HEIGHT) * GAMEVIEW_MAX_W, GAMEVIEW_MAX_W);
+    vl_overlay_clip(vl, 0, oy, ox, VDP_HEIGHT, star_out + (size_t)oy * GAMEVIEW_MAX_W, GAMEVIEW_MAX_W);
+    vl_overlay_clip(vl, ox + 320, oy, vl->w - ox - 320, VDP_HEIGHT,
+                    star_out + (size_t)oy * GAMEVIEW_MAX_W + ox + 320, GAMEVIEW_MAX_W);
+}
+
+/* (tests, TJE_VLCHECK) the list drawn in software against the picture drawn the
+ * usual way */
+int g_sl_checked, g_sl_bad;
+static void screen_list_check(void)
+{
+    static uint32_t ref[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+    const uint32_t *pic;
+    int pitch, x, y;
+    long bad = 0;
+    if (vlist.w == 320 && vlist.h == VDP_HEIGHT && (frame_ok == 0 || pic_w != 320)) { pic = vdp_framebuffer(); pitch = VDP_FB_PITCH; }
+    else { pic = picture; pitch = GAMEVIEW_MAX_W; }
+    if (frame_ok != 0 && (vlist.w != pic_w || vlist.h != pic_h) && pic == picture) return;
+    viewlist_render_soft(&vlist, ref, GAMEVIEW_MAX_W);
+    for (y = 0; y < vlist.h; y++)
+        for (x = 0; x < vlist.w; x++)
+            bad += (ref[(size_t)y * GAMEVIEW_MAX_W + x] & 0xFFFFFF) != (pic[(size_t)y * pitch + x] & 0xFFFFFF);
+    g_sl_checked++;
+    if (bad) {
+        g_sl_bad++;
+        if (getenv("TJE_SLDUMP") && (g_sl_bad <= 12 || (getenv("TJE_SLDUMPFROM") && g_frame >= (uint32_t)atoi(getenv("TJE_SLDUMPFROM")) && g_frame < (uint32_t)atoi(getenv("TJE_SLDUMPFROM")) + 3))) {
+            char path[512];
+            FILE *f;
+            int i;
+            for (i = 0; i < 2; i++) {
+                snprintf(path, sizeof path, "%s_%u_%s.ppm", getenv("TJE_SLDUMP"), g_frame, i ? "list" : "pic");
+                f = fopen(path, "wb");
+                if (!f) continue;
+                fprintf(f, "P6 %d %d 255\n", vlist.w, vlist.h);
+                for (y = 0; y < vlist.h; y++)
+                    for (x = 0; x < vlist.w; x++) {
+                        uint32_t c = i ? ref[(size_t)y * GAMEVIEW_MAX_W + x] : pic[(size_t)y * pitch + x];
+                        fputc((int)((c >> 16) & 255), f); fputc((int)((c >> 8) & 255), f); fputc((int)(c & 255), f);
+                    }
+                fclose(f);
+            }
+        }
+        fprintf(stderr, "slcheck: frame %u (kind %d, %dx%d): %ld pixels differ\n", g_frame, frame_ok, vlist.w, vlist.h, bad);
+    }
+    if (g_sl_checked % 500 == 0) fprintf(stderr, "slcheck: %d screens, %d differ\n", g_sl_checked, g_sl_bad);
+}
+
+/* This frame's screen (frame_ok 0, 2 or 3) as a list in vlist. 0: it can't be. */
+static int build_screen_frame(void)
+{
+    static const int psz[4] = {32, 64, 32, 128};
+    if (frame_ok == 0) {
+        vl_begin(&vlist, 320, VDP_HEIGHT);
+        return build_screen_list(&vlist, 0, 0, -1, 0);
+    }
+    vl_begin(&vlist, pic_w, pic_h);
+    if (frame_ok == 2) return build_screen_list(&vlist, off_x, off_y, g_gameview_extend_screen == 2 ? 0 : 1, 1);
+    /* frame_ok 3 */
+    if (map_mode) {
+        if (!build_screen_list(&vlist, off_x, off_y, -1, 0)) return 0;
+        ext_star_overlays(&vlist, off_x, off_y);
+        return 1;
+    }
+    ext_decide();
+    if (ext_dec.b) {
+        sl_why = "";
+        if (!ext_copy_cells(&vlist, off_x, off_y, 0, -1)) {
+            /* (scrolled part of a cell: the border as pictures) */
+            vl_begin(&vlist, pic_w, pic_h);
+            if (!build_screen_list(&vlist, off_x, off_y, -1, 0)) return 0;
+            return ext_border_overlays(&vlist, off_x, off_y);
+        }
+        return build_screen_list(&vlist, off_x, off_y, -1, 0);
+    }
+    if (ext_dec.px && ext_dec.py) {
+        int pw = psz[vdp_reg[16] & 3], ph = psz[(vdp_reg[16] >> 4) & 3];
+        int ra = plane_repeats((uint32_t)(vdp_reg[2] & 0x38) << 10, pw, ph, ext_dec.px, ext_dec.py);
+        int rb = plane_repeats((uint32_t)(vdp_reg[4] & 7) << 13, pw, ph, ext_dec.px, ext_dec.py);
+        int wide = ext_dec.fill == 0 ? (ra ? 0 : -9) : ext_dec.fill == 1 ? (rb ? 1 : -9) : (ra && rb ? 2 : -9);
+        if (wide < -1) {
+            /* (the planes don't repeat so: the pattern's tile, drawn here as the
+             * screen shows it now, repeated around the original screen) */
+            if (!build_screen_list(&vlist, off_x, off_y, -1, 0)) return 0;
+            return ext_pattern_overlays(&vlist, off_x, off_y);
+        }
+        if (vdp_reg[17] & 0x1F) { sl_why = "pattern-window"; return 0; }
+        return build_screen_list(&vlist, off_x, off_y, wide, 0);
+    }
+    /* (no outside: shown at its own size) */
+    vl_begin(&vlist, 320, VDP_HEIGHT);
+    return build_screen_list(&vlist, 0, 0, -1, 0);
 }
 
 /* The status bar (window rows from..to-1 of the original screen) with its icon
@@ -3338,6 +3929,7 @@ int g_gv_need_vdp;   /* (tests comparing with the VDP's picture) */
 static int wants_vdp_line(int line)
 {
     int wv, in_window;
+    if (screen_list_frame && !vl_check_on() && line != 0 && !g_gv_need_vdp) return 0;   /* (drawn from a list) */
     if (g_gv_need_vdp || line == 0 || frame_ok != 1) return 1;
     if (!g_gv_windows) {
         if ((pic_w == 320 && pic_h == VDP_HEIGHT) || nregions == 2) return 1;

@@ -42,7 +42,7 @@ void viewlist_render_soft(const ViewList *vl, uint32_t *out, int pitch)
     for (y = 0; y < vl->h; y++)
         for (x = 0; x < vl->w; x++) out[(size_t)y * pitch + x] = vl->backdrop;
     for (high = 0; high < 2; high++) {
-        for (layer = 0; layer < 2; layer++)
+        for (layer = 0; layer < 3; layer++)
             for (k = 0; k < vl->nbatches; k++) {
                 const VlBatch *b = &vl->batches[k];
                 int c;
@@ -56,8 +56,16 @@ void viewlist_render_soft(const ViewList *vl, uint32_t *out, int pitch)
         for (y = 0; y < o->h; y++)
             for (x = 0; x < o->w; x++) {
                 int px = o->x + x, py = o->y + y;
+                uint32_t c;
+                if (o->tile_w) {
+                    int u = (px - o->tx0) % o->tile_w, v = (py - o->ty0) % o->tile_h;
+                    if (u < 0) u += o->tile_w;
+                    if (v < 0) v += o->tile_h;
+                    c = o->px[(size_t)v * o->pitch + u];
+                } else c = o->px[(size_t)y * o->pitch + x];
+                if (o->keyed && !(c >> 24)) continue;
                 if (px >= 0 && px < vl->w && py >= 0 && py < vl->h)
-                    out[(size_t)py * pitch + px] = o->px[(size_t)y * o->pitch + x];
+                    out[(size_t)py * pitch + px] = c & 0xFFFFFF;
             }
     }
 }

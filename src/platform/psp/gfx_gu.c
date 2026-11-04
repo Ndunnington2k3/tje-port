@@ -217,6 +217,40 @@ static void tiles_pass(const ViewList *vl, int layer, int high, int x, int y)
             if (((e >> 15) & 1) == (unsigned)high) count[(e >> 13) & 3]++;
         }
         sceGuScissor(x + b->x0, y + b->y0, x + b->x1, y + b->y1);
+        if (layer == 2) {
+            /* sprites overlap: in their order, a draw for each run of one
+             * palette line */
+            int total = count[0] + count[1] + count[2] + count[3], cur = -1, run = 0;
+            V16 *v = (V16 *)sceGuGetMemory((unsigned)total * 2 * sizeof(V16)), *o = v, *start = v;
+            if (!total) continue;
+            for (c = b->first; c < b->first + b->count; c++) {
+                const VlCell *cl = &vl->cells[c];
+                unsigned e = cl->entry, t = e & 0x7FF;
+                unsigned short u0 = (unsigned short)((t & 63) * 8), v0 = (unsigned short)((t >> 6) * 8);
+                int ln = (int)((e >> 13) & 3);
+                if (((e >> 15) & 1) != (unsigned)high) continue;
+                if (ln != cur) {
+                    if (run) {
+                        sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)cur);
+                        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, run * 2, 0, start);
+                    }
+                    cur = ln;
+                    run = 0;
+                    start = o;
+                }
+                o[0].x = (short)(x + cl->x); o[0].y = (short)(y + cl->y); o[0].z = 0;
+                o[1].x = (short)(x + cl->x + 8); o[1].y = (short)(y + cl->y + 8); o[1].z = 0;
+                o[0].u = (e & 0x0800) ? u0 + 8 : u0; o[1].u = (e & 0x0800) ? u0 : u0 + 8;
+                o[0].v = (e & 0x1000) ? v0 + 8 : v0; o[1].v = (e & 0x1000) ? v0 : v0 + 8;
+                o += 2;
+                run++;
+            }
+            if (run) {
+                sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)cur);
+                sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, run * 2, 0, start);
+            }
+            continue;
+        }
         for (line = 0; line < 4; line++) {
             V16 *v, *o;
             if (!count[line]) continue;
@@ -286,6 +320,7 @@ static void view_list(const ViewList *vl, int x, int y)
     for (high = 0; high < 2; high++) {
         tiles_pass(vl, 0, high, x, y);
         tiles_pass(vl, 1, high, x, y);
+        tiles_pass(vl, 2, high, x, y);
         pieces_pass(vl, high, x, y);
     }
     sceGuDisable(GU_ALPHA_TEST);
@@ -296,7 +331,9 @@ static void view_list(const ViewList *vl, int x, int y)
         size_t used = 0;
         for (k = 0; k < vl->noverlays; k++) {
             const VlOverlay *o = &vl->overlays[k];
-            int r, c, w = o->w > 512 ? 512 : o->w, h = o->h > 512 ? 512 : o->h, tbw = (w + 3) & ~3;
+            int r, c, w = o->w > 512 ? 512 : o->w, h = o->h > 512 ? 512 : o->h, tbw;
+            if (o->tile_w) { w = o->tile_w; h = o->tile_h; }   /* (a tile: uploaded once, drawn over the rectangle) */
+            tbw = (w + 3) & ~3;
             uint32_t *d = ovl_px + used;
             V16 *v;
             if (used + (size_t)tbw * (size_t)h > sizeof ovl_px / 4) break;
@@ -304,18 +341,40 @@ static void view_list(const ViewList *vl, int x, int y)
             for (r = 0; r < h; r++) {
                 const uint32_t *src = o->px + (size_t)r * o->pitch;
                 uint32_t *dst = d + r * tbw;
-                for (c = 0; c < w; c++) dst[c] = abgr(src[c]);
+                if (o->keyed) for (c = 0; c < w; c++) dst[c] = (src[c] >> 24) ? abgr(src[c]) : 0;
+                else for (c = 0; c < w; c++) dst[c] = abgr(src[c]);
             }
             sceKernelDcacheWritebackRange(d, (unsigned)(tbw * h * 4));
             sceGuTexMode(GU_PSM_8888, 0, 0, 0);
             sceGuTexImage(0, pow2(w), pow2(h), tbw, d);
             sceGuTexFlush();
-            sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-            v = (V16 *)sceGuGetMemory(2 * sizeof(V16));
-            v[0].u = 0; v[0].v = 0; v[0].x = (short)(x + o->x); v[0].y = (short)(y + o->y); v[0].z = 0;
-            v[1].u = (unsigned short)w; v[1].v = (unsigned short)h;
-            v[1].x = (short)(x + o->x + w); v[1].y = (short)(y + o->y + h); v[1].z = 0;
-            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+            sceGuTexFunc(GU_TFX_REPLACE, o->keyed ? GU_TCC_RGBA : GU_TCC_RGB);
+            if (o->keyed) { sceGuEnable(GU_ALPHA_TEST); sceGuAlphaFunc(GU_GREATER, 0, 0xFF); }
+            if (o->tile_w) {
+                /* the tile in a grid from (tx0, ty0), cut to the rectangle */
+                int gx0 = o->x - ((((o->x - o->tx0) % w) + w) % w), gy0 = o->y - ((((o->y - o->ty0) % h) + h) % h), gx, gy, nq = 0;
+                V16 *q;
+                for (gy = gy0; gy < o->y + o->h; gy += h)
+                    for (gx = gx0; gx < o->x + o->w; gx += w) nq++;
+                q = v = (V16 *)sceGuGetMemory((unsigned)nq * 2 * sizeof(V16));
+                for (gy = gy0; gy < o->y + o->h; gy += h)
+                    for (gx = gx0; gx < o->x + o->w; gx += w) {
+                        q[0].u = 0; q[0].v = 0; q[0].x = (short)(x + gx); q[0].y = (short)(y + gy); q[0].z = 0;
+                        q[1].u = (unsigned short)w; q[1].v = (unsigned short)h;
+                        q[1].x = (short)(x + gx + w); q[1].y = (short)(y + gy + h); q[1].z = 0;
+                        q += 2;
+                    }
+                sceGuScissor(x + o->x, y + o->y, x + o->x + o->w, y + o->y + o->h);
+                sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, nq * 2, 0, v);
+                sceGuScissor(0, 0, SCR_W, SCR_H);
+            } else {
+                v = (V16 *)sceGuGetMemory(2 * sizeof(V16));
+                v[0].u = 0; v[0].v = 0; v[0].x = (short)(x + o->x); v[0].y = (short)(y + o->y); v[0].z = 0;
+                v[1].u = (unsigned short)w; v[1].v = (unsigned short)h;
+                v[1].x = (short)(x + o->x + w); v[1].y = (short)(y + o->y + h); v[1].z = 0;
+                sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+            }
+            if (o->keyed) sceGuDisable(GU_ALPHA_TEST);
         }
     }
 }

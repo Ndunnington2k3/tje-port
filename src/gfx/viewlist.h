@@ -14,7 +14,8 @@
  *
  * Colour 0 of a tile and pixels without bit 7 are see-through. What shows where
  * they overlap is the Genesis' rule, drawn in six passes from the back:
- * plane B, plane A, sprites without priority, then the same with priority; the
+ * plane B, plane A, sprites (sprite cells, then pieces) without priority, then the
+ * same with priority; the
  * backdrop colour first. viewlist_render_soft() draws a list exactly so (tests).
  */
 #ifndef TJE_VIEWLIST_H
@@ -22,15 +23,15 @@
 
 #include <stdint.h>
 
-#define VL_MAX_CELLS    8192
-#define VL_MAX_BATCHES  24
+#define VL_MAX_CELLS    12288
+#define VL_MAX_BATCHES  64
 #define VL_MAX_PIECES   96
 #define VL_MAX_OVERLAYS 16
 
 typedef struct { int16_t x, y; uint16_t entry; } VlCell;   /* top-left in the picture */
 
 typedef struct {
-    int layer;                     /* 0 plane B, 1 plane A / window */
+    int layer;                     /* 0 plane B, 1 plane A / window, 2 sprites (cells listed back first) */
     int x0, y0, x1, y1;            /* drawn only inside (picture pixels, x1/y1 excluded) */
     int first, count;              /* its cells */
 } VlBatch;
@@ -44,7 +45,12 @@ typedef struct {
 
 typedef struct {
     int x, y, w, h, pitch;         /* in the picture; pitch in pixels */
-    const uint32_t *px;            /* 0x00RRGGBB, all drawn */
+    const uint32_t *px;            /* 0x00RRGGBB, all drawn; keyed: 0xFFRRGGBB, 0 = see-through */
+    int keyed;
+    /* tiled: tile_w x tile_h pixels at px repeated over the rectangle, picture
+     * pixel (X, Y) showing tile pixel ((X - tx0) mod tile_w, (Y - ty0) mod tile_h);
+     * tile_w 0: px is the rectangle's picture */
+    int tile_w, tile_h, tx0, ty0;
 } VlOverlay;
 
 typedef struct ViewList {

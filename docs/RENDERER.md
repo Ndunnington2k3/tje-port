@@ -440,3 +440,35 @@ During play `gameview_window_frame(player, w, h)` draws each window from game me
 
 Headless: `--two-windows WxH` (views of WxH game pixels; `--shot F:path` also saves path.p1.ppm /
 path.p2.ppm).
+
+## Screens other than gameplay on a GPU (Nov 4)
+
+On a platform drawing view lists (the PSP), menus, cutscenes, the ride between
+floors and the map are lists too: the software VDP doesn't draw their lines.
+The VDP keeps what each line was drawn with (`vdp_lines`: registers, scroll, the
+palette's version, VRAM write counts); at the end of the frame
+`build_screen_list` (gameview.c) groups alike lines into bands and gives each its
+plane B, plane A, window and sprite batches - sprites as cells (layer 2, the ones
+behind first; the GE draws each run of one palette line in order). The port's own
+pictures over the VDP's (`vdp_overlay`, the title art) are keyed overlays.
+
+Widened screens: frame kind 2 (a repeating plane) draws that plane over the whole
+list. Kind 3 decides border/pattern from the picture as before, but only when the
+planes' maps change (`ext_key`: not tiles, palette or scroll); then
+- a pattern whose planes repeat with its period in their own maps: planes drawn
+  wide; otherwise the pattern's tile (drawn on the CPU, a few thousand pixels)
+  repeated as a tiled overlay;
+- a border with the planes scrolled by whole cells: its cells copied out block by
+  block; otherwise the outside filled from the border rows (only when they change)
+  and shown as four overlay strips;
+- the map: the stars, kept as a picture, as four strips.
+
+Not lists (drawn the usual way for 60 frames, the frame keeping the last picture):
+H32, scroll by cell/line/column, sprite masking, more than 12 bands. Tiles,
+planes or the sprite table changed after lines were shown (a screen being
+rebuilt): the last picture is kept for up to 3 frames.
+
+Checked on PC with `TJE_VLCHECK`: every such frame's list drawn in software
+against the usual picture (`TJE_SLDUMP` saves differing ones); 9500 screens of
+menus, cutscenes and rides: the only differences are a few transition frames and
+single pixels where sprites of different priority overlap.
