@@ -105,31 +105,66 @@ static void close_song(void)
     f = MF_NONE;
 }
 
-static int cur_song = -1, chained = -1;   /* (the reader's song; the one it went on to by itself) */
-static uint32_t chained_at;               /* (ring_w then) */
-static volatile uint32_t ring_w;
+static volatile uint32_t ring_w, ring_r;
+static volatile int gate;   /* (the title's song kept with the game: music_mix) */
 
-/* The song the game starts when one ends, as the engine does (the levels' themes
- * take turns with their second parts, n and n + 7): played straight on when the
- * file ends before the game asks - a game running behind the music (a slow
- * frame here and there) would otherwise leave a silence there. */
-static int song_after(int song)
+/* ---- music/tracks.txt: which file plays each song, and how files loop ----------
+ *   file NAME LOOP_FROM LOOP_TO   at frame LOOP_TO, NAME goes on from LOOP_FROM
+ *   song N NAME START             the game's song N: NAME from frame START
+ * (frames of the file: 44100 a second for 44.1 kHz). A song the game asks for
+ * while its file plays at about that place already (the engine starting the
+ * next part of a theme, or the theme again, as the file goes on by itself)
+ * changes nothing: no gap, no jump. Without a table: NN.wav for song NN, looping
+ * as its smpl chunk or NN.loop says. */
+#define T_FILES 16
+#define T_SONGS 32
+static struct { char name[64]; uint32_t loop_from, loop_to; } t_file[T_FILES];
+static struct { int file; uint32_t start; } t_song[T_SONGS];
+static int t_files;
+
+static void table_load(void)
 {
-    if (song >= 1 && song <= 5) return song + 7;
-    if (song >= 8 && song <= 12) return song - 7;
-    return -1;
+    char path[300], text[4096], *line, *next;
+    MFile tf;
+    int n, i;
+    t_files = 0;
+    for (i = 0; i < T_SONGS; i++) t_song[i].file = -1;
+    snprintf(path, sizeof path, "%stracks.txt", dir);
+    tf = mf_open(path);
+    if (tf == MF_NONE) return;
+    n = mf_read(tf, text, (int)sizeof text - 1);
+    mf_close(tf);
+    text[n > 0 ? n : 0] = 0;
+    for (line = text; line && *line; line = next) {
+        char name[64];
+        unsigned a, b;
+        int song;
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        if (sscanf(line, " file %63s %u %u", name, &a, &b) == 3 && t_files < T_FILES) {
+            snprintf(t_file[t_files].name, sizeof t_file[0].name, "%s", name);
+            t_file[t_files].loop_from = a;
+            t_file[t_files].loop_to = b > a ? b : 0;
+            t_files++;
+        } else if (sscanf(line, " song %d %63s %u", &song, name, &a) == 3 && song >= 0 && song < T_SONGS) {
+            for (i = 0; i < t_files; i++)
+                if (!strcmp(t_file[i].name, name)) { t_song[song].file = i; t_song[song].start = a; }
+        }
+    }
 }
 
-static void open_song(int song)
+static char cur_name[64];   /* (the file open) */
+
+static void open_file(const char *name, int song, uint32_t start, uint32_t t_from, uint32_t t_to)
 {
     char path[300];
     uint8_t h[12], c[8];
     long at = 12;
     int have_fmt = 0, have_loop = 0, bits = 0;
     close_song();
-    cur_song = song;
-    if (song < 0) return;
-    snprintf(path, sizeof path, "%s%02d.wav", dir, song);
+    cur_name[0] = 0;
+    if (!name) return;
+    snprintf(path, sizeof path, "%s%s", dir, name);
     f = mf_open(path);
     if (f == MF_NONE) return;
     if (mf_read(f, h, 12) != 12 || memcmp(h, "RIFF", 4) || memcmp(h + 8, "WAVE", 4)) { close_song(); return; }
@@ -167,20 +202,55 @@ static void open_song(int song)
         FILE *l;
         unsigned a, b;
         snprintf(lp, sizeof lp, "%s%02d.loop", dir, song);
-        l = fopen(lp, "r");
+        l = song >= 0 ? fopen(lp, "r") : NULL;
         if (l) {
             if (fscanf(l, "%u %u", &a, &b) == 2 && a < b) { loop_from = a; loop_to = b; have_loop = 1; }
             fclose(l);
         }
     }
+    if (t_to) { loop_from = t_from; loop_to = t_to; have_loop = 1; }   /* (the table's) */
     if (!have_loop || loop_to > frames_total || loop_from >= loop_to) { loop_from = 0; loop_to = 0; }
     step = (uint32_t)(((uint64_t)rate << 16) / 48000u);
     frac = 0;
-    pos_frame = 0;
+    pos_frame = start < frames_total ? start : 0;
     buf_len = buf_i = 0;
     cur[0] = cur[1] = nxt[0] = nxt[1] = 0;
-    mf_seek(f, data_at);
+    mf_seek(f, data_at + (long)pos_frame * channels * 2);
+    snprintf(cur_name, sizeof cur_name, "%s", name);
 }
+
+static void open_song(int song)
+{
+    char name[16];
+    if (song < 0) { open_file(NULL, -1, 0, 0, 0); return; }
+    if (song < T_SONGS && t_song[song].file >= 0) {
+        int k = t_song[song].file;
+        open_file(t_file[k].name, -1, t_song[song].start, t_file[k].loop_from, t_file[k].loop_to);
+        return;
+    }
+    snprintf(name, sizeof name, "%02d.wav", song);
+    open_file(name, song, 0, 0, 0);
+}
+
+/* the song asked for is where its file plays now (within -1.5 / +4 s: the file
+ * a little behind or ahead of the game) */
+static int song_here(int song)
+{
+    int k;
+    int64_t d, len, playing;
+    if (f == MF_NONE || song < 0 || song >= T_SONGS || t_song[song].file < 0) return 0;
+    k = t_song[song].file;
+    if (strcmp(t_file[k].name, cur_name)) return 0;
+    /* (the frame being heard: the reader is ahead by what it holds and the ring) */
+    playing = (int64_t)pos_frame - (buf_len - buf_i) - (int64_t)(ring_w - ring_r) * rate / 48000;
+    d = playing - (int64_t)t_song[song].start;
+    len = loop_to ? (int64_t)loop_to - loop_from : 0;
+    if (len > 0) { d %= len; if (d > len / 2) d -= len; if (d < -len / 2) d += len; }
+    if (getenv("TJE_MUSIC_LOG")) fprintf(stderr, "music: reader: song %d: the file is %+.3f s from its start\n", song, (double)d / rate);
+    return d > -(int64_t)rate * 3 / 2 && d < (int64_t)rate * 4;
+}
+
+
 
 /* the next frame of the file, looping; 0 at the end of a song played once */
 static int next_frame(int16_t *lr)
@@ -190,16 +260,7 @@ static int next_frame(int16_t *lr)
         uint32_t end = loop_to ? loop_to : frames_total, want;
         int got;
         if (pos_frame >= end) {
-            if (!loop_to) {
-                int next = song_after(cur_song);
-                close_song();
-                if (next < 0) return 0;
-                open_song(next);
-                if (f == MF_NONE) return 0;
-                chained = next;
-                chained_at = ring_w;
-                return next_frame(lr);
-            }
+            if (!loop_to) { close_song(); return 0; }
             pos_frame = loop_from;
             mf_seek(f, data_at + (long)pos_frame * channels * 2);
         }
@@ -289,7 +350,7 @@ static void sfx_mix(int16_t *out, int frames)
  * itself. The reader owns the files, the mixer only the ring's read side. */
 #define RING_FRAMES 32768                     /* (0.68 s at 48 kHz) */
 static int16_t ring[RING_FRAMES * 2];
-static volatile uint32_t ring_r, flush_to;
+static volatile uint32_t flush_to;
 static volatile int ring_gen;
 int music_threaded;
 
@@ -299,20 +360,19 @@ int music_fill(void)
     int i, n, did = 0;
     static int sfx_gen = -1, sfx_next = SFX_MAX, song_gen = -1;
     /* (the folder changed: the song opened again from there) */
-    if (song_gen != dir_gen) { song_gen = dir_gen; seq = req_seq - 1; }
-    if (seq != req_seq && req_song >= 0 && req_song == chained && f != MF_NONE &&
-        ring_w - chained_at < 48000u * 8u) {
-        /* (the song the file went on to by itself a moment ago: already playing) */
-        chained = -1;
-        seq = req_seq;
-    }
+    if (song_gen != dir_gen) { song_gen = dir_gen; table_load(); close_song(); cur_name[0] = 0; seq = req_seq - 1; }
     if (seq != req_seq) {
-        int want = req_seq;
-        chained = -1;
-        open_song(req_song);
-        if (f != MF_NONE) { next_frame(cur); next_frame(nxt); }
-        flush_to = ring_w;
-        ring_gen++;
+        int want = req_seq, song = req_song;
+        int here = song_here(song);
+        if (getenv("TJE_MUSIC_LOG")) fprintf(stderr, "music: reader: song %d %s\n", song, here ? "plays on" : "opened");
+        if (here) gate = 0;   /* (playing on: it is there already) */
+        else {
+            open_song(song);
+            if (f != MF_NONE) { next_frame(cur); next_frame(nxt); }
+            gate = song == 0;
+            flush_to = ring_w;
+            ring_gen++;
+        }
         seq = want;   /* (last: the mixer takes the ring again from here) */
         did = 1;
     }
@@ -356,7 +416,7 @@ void music_mix(int16_t *out, int frames)
     if (paused || seq != req_seq) return;
     /* the title's song ahead of the game (its first frames are slow: starting
      * up) by more than 0.15 s: it waits for the game */
-    if (req_song == 0 && song_out > song_ticks * 801u + 7200u) return;
+    if (gate && song_out > song_ticks * 801u + 7200u) return;
     song_out += (uint32_t)frames;   /* (another song asked for: not the old one's rest while it opens) */
     for (i = 0; i < frames && ring_r != ring_w; i++) {
         uint32_t k = ring_r % RING_FRAMES;

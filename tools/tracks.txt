@@ -1,0 +1,47 @@
+# ToeJam & Earl - the music for the "Recorded" sound.
+#
+# Each WAV is a whole track as the soundtrack's VGM rips have it: a level theme
+# and its second part in one file, played on as the game asks for one then the
+# other. Sample numbers are frames of the file (44100 a second for these).
+#
+#   file NAME LOOP_FROM LOOP_TO   at frame LOOP_TO the file goes on from LOOP_FROM
+#   song N NAME START             the game's song N starts at frame START of NAME
+#
+# A remix: put your WAV in place of one of these (any rate, 16-bit, mono or
+# stereo) and change its numbers here. Lines starting with # are notes.
+
+# 00.wav  ToeJam Jammin'
+file 00.wav 110984 5400779
+song 0  00.wav 0
+song 7  00.wav 3525727
+
+# 01.wav  Big Earl Bump
+file 01.wav 109750 5188065
+song 1  01.wav 0
+song 8  01.wav 3384611
+
+# 02.wav  Rapmaster Rocket Racket
+file 02.wav 106575 4990649
+song 2  02.wav 0
+song 9  02.wav 3255226
+
+# 03.wav  Funkotronic Beat
+file 03.wav 112420 4648104
+song 3  03.wav 0
+song 10 03.wav 3023960
+
+# 04.wav  Alien Break Down
+file 04.wav 100697 4984772
+song 4  04.wav 0
+song 11 04.wav 3255226
+
+# 05.wav  ToeJam Slowjam
+file 05.wav 110984 5513969
+song 5  05.wav 0
+song 12 05.wav 3600702
+song 14 05.wav 3600702
+
+# 06.wav  Elevator Beats
+file 06.wav 88200 901848
+song 6  06.wav 0
+song 13 06.wav 0

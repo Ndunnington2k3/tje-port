@@ -2,15 +2,18 @@
  * Recorded music for the native sound (sound.h, SND_FM_NATIVE).
  *
  * The game's music engine (MassiveRoutine and the song table at $3D626) still
- * runs; when it starts a song, the recording of that song plays instead of the FM
- * chip: music/NN.wav, NN the song's number in the table (two digits, 00-14). The
- * engine plays each song once and starts the next itself (the same again, or an
- * intro's main part, song+7), so a recording is one pass of its song. A WAV file
- * may be any rate, 16-bit, mono or stereo; one of a different length (a remix) may
- * loop instead, from the loop of its "smpl" chunk or of a file NN.loop next to it
- * (two numbers: the loop's first and last sample frames, the last excluded), and
- * then plays until the engine starts another song. tje_headless --record-music DIR
- * makes the recordings from the Genesis sound.
+ * runs; when it starts a song, a WAV file plays instead of the FM chip.
+ * music/tracks.txt says which file and from where (the soundtrack's tracks, as
+ * tools/vgm2wav renders its VGM rips: a level theme and its second part, song n
+ * and n+7, in one file with one loop), and how each file loops; a song the game
+ * asks for at about the place its file has reached plays on - the engine starting
+ * a theme's next part or the theme again as the file goes there by itself.
+ * Without a table: music/NN.wav for song NN (00-14), one pass of it, or looping
+ * as its "smpl" chunk or a file NN.loop says (two numbers: the loop's first and
+ * last sample frames, the last excluded). A WAV may be any rate, 16-bit, mono or
+ * stereo. The title's song waits for the game when the game runs behind it (the
+ * intro's sounds are in it). tje_headless --record-music DIR records the songs
+ * from the Genesis sound one by one (the old way; sfx/ still comes from it).
  *
  * music_song / music_tick come from the game (its thread); music_mix may be called
  * from another thread (the platform's audio thread): only it touches the files.
