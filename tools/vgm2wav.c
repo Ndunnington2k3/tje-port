@@ -72,13 +72,17 @@ static void wait_samples(uint32_t n)
     chip_clock((int)clocks);
 }
 
+/* A VGM's writes come with no time between them; the chip takes a register's
+ * value as it steps through that register's slot - all 24 in a sample - and is
+ * busy 32 clocks after a data write (a write before then is lost). So each write
+ * is given its time here; the clocks come out of the waits that follow. */
 static void chip_write(int port, uint8_t reg, uint8_t val)
 {
     OPN2_Write(&chip, (Bit32u)(port * 2), reg);
-    chip_clock(2);
+    chip_clock(4);
     OPN2_Write(&chip, (Bit32u)(port * 2 + 1), val);
-    chip_clock(2);
-    debt += 4;   /* (the clocks a write takes come out of the next wait) */
+    chip_clock(32);
+    debt += 36;
 }
 
 /* ---- 44.1 kHz from the chip's rate: windowed sinc ---- */
