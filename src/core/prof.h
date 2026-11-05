@@ -10,8 +10,10 @@
 enum { PROF_68K, PROF_VDP, PROF_Z80, PROF_FM, PROF_SOUND, PROF_VIEW, PROF_PRESENT, PROF_HOOKS,
        PROF_SLIST, PROF_OVL, PROF_GE, PROF_N };
 
+#define PROF_EVERY 4   /* (one frame in this many measured: prof_us is that share) */
+
 #ifdef TJE_PROF
-extern uint32_t prof_us[PROF_N];
+extern uint32_t prof_us[PROF_N], prof_reads[PROF_N];
 extern uint32_t (*prof_clock)(void);
 void prof_push(int part);
 void prof_pop(void);

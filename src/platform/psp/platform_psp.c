@@ -318,6 +318,7 @@ void plat_pacing(int by_clock, int adjust_us)
  * Home closes nothing - an open log comes back empty. The time a write takes is
  * left out of the figures.) */
 static int perf_on = -1;
+static double prof_read_us;   /* (TJE_PROF: one clock read) */
 static char perf_path[300];
 static char perf_text[2048];
 static int perf_len;
@@ -389,6 +390,9 @@ static void perf_header(void)
     t0 = sceKernelGetSystemTimeLow();
     for (j = 0; j < 16; j++) memcpy(bench_mem + (512 << 10), bench_mem, 512 << 10);
     perf_printf("bench: 8 MB memcpy %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
+#ifdef TJE_PROF
+    perf_printf("profile: one frame in %d measured; a clock read %.2f us (taken out)\n", PROF_EVERY, prof_read_us);
+#endif
     perf_write();
 }
 
@@ -424,11 +428,16 @@ static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
         {
             static const char *names[PROF_N] = {"68k", "vdp lines", "z80", "fm", "sound other", "view", "present", "hooks", "(list", "overlays", "ge)"};
             int k;
-            prof_us[PROF_PRESENT] -= prof_us[PROF_PRESENT] > perf_write_us ? perf_write_us : prof_us[PROF_PRESENT];
+            { uint32_t w = perf_write_us / PROF_EVERY; prof_us[PROF_PRESENT] -= prof_us[PROF_PRESENT] > w ? w : prof_us[PROF_PRESENT]; }
             perf_printf("   ");
             for (k = 0; k < PROF_N; k++) {
-                perf_printf(" %s %.2f", names[k], prof_us[k] / 60000.0);
+                {
+                    /* (less the clock reads' own time, measured at the start) */
+                    double us = (double)prof_us[k] - prof_reads[k] * prof_read_us;
+                    perf_printf(" %s %.2f", names[k], (us > 0 ? us : 0) * PROF_EVERY / 60000.0);
+                }
                 prof_us[k] = 0;
+                prof_reads[k] = 0;
             }
             perf_printf("\n");
         }
@@ -558,6 +567,14 @@ int plat_init(int argc, char **argv)
     scePowerSetClockFrequency(333, 333, 166);
 #ifdef TJE_PROF
     prof_clock = (uint32_t (*)(void))sceKernelGetSystemTimeLow;
+    {
+        /* (what a clock read costs, to take out of the figures) */
+        uint32_t t0 = sceKernelGetSystemTimeLow(), t1;
+        int i;
+        for (i = 0; i < 2000; i++) (void)sceKernelGetSystemTimeLow();
+        t1 = sceKernelGetSystemTimeLow();
+        prof_read_us = (double)(t1 - t0) / 2000.0;
+    }
 #endif
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);

@@ -298,13 +298,96 @@ static inline int cell_put(V16 *o, const VlCell *cl, int x, int y)
     return (int)((e >> 13) & 3) + ((cl->ext & 2) ? 4 : 0);
 }
 
+/* The cells' vertices: written to cached memory (the display list's, from
+ * sceGuGetMemory, is uncached - every store a trip to the bus), then written
+ * back for the GE. One frame's; the GE is done with the last before the next
+ * frame's list is begun. */
+static V16 __attribute__((aligned(64))) vbuf[(VL_MAX_CELLS + 256) * 2];
+static int vb_used;
+static V16 *vget(int n)
+{
+    if (vb_used + n > (int)(sizeof vbuf / sizeof vbuf[0])) return (V16 *)sceGuGetMemory((unsigned)n * sizeof(V16));
+    vb_used += n;
+    return vbuf + vb_used - n;
+}
+static void vflush(V16 *v, int n)
+{
+    if (v >= vbuf && v < vbuf + sizeof vbuf / sizeof vbuf[0]) sceKernelDcacheWritebackRange(v, (unsigned)n * sizeof(V16));
+}
+
+/* Each batch's vertices for both priorities, made once a frame in two runs over
+ * its cells (count, then put); the passes then only issue the draws. Planes: a
+ * block per priority, its palette groups one after another (a draw each);
+ * sprites: in their order, a draw for each run of one palette group. */
+typedef struct { V16 *v[2]; short n[2][8]; int run0[1], runs[1]; } Prep;
+static Prep prep[VL_MAX_BATCHES];
+#define MAX_RUNS 2048
+static struct { short grp, n; int from; } runs[MAX_RUNS];
+static int nruns;
+
+static void prepare(const ViewList *vl, int x, int y)
+{
+    int k;
+    nruns = 0;
+    for (k = 0; k < vl->nbatches; k++) {
+        const VlBatch *b = &vl->batches[k];
+        Prep *P = &prep[k];
+        int c, h, g, tot[2] = {0, 0};
+        memset(P, 0, sizeof *P);
+        if (b->piece >= 0 || !b->count || b->layer > 2) continue;
+        for (c = b->first; c < b->first + b->count; c++) {
+            const VlCell *cl = &vl->cells[c];
+            P->n[(cl->entry >> 15) & 1][((cl->entry >> 13) & 3) + ((cl->ext & 2) ? 4 : 0)]++;
+        }
+        for (h = 0; h < 2; h++) {
+            for (g = 0; g < 8; g++) tot[h] += P->n[h][g];
+            P->v[h] = tot[h] ? vget(tot[h] * 2) : NULL;
+        }
+        if (b->layer < 2) {
+            V16 *at[2][8];
+            for (h = 0; h < 2; h++) {
+                int t = 0;
+                for (g = 0; g < 8; g++) { at[h][g] = P->v[h] + t * 2; t += P->n[h][g]; }
+            }
+            for (c = b->first; c < b->first + b->count; c++) {
+                const VlCell *cl = &vl->cells[c];
+                h = (cl->entry >> 15) & 1;
+                g = (int)(((cl->entry >> 13) & 3) + ((cl->ext & 2) ? 4 : 0));
+                cell_put(at[h][g], cl, x, y);
+                at[h][g] += 2;
+            }
+        } else {
+            V16 *o[2] = {P->v[0], P->v[1]};
+            int cur[2] = {-1, -1}, last[2] = {-1, -1};
+            P->run0[0] = nruns;
+            for (c = b->first; c < b->first + b->count; c++) {
+                const VlCell *cl = &vl->cells[c];
+                int grp;
+                h = (cl->entry >> 15) & 1;
+                grp = cell_put(o[h], cl, x, y);
+                if (grp != cur[h] && nruns < MAX_RUNS) {
+                    runs[nruns].grp = (short)(grp | (h << 8));
+                    runs[nruns].from = (int)(o[h] - P->v[h]) / 2;
+                    runs[nruns].n = 0;
+                    last[h] = nruns++;
+                    cur[h] = grp;
+                }
+                if (last[h] >= 0) runs[last[h]].n++;
+                o[h] += 2;
+            }
+            P->runs[0] = nruns - P->run0[0];
+        }
+    }
+}
+
 static void tiles_pass(const ViewList *vl, int stage, int layer, int high, int x, int y)
 {
     int k;
     tiles_tex();
     for (k = 0; k < vl->nbatches; k++) {
         const VlBatch *b = &vl->batches[k];
-        int count[8] = {0, 0, 0, 0, 0, 0, 0, 0}, c, g;
+        const Prep *P = &prep[k];
+        int g, t;
         if (b->layer != layer || b->stage != stage) continue;
         if (b->piece >= 0) {
             /* (an object's piece in its place among the sprites) */
@@ -313,67 +396,23 @@ static void tiles_pass(const ViewList *vl, int stage, int layer, int high, int x
             tiles_tex();
             continue;
         }
-        if (!b->count) continue;
-        for (c = b->first; c < b->first + b->count; c++) {
-            const VlCell *cl = &vl->cells[c];
-            unsigned e = cl->entry;
-            if (((e >> 15) & 1) == (unsigned)high) count[((e >> 13) & 3) + ((cl->ext & 2) ? 4 : 0)]++;
-        }
+        if (!P->v[high]) continue;
         sceGuScissor(x + b->x0, y + b->y0, x + b->x1, y + b->y1);
         if (layer == 2) {
-            /* sprites overlap: in their order, a draw for each run of one
-             * palette group */
-            int total = 0, cur = -1, run = 0;
-            V16 *o, *start;
-            for (g = 0; g < 8; g++) total += count[g];
-            if (!total) continue;
-            o = start = (V16 *)sceGuGetMemory((unsigned)total * 2 * sizeof(V16));
-            for (c = b->first; c < b->first + b->count; c++) {
-                const VlCell *cl = &vl->cells[c];
-                int grp;
-                if (((cl->entry >> 15) & 1) != (unsigned)high) continue;
-                grp = cell_put(o, cl, x, y);
-                if (grp != cur) {
-                    if (run) {
-                        sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)cur);
-                        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, run * 2, 0, start);
-                    }
-                    cur = grp;
-                    run = 0;
-                    start = o;
-                }
-                o += 2;
-                run++;
-            }
-            if (run) {
-                sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)cur);
-                sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, run * 2, 0, start);
+            int r;
+            for (r = P->run0[0]; r < P->run0[0] + P->runs[0]; r++) {
+                if ((runs[r].grp >> 8) != high) continue;
+                sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)(runs[r].grp & 0xFF));
+                sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, runs[r].n * 2, 0, P->v[high] + runs[r].from * 2);
             }
             continue;
         }
-        {
-            /* planes: one draw a palette group, the cells put in their group's
-             * part of one block in a single run over them */
-            int total = 0;
-            V16 *at[8], *v;
-            for (g = 0; g < 8; g++) total += count[g];
-            if (!total) continue;
-            v = (V16 *)sceGuGetMemory((unsigned)total * 2 * sizeof(V16));
-            for (g = 0, total = 0; g < 8; g++) { at[g] = v + total * 2; total += count[g]; }
-            for (c = b->first; c < b->first + b->count; c++) {
-                const VlCell *cl = &vl->cells[c];
-                if (((cl->entry >> 15) & 1) != (unsigned)high) continue;
-                g = (int)(((cl->entry >> 13) & 3) + ((cl->ext & 2) ? 4 : 0));
-                cell_put(at[g], cl, x, y);
-                at[g] += 2;
+        for (g = 0, t = 0; g < 8; g++) {
+            if (P->n[high][g]) {
+                sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)g);
+                sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, P->n[high][g] * 2, 0, P->v[high] + t * 2);
             }
-            for (g = 0, total = 0; g < 8; g++) {
-                if (count[g]) {
-                    sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)g);
-                    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, count[g] * 2, 0, v + total * 2);
-                }
-                total += count[g];
-            }
+            t += P->n[high][g];
         }
     }
 }
@@ -396,6 +435,7 @@ static void view_list(const ViewList *vl, int x, int y)
 static void view_list_(const ViewList *vl, int x, int y)
 {
     int i, high, k;
+    vb_used = 0;
     atlas_update(vl);
     for (i = 0; i < 64; i++) {
         clut_tiles[i] = (i & 15) ? abgr(vl->pal[i]) : 0;
@@ -412,6 +452,8 @@ static void view_list_(const ViewList *vl, int x, int y)
         sceKernelDcacheWritebackRange((void *)vl->pieces[0].px,
                                       (unsigned)(last->px + last->stride * last->h - vl->pieces[0].px));
     }
+    prepare(vl, x, y);
+    vflush(vbuf, vb_used);
     /* the backdrop */
     sceGuScissor(x, y, x + vl->w, y + vl->h);
     sceGuClearColor(abgr(vl->backdrop));
