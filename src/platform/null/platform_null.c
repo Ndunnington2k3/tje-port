@@ -117,6 +117,10 @@ static uint16_t parse_buttons(const char *s)
 int plat_init(int argc, char **argv)
 {
     int i;
+    if (getenv("TJE_USE_LIST")) {   /* (profiling: views drawn as lists, as on the PSP) */
+        extern int g_gv_use_list;
+        g_gv_use_list = 1;
+    }
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc && nshots < MAX_EVENTS) {

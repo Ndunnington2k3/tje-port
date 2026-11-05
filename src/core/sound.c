@@ -190,6 +190,14 @@ static void native_sync(uint32_t delta)
     ym_frac += delta;
     n = ym_frac / period;
     ym_frac %= period;
+    if (!voice_on && psg_vol[0] == 15 && psg_vol[1] == 15 && psg_vol[2] == 15 && psg_vol[3] == 15) {
+        /* (nothing sounding: silence, the PSG's counters left as they are - only
+         * their phase, not heard) */
+        if (n > (uint32_t)(NATIVE_MAX - native_len)) n = (uint32_t)(NATIVE_MAX - native_len);
+        memset(native_buf + native_len * 2, 0, n * 4);
+        native_len += (int)n;
+        return;
+    }
     while (n--) {
         int32_t v = 0;
         if (voice_on) {
@@ -370,8 +378,19 @@ static int z80_running(void) { return !z80_busreq && !z80_reset_line; }
 #ifdef TJE_Z80_STATS
 #include <stdio.h>
 #include <stdlib.h>
-static unsigned long z80_steps, z80_halt_steps;
-__attribute__((destructor)) static void z80_report(void) { fprintf(stderr, "z80 steps %lu, halted %lu\n", z80_steps, z80_halt_steps); }
+static unsigned long z80_steps, z80_halt_steps, z80_pc_hist[65536];
+__attribute__((destructor)) static void z80_report(void)
+{
+    int k, i;
+    fprintf(stderr, "z80 steps %lu, halted %lu\n", z80_steps, z80_halt_steps);
+    for (k = 0; k < 24; k++) {
+        int best = 0;
+        for (i = 1; i < 65536; i++) if (z80_pc_hist[i] > z80_pc_hist[best]) best = i;
+        if (!z80_pc_hist[best]) break;
+        fprintf(stderr, "  pc %04X: %lu\n", best, z80_pc_hist[best]);
+        z80_pc_hist[best] = 0;
+    }
+}
 #endif
 /* Run the Z80 up to 68k cycle `to`. */
 static void z80_sync(uint32_t to)
@@ -429,20 +448,25 @@ static void z80_sync(uint32_t to)
                 z80_budget -= turns * 40 * 15;
                 cpu.cyc += (unsigned long)turns * 40;
                 cpu.b = (uint8_t)(cpu.b - turns);
-                continue;
             }
+            if (NATIVE && cpu.b > 1) break;   /* (as the idle loop: the rest of a turn kept) */
+            if (turns > 0) continue;
         }
         if (cpu.pc == 0x0097 && !cpu.iff1 && z80_ram[0x40] != 1 && z80_ram[0x40] != 2) {
             int32_t turns = z80_budget / (57 * 15);
             if (turns > 0) {
                 z80_budget -= turns * 57 * 15;
                 cpu.cyc += (unsigned long)turns * 57;
-                continue;
             }
+            /* (the native sound: what is left of a turn kept for the next time
+             * rather than run part way - the command is taken at most a turn,
+             * 16 us, later; the Genesis sounds keep their exact timing) */
+            if (NATIVE) break;
+            if (turns > 0) continue;
         }
         zs_budget = z80_budget;     /* (the time at the start of this instruction) */
 #ifdef TJE_Z80_STATS
-        { z80_steps++; if (cpu.halted) z80_halt_steps++; }
+        { z80_steps++; if (cpu.halted) z80_halt_steps++; z80_pc_hist[cpu.pc]++; }
 #endif
         z80_step(&cpu);
         used = (int32_t)(cpu.cyc - c0);
@@ -562,7 +586,7 @@ int snd_end_frame(const int16_t **out)
             for (c = 0; c < 2; c++) {
                 /* y = x - x_prev + 0.995 * y_prev  (~40 Hz corner at 48 kHz) */
                 int32_t x = v[c] * 256;
-                int32_t y = x - dc_x[c] + (int32_t)(((int64_t)dc_y[c] * 1019) >> 10);
+                int32_t y = x - dc_x[c] + (dc_y[c] >> 10) * 1019 + (((dc_y[c] & 1023) * 1019) >> 10);
                 dc_x[c] = x;
                 dc_y[c] = y;
                 y >>= 8;

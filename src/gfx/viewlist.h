@@ -40,6 +40,8 @@ typedef struct {
     int x0, y0, x1, y1;            /* drawn only inside (picture pixels, x1/y1 excluded) */
     int first, count;              /* its cells */
     int piece;                     /* layer 2: >= 0, this piece instead (pieces[piece]) */
+    int stage;                     /* 0 the view; 1 over all of it (the status bar): its layer-3
+                                    * batches fill their rectangle with the backdrop first */
 } VlBatch;
 
 typedef struct {

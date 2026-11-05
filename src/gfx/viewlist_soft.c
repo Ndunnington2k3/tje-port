@@ -40,20 +40,28 @@ static void piece(const ViewList *vl, const VlPiece *p, int high, uint32_t *out,
 
 void viewlist_render_soft(const ViewList *vl, uint32_t *out, int pitch)
 {
-    int x, y, high, k, layer;
+    int x, y, high, k, layer, stage;
     for (y = 0; y < vl->h; y++)
         for (x = 0; x < vl->w; x++) out[(size_t)y * pitch + x] = vl->backdrop;
-    for (high = 0; high < 2; high++) {
-        for (layer = 0; layer < 3; layer++)
-            for (k = 0; k < vl->nbatches; k++) {
-                const VlBatch *b = &vl->batches[k];
-                int c;
-                if (b->layer != layer) continue;
-                if (b->piece >= 0) { piece(vl, &vl->pieces[b->piece], high, out, pitch); continue; }
-                for (c = b->first; c < b->first + b->count; c++) cell(vl, &vl->cells[c], b, high, out, pitch);
-            }
-        if (!vl->pieces_in_batches)
-            for (k = 0; k < vl->npieces; k++) piece(vl, &vl->pieces[k], high, out, pitch);
+    for (stage = 0; stage < 2; stage++) {
+        for (k = 0; k < vl->nbatches; k++) {
+            const VlBatch *b = &vl->batches[k];
+            if (b->stage != stage || b->layer != 3) continue;
+            for (y = b->y0; y < b->y1; y++)
+                for (x = b->x0; x < b->x1; x++) out[(size_t)y * pitch + x] = vl->backdrop;
+        }
+        for (high = 0; high < 2; high++) {
+            for (layer = 0; layer < 3; layer++)
+                for (k = 0; k < vl->nbatches; k++) {
+                    const VlBatch *b = &vl->batches[k];
+                    int c;
+                    if (b->layer != layer || b->stage != stage) continue;
+                    if (b->piece >= 0) { piece(vl, &vl->pieces[b->piece], high, out, pitch); continue; }
+                    for (c = b->first; c < b->first + b->count; c++) cell(vl, &vl->cells[c], b, high, out, pitch);
+                }
+            if (!vl->pieces_in_batches && stage == 0)
+                for (k = 0; k < vl->npieces; k++) piece(vl, &vl->pieces[k], high, out, pitch);
+        }
     }
     for (k = 0; k < vl->noverlays; k++) {
         const VlOverlay *o = &vl->overlays[k];

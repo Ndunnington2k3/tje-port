@@ -298,14 +298,14 @@ static inline int cell_put(V16 *o, const VlCell *cl, int x, int y)
     return (int)((e >> 13) & 3) + ((cl->ext & 2) ? 4 : 0);
 }
 
-static void tiles_pass(const ViewList *vl, int layer, int high, int x, int y)
+static void tiles_pass(const ViewList *vl, int stage, int layer, int high, int x, int y)
 {
     int k;
     tiles_tex();
     for (k = 0; k < vl->nbatches; k++) {
         const VlBatch *b = &vl->batches[k];
         int count[8] = {0, 0, 0, 0, 0, 0, 0, 0}, c, g;
-        if (b->layer != layer) continue;
+        if (b->layer != layer || b->stage != stage) continue;
         if (b->piece >= 0) {
             /* (an object's piece in its place among the sprites) */
             pieces_clut(high);
@@ -351,20 +351,29 @@ static void tiles_pass(const ViewList *vl, int layer, int high, int x, int y)
             }
             continue;
         }
-        for (g = 0; g < 8; g++) {
-            V16 *v, *o;
-            if (!count[g]) continue;
-            v = o = (V16 *)sceGuGetMemory((unsigned)count[g] * 2 * sizeof(V16));
+        {
+            /* planes: one draw a palette group, the cells put in their group's
+             * part of one block in a single run over them */
+            int total = 0;
+            V16 *at[8], *v;
+            for (g = 0; g < 8; g++) total += count[g];
+            if (!total) continue;
+            v = (V16 *)sceGuGetMemory((unsigned)total * 2 * sizeof(V16));
+            for (g = 0, total = 0; g < 8; g++) { at[g] = v + total * 2; total += count[g]; }
             for (c = b->first; c < b->first + b->count; c++) {
                 const VlCell *cl = &vl->cells[c];
-                unsigned e = cl->entry;
-                if (((e >> 15) & 1) != (unsigned)high) continue;
-                if ((int)(((e >> 13) & 3) + ((cl->ext & 2) ? 4 : 0)) != g) continue;
-                cell_put(o, cl, x, y);
-                o += 2;
+                if (((cl->entry >> 15) & 1) != (unsigned)high) continue;
+                g = (int)(((cl->entry >> 13) & 3) + ((cl->ext & 2) ? 4 : 0));
+                cell_put(at[g], cl, x, y);
+                at[g] += 2;
             }
-            sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)g);
-            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, count[g] * 2, 0, v);
+            for (g = 0, total = 0; g < 8; g++) {
+                if (count[g]) {
+                    sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)g);
+                    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, count[g] * 2, 0, v + total * 2);
+                }
+                total += count[g];
+            }
         }
     }
 }
@@ -411,11 +420,31 @@ static void view_list_(const ViewList *vl, int x, int y)
     sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
     sceGuTexFilter(GU_NEAREST, GU_NEAREST);
-    for (high = 0; high < 2; high++) {
-        tiles_pass(vl, 0, high, x, y);
-        tiles_pass(vl, 1, high, x, y);
-        tiles_pass(vl, 2, high, x, y);
-        if (!vl->pieces_in_batches) pieces_pass(vl, high, x, y);
+    {
+        int stage, has1 = 0;
+        for (k = 0; k < vl->nbatches; k++) has1 |= vl->batches[k].stage;
+        for (stage = 0; stage <= has1; stage++) {
+            for (k = 0; k < vl->nbatches; k++) {
+                /* (the stage's rectangles to fill with the backdrop first) */
+                const VlBatch *b = &vl->batches[k];
+                if (b->stage != stage || b->layer != 3) continue;
+                typedef struct { short x, y, z; } VP;
+                VP *q = (VP *)sceGuGetMemory(2 * sizeof(VP));
+                q[0].x = (short)(x + b->x0); q[0].y = (short)(y + b->y0); q[0].z = 0;
+                q[1].x = (short)(x + b->x1); q[1].y = (short)(y + b->y1); q[1].z = 0;
+                sceGuScissor(x, y, x + vl->w, y + vl->h);
+                sceGuDisable(GU_TEXTURE_2D);
+                sceGuColor(abgr(vl->backdrop));
+                sceGuDrawArray(GU_SPRITES, GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, q);
+                sceGuEnable(GU_TEXTURE_2D);
+            }
+            for (high = 0; high < 2; high++) {
+                tiles_pass(vl, stage, 0, high, x, y);
+                tiles_pass(vl, stage, 1, high, x, y);
+                tiles_pass(vl, stage, 2, high, x, y);
+                if (!vl->pieces_in_batches && stage == 0) pieces_pass(vl, high, x, y);
+            }
+        }
     }
     sceGuDisable(GU_ALPHA_TEST);
     sceGuScissor(0, 0, SCR_W, SCR_H);

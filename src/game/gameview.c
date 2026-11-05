@@ -2212,6 +2212,7 @@ static uint8_t vl_piece_pool[VL_MAX_PIECES * 2048] __attribute__((aligned(64)));
 static size_t vl_pool_used;
 
 static int vl_batch_open;   /* (cells go to the last batch begun - none if it was empty) */
+static int vl_stage;        /* (the stage of the batches begun now: VlBatch) */
 static void vl_batch(ViewList *vl, int layer, int x0, int y0, int x1, int y1)
 {
     VlBatch *b;
@@ -2227,6 +2228,7 @@ static void vl_batch(ViewList *vl, int layer, int x0, int y0, int x1, int y1)
     b->first = vl->ncells;
     b->count = 0;
     b->piece = -1;
+    b->stage = vl_stage;
 }
 
 static inline void vl_cell_ext(ViewList *vl, int x, int y, uint32_t entry, uint16_t ext)
@@ -2523,7 +2525,11 @@ static void vl_vdp_window(ViewList *vl, uint32_t base, int ox, int oy)
 
 /* the sprites' cells over the batch just begun, the ones behind first (the
  * sprite table at `base`, followed from entry 0 as the VDP does) */
-static void vl_vdp_sprites(ViewList *vl, uint32_t base, int ox, int oy)
+static void vl_vdp_sprites_of(ViewList *vl, uint32_t base, int ox, int oy, int lo, int hi);
+static void vl_vdp_sprites(ViewList *vl, uint32_t base, int ox, int oy) { vl_vdp_sprites_of(vl, base, ox, oy, 0, 79); }
+
+/* (only the entries lo..hi of the table, in the table's order) */
+static void vl_vdp_sprites_of(ViewList *vl, uint32_t base, int ox, int oy, int lo, int hi)
 {
     int order[80], n = 0, link = 0, k;
     do {
@@ -2531,6 +2537,8 @@ static void vl_vdp_sprites(ViewList *vl, uint32_t base, int ox, int oy)
         link = vdp_vram[(base + (uint32_t)link * 8 + 3) & 0xFFFF] & 0x7F;
     } while (link != 0 && n < 80);
     for (k = n - 1; k >= 0; k--) {
+        if (order[k] < lo || order[k] > hi) continue;
+        {
         const uint8_t *e = &vdp_vram[(base + (uint32_t)order[k] * 8) & 0xFFFF];
         int sy = (((e[0] << 8) | e[1]) & 0x3FF) - 128, hs = ((e[2] >> 2) & 3) + 1, vs = (e[2] & 3) + 1;
         uint32_t attr = ((uint32_t)e[4] << 8) | e[5];
@@ -2541,7 +2549,24 @@ static void vl_vdp_sprites(ViewList *vl, uint32_t base, int ox, int oy)
                 uint32_t tile = ((attr & 0x7FF) + (uint32_t)(colx * vs + rowy)) & 0x7FF;
                 vl_cell(vl, sx + c * 8 + ox, sy + r * 8 + oy, (attr & 0xF800) | tile);
             }
+        }
     }
+}
+
+/* The status bar (window rows from..to-1 of the original screen, with its sprites,
+ * entries 11-22, as render_status_bar draws it) as cells, at picture row y0 and
+ * column ox, over the view (stage 1: its rectangle backdrop first, where the bar
+ * is clear) */
+static void vl_status_bar(ViewList *vl, int from, int to, int ox, int y0)
+{
+    int oy = y0 - from;
+    vl_stage = 1;
+    vl_batch(vl, 3, ox, y0, ox + 320, y0 + (to - from));
+    vl_batch(vl, 1, ox, y0, ox + 320, y0 + (to - from));
+    if (vl_batch_open) vl_vdp_window(vl, (uint32_t)(vdp_reg[3] & 0x3C) << 10, ox, oy);
+    vl_batch(vl, 2, ox, y0, ox + 320, y0 + (to - from));
+    if (vl_batch_open) vl_vdp_sprites_of(vl, (uint32_t)(vdp_reg[5] & 0x7E) << 9, ox, oy, 11, 22);
+    vl_stage = 0;
 }
 
 /* Sprite masking (a sprite at x 0 after another on its lines hides the rest of
@@ -3244,10 +3269,8 @@ static void render_views_picture(void)
         if (top) vl_overlay(&vlist, (pic_w - 320) / 2, (pic_h - VDP_HEIGHT) / 2, 320, top, &top_window_lines[0][0], 320);
         if (win_to == VDP_HEIGHT && win_from > 0) {
             bar_h = hud_end - win_from;
-            if (bar_h > 0 && bar_h <= VDP_HEIGHT) {
-                render_status_bar(&bar[0][0], 320, win_from, hud_end);
-                vl_overlay(&vlist, (pic_w - 320) / 2, pic_h - bar_h, 320, bar_h, &bar[0][0], 320);
-            }
+            if (bar_h > 0 && bar_h <= VDP_HEIGHT) vl_status_bar(&vlist, win_from, hud_end, (pic_w - 320) / 2, pic_h - bar_h);
+            (void)bar;
         }
         if (g_gv_use_list && !g_gv_windows) { list_ready = 1; layout_copy_on = 0; return; }
     }
@@ -3440,6 +3463,7 @@ static void bar_sprite(uint8_t (*buf)[320], int e, int x, int y)
 
 /* The bar into out (320 x BAR_H, 0x00RRGGBB) for the window of player `own`.
  * Returns the number of lines to show (the last row of the window is plain). */
+static uint32_t bar_gen;   /* (counts the bars drawn: build_bar) */
 static int build_bar(uint32_t (*out)[320], int own)
 {
     static uint8_t px[BAR_H][320];
@@ -3462,12 +3486,6 @@ static int build_bar(uint32_t (*out)[320], int own)
             bar_text_c(2, p ? 29 : 8, "vacation");
         }
     }
-    for (line = 0; line < BAR_H; line++)
-        for (x = 0; x < 320; x++) {
-            uint8_t t8[8];
-            if ((x & 7) == 0) tile_row(t8, bar_map[line >> 3][x >> 3], line & 7);
-            px[line][x] = t8[x & 7];
-        }
     /* the status sprites where the game puts them on the bar */
     memset(bar_spr, 0, sizeof bar_spr);
     for (p = 0; p < 2; p++) {
@@ -3501,6 +3519,40 @@ static int build_bar(uint32_t (*out)[320], int own)
             }
         }
     }
+    /* (what the bar is drawn from - its map, the sprites put on it and theirs in
+     * the sprite table, the tiles and colours they use - unchanged: the bar drawn
+     * last time is still right) */
+    {
+        static uint32_t last_sig;
+        static uint32_t (*last_out)[320];
+        uint32_t h = 2166136261u ^ (uint32_t)own;
+        int e;
+        for (row = 0; row < 5; row++)
+            for (col = 0; col < 40; col++) {
+                h = (h ^ bar_map[row][col]) * 16777619u;
+                h = (h ^ vdp_tile_ver[bar_map[row][col] & 0x7FF]) * 16777619u;
+            }
+        for (e = 11; e <= 22; e++) {
+            uint32_t en = SPRITE_TABLE + (uint32_t)e * 8;
+            int k, n = ((((int)ob8(en + 2) >> 2) & 3) + 1) * (((int)ob8(en + 2) & 3) + 1);
+            if (!bar_spr[e].on) continue;
+            h = (h ^ (uint32_t)(e | bar_spr[e].x << 8 | bar_spr[e].y << 20)) * 16777619u;
+            h = (h ^ (ob8(en + 2) | ob16(en + 4) << 8)) * 16777619u;
+            for (k = 0; k < n; k++) h = (h ^ vdp_tile_ver[(ob16(en + 4) + (uint32_t)k) & 0x7FF]) * 16777619u;
+        }
+        for (e = 0; e < 64; e++) h = (h ^ vdp_palette_rgb(e)) * 16777619u;
+        h = (h ^ ((uint32_t)vdp_reg[7] << 16)) * 16777619u;
+        if (h == last_sig && out == last_out) return BAR_H - 8;
+        last_sig = h;
+        last_out = out;
+        bar_gen++;
+    }
+    for (line = 0; line < BAR_H; line++)
+        for (x = 0; x < 320; x++) {
+            uint8_t t8[8];
+            if ((x & 7) == 0) tile_row(t8, bar_map[line >> 3][x >> 3], line & 7);
+            px[line][x] = t8[x & 7];
+        }
     for (p = 22; p >= 11; p--)   /* (lower entries in front, as on the VDP) */
         if (bar_spr[p].on) bar_sprite(px, p, bar_spr[p].x, bar_spr[p].y);
     for (line = 0; line < BAR_H; line++)
@@ -4171,7 +4223,11 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     if (rd8(TOEJAMS_LEVEL) != FINAL_LEVEL) {
         static uint32_t bar[BAR_H][320];
         int n = build_bar(bar, p), xs = ox < 0 ? -ox : 0, xd = ox < 0 ? 0 : ox, cnt = 320 - xs;
-        if (as_list) vl_overlay_clip(&wlist, ox, h - n, 320, n, &bar[0][0], 320);
+        if (as_list) {
+            ovl_stamp = 0x10000000u | (bar_gen & 0x0FFFFFFFu);   /* (the same bar: the GPU has it) */
+            vl_overlay_clip(&wlist, ox, h - n, 320, n, &bar[0][0], 320);
+            ovl_stamp = 0;
+        }
         if (as_list && !window_check(player)) n = 0;
         if (xd + cnt > w) cnt = w - xd;
         for (line = 0; line < n && cnt > 0; line++)
