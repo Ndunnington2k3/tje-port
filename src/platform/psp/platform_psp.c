@@ -326,6 +326,7 @@ static uint64_t perf_last, perf_game, perf_draw, perf_wait;
 static unsigned perf_frames;
 static uint32_t perf_write_us;   /* (the last write, charged to "present" by the profiler) */
 static int perf_lists;
+static unsigned perf_none;   /* (frames with nothing to show: the one before kept) */
 
 static void perf_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void perf_printf(const char *fmt, ...)
@@ -424,6 +425,8 @@ static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
         static unsigned seconds;
         perf_printf("%4u s: game %.2f ms, draw %.2f, wait %.2f (a frame: 16.68)%s\n", ++seconds,
                     perf_game / 60000.0, perf_draw / 60000.0, perf_wait / 60000.0, perf_lists ? " [GE gameplay]" : "");
+        if (perf_none) perf_printf("     (%u frames had nothing new to show: the one before kept)\n", perf_none);
+        perf_none = 0;
 #ifdef TJE_PROF
         {
             static const char *names[PROF_N] = {"68k", "vdp lines", "z80", "fm", "sound other", "view", "present", "hooks", "(list", "overlays", "ge)"};
@@ -468,7 +471,8 @@ static void list_check(void)
         on = f != NULL;
         if (f) fclose(f);
     }
-    if (!on || vl->w > 480 || vl->h > 272) return;
+    /* (a frozen list is drawn with the GE's tiles as they were: not comparable) */
+    if (!on || vl->frozen || vl->w > 480 || vl->h > 272) return;
     viewlist_render_soft(vl, ref, 480);
     fb = gfx_gu_drawn();
     ox = (SCR_W - vl->w) / 2;
@@ -494,10 +498,18 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
     uint64_t t_start = sceKernelGetSystemTimeWide(), t_shown, t_given;
     gfx_gu_show();
     t_shown = sceKernelGetSystemTimeWide();
-    present_set_frame(pixels, width, height, pitch);
-    present_draw(SCR_W, SCR_H);
-    t_given = sceKernelGetSystemTimeWide();
-    if (!pixels) { list_check(); perf_lists = 1; }
+    if (!pixels && !present_list_waiting()) {
+        /* nothing this frame (neither a picture nor a list): the one on the screen
+         * stays - drawn, it would be an empty, black frame; paced as one shown */
+        perf_none++;
+        if (!clock_pacing) gfx_gu_wait_blank();
+        t_given = sceKernelGetSystemTimeWide();
+    } else {
+        present_set_frame(pixels, width, height, pitch);
+        present_draw(SCR_W, SCR_H);
+        t_given = sceKernelGetSystemTimeWide();
+        if (!pixels) { list_check(); perf_lists = 1; }
+    }
     if (clock_pacing) {
         /* (network play: by the clock, plat_pacing) */
         uint64_t now = sceKernelGetSystemTimeWide();

@@ -171,19 +171,24 @@ void gfx_gu_show(void)
     gpu_idle();
     if (!frame_waiting) return;
     displayed_now();
-    if (vsync) {
-        sceDisplayWaitVblankStart();
-        sceDisplaySetFrameBuf((uint8_t *)sceGeEdramGetAddr() + buf_at[draw_i], BUF_W, PSP_DISPLAY_PIXEL_FORMAT_8888,
-                              PSP_DISPLAY_SETBUF_IMMEDIATE);
-        disp_i = draw_i;   /* (on the screen already) */
-        pend_i = -1;
-    } else {
+    {
+        /* (always given to be taken at a blank, never part way down the screen: a
+         * swap made "immediately" after waiting for the blank tears the top lines
+         * whenever the thread is held up past the blank's end - the audio thread) */
+        int vc = (int)sceDisplayGetVcount();
         sceDisplaySetFrameBuf((uint8_t *)sceGeEdramGetAddr() + buf_at[draw_i], BUF_W, PSP_DISPLAY_PIXEL_FORMAT_8888,
                               PSP_DISPLAY_SETBUF_NEXTFRAME);
-        /* (counted from after the call: a blank during it may or may not have
-         * taken it - taken as not, the one on the screen kept safe) */
-        pend_vc = (int)sceDisplayGetVcount();
-        pend_i = draw_i;
+        if (vsync && (int)sceDisplayGetVcount() == vc) {
+            /* (paced by the screen: on it from the blank this waits for) */
+            sceDisplayWaitVblankStart();
+            disp_i = draw_i;
+            pend_i = -1;
+        } else {
+            /* (counted from after the call: a blank during it may or may not have
+             * taken it - taken as not, the one on the screen kept safe) */
+            pend_vc = (int)sceDisplayGetVcount();
+            pend_i = draw_i;
+        }
     }
     frame_waiting = 0;
 }
@@ -584,3 +589,8 @@ const GfxBackend *gfx_gu_init(void)
 }
 
 void gfx_gu_vsync(int on) { vsync = on; }
+
+void gfx_gu_wait_blank(void)
+{
+    if (vsync) sceDisplayWaitVblankStart();
+}

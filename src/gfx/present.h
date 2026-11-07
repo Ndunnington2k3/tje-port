@@ -29,6 +29,10 @@ struct ViewList;
 void present_set_list(const struct ViewList *vl);
 /* Does the drawing backend draw lists? */
 int present_has_lists(void);
+/* a list was given for this frame (present_set_list) and not drawn yet */
+int present_list_waiting(void);
+/* the list last drawn (the GPU may still be reading its pieces), or NULL */
+const struct ViewList *present_list_drawn(void);
 /* Wait for the GPU to finish with what it was given (before changing a view list's pieces). */
 void present_gpu_idle(void);
 

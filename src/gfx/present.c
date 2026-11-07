@@ -20,8 +20,11 @@ static Target targets[PRESENT_TARGETS] = {
 };
 static Target *t = &targets[0];
 static const ViewList *list;   /* this frame's view as a list, or NULL */
+static const ViewList *drawn;  /* the list last given to the GPU (it may be drawing it still) */
+const ViewList *present_list_drawn(void) { return drawn; }
 
 void present_set_list(const ViewList *vl) { list = vl; }
+int present_list_waiting(void) { return list != NULL; }
 int present_has_lists(void) { return gfx && gfx->view_list; }
 void present_gpu_idle(void) { if (gfx && gfx->idle) gfx->idle(); }
 
@@ -76,6 +79,7 @@ void present_draw(int win_w, int win_h)
     if (list && gfx->view_list) {
         /* (the view at its own size, centred: drawn 1:1) */
         gfx->view_list(list, (win_w - list->w) / 2, (win_h - list->h) / 2);
+        drawn = list;
         list = NULL;
     } else if (t->have_frame && t->frame_tex) {
         if (t->frame_w == VIEW_BASE_W && t->frame_h == VIEW_BASE_H) {

@@ -2208,7 +2208,11 @@ const ViewList *gameview_last_list(void) { return shown_list; }
 static int vl_check = -1;     /* (tests, TJE_VLCHECK) */
 static int vl_check_on(void) { if (vl_check < 0) vl_check = getenv("TJE_VLCHECK") != NULL; return vl_check; }
 int vl_checked, vl_bad_frames;
-static uint8_t vl_piece_pool[VL_MAX_PIECES * 2048] __attribute__((aligned(64)));
+/* (each list its own pieces' pixels: a list is built while the GPU may still be
+ * drawing another from its pieces - only rebuilding the one it draws waits) */
+static uint8_t vl_piece_pools[3][VL_MAX_PIECES * 2048] __attribute__((aligned(64)));
+static uint8_t *vl_piece_pool = vl_piece_pools[0];
+#define VL_POOL_SIZE sizeof vl_piece_pools[0]
 static size_t vl_pool_used;
 
 static int vl_batch_open;   /* (cells go to the last batch begun - none if it was empty) */
@@ -2404,7 +2408,7 @@ static void build_view_list(ViewList *vl, int player, int cam_x, int cam_y, int 
                 VlPiece *q = &vl->pieces[vl->npieces];
                 int stride = (p->w + 15) & ~15, row;
                 uint8_t *dst = vl_piece_pool + vl_pool_used;
-                if (vl->npieces >= VL_MAX_PIECES || vl_pool_used + (size_t)stride * (size_t)p->h > sizeof vl_piece_pool) continue;
+                if (vl->npieces >= VL_MAX_PIECES || vl_pool_used + (size_t)stride * (size_t)p->h > VL_POOL_SIZE) continue;
                 vl_pool_used += ((size_t)stride * (size_t)p->h + 63) & ~(size_t)63;
                 for (row = 0; row < p->h; row++) memcpy(dst + row * stride, p->px + row * p->w, (size_t)p->w);
                 q->stride = stride;
@@ -2448,7 +2452,9 @@ static void build_view_list(ViewList *vl, int player, int cam_x, int cam_y, int 
 static void vl_begin(ViewList *vl, int w, int h)
 {
     int x;
-    present_gpu_idle();   /* (the GPU may still be drawing the last list from the pieces) */
+    if ((const ViewList *)present_list_drawn() == vl)
+        present_gpu_idle();   /* (the GPU may still be drawing this list from its pieces) */
+    vl_piece_pool = vl_piece_pools[vl == &vlist ? 0 : vl == &sl_other ? 1 : 2];
     vl_pool_used = 0;
     vl->w = w;
     vl->h = h;
