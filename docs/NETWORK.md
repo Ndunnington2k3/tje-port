@@ -118,7 +118,8 @@ talk to each other.
 On a GPU (PSP), this machine's player's window is drawn as a view list
 (docs/RENDERER.md) like the one-player view: the floor, plane B and the objects by the
 GE, the player's menu (runs of the window's lines), the status bar, the soft pause box
-and network messages as overlays. The map stays a software picture.
+and network messages as overlays. The port's map (C) is a cached picture drawn as an
+overlay, redrawn only when what it shows changes, its markers as small keyed overlays.
 
 ## Testing
 
