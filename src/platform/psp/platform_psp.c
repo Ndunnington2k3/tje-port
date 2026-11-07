@@ -326,7 +326,8 @@ static uint64_t perf_last, perf_game, perf_draw, perf_wait;
 static unsigned perf_frames;
 static uint32_t perf_write_us;   /* (the last write, charged to "present" by the profiler) */
 static int perf_lists;
-static unsigned perf_none;   /* (frames with nothing to show: the one before kept) */
+static unsigned perf_none;
+static unsigned perf_soft;   /* (frames drawn on the CPU and sent as a picture) */   /* (frames with nothing to show: the one before kept) */
 
 static void perf_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void perf_printf(const char *fmt, ...)
@@ -426,7 +427,9 @@ static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
         perf_printf("%4u s: game %.2f ms, draw %.2f, wait %.2f (a frame: 16.68)%s\n", ++seconds,
                     perf_game / 60000.0, perf_draw / 60000.0, perf_wait / 60000.0, perf_lists ? " [GE gameplay]" : "");
         if (perf_none) perf_printf("     (%u frames had nothing new to show: the one before kept)\n", perf_none);
+        if (perf_soft) perf_printf("     (%u frames drawn in software)\n", perf_soft);
         perf_none = 0;
+        perf_soft = 0;
 #ifdef TJE_PROF
         {
             static const char *names[PROF_N] = {"68k", "vdp lines", "z80", "fm", "sound other", "view", "present", "hooks", "(list", "overlays", "ge)"};
@@ -509,6 +512,22 @@ void plat_present(const uint32_t *pixels, int width, int height, int pitch)
         present_draw(SCR_W, SCR_H);
         t_given = sceKernelGetSystemTimeWide();
         if (!pixels) { list_check(); perf_lists = 1; }
+        else perf_soft++;
+        {
+            /* (tests, on stdout: runs of list frames and of software ones) */
+            static int kind = -1;
+            static unsigned from, n;
+            extern int g_in_game, g_gameview_reason;
+            int k = pixels ? 0 : 1;
+            if (k != kind) {
+                if (kind >= 0) printf("path: %u frames %s\n", n - from, kind ? "list" : "SOFTWARE");
+                if (!k) printf("path: at %.1f s software (in game %d, reason %d, %dx%d)\n",
+                               (double)sceKernelGetSystemTimeWide() / 1e6, g_in_game, g_gameview_reason, width, height);
+                kind = k;
+                from = n;
+            }
+            n++;
+        }
     }
     if (clock_pacing) {
         /* (network play: by the clock, plat_pacing) */
