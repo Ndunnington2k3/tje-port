@@ -217,8 +217,12 @@ static void reset_lockstep(void)
     ignore_hashes_to = 0;
 }
 
+static int ended_in_game;   /* (the session ended during a game: pads_after takes this one to the menu) */
+
 static void end_session(void)
 {
+    extern int g_in_game;
+    if (g_in_game && role != NET_NONE) ended_in_game = 1;
     role = NET_NONE;
     have_peer = 0;
     pkg_clear();
@@ -860,7 +864,21 @@ static void pads_after(uint16_t pad[2], uint16_t *menu)
 {
     int me;
     uint32_t f, t0, k;
-    if (!net_in_game()) return;
+    if (!net_in_game()) {
+        extern int g_in_game;
+        if (ended_in_game) {
+            /* (the other player left, or the link was lost, between frames: this
+             * machine goes back to the menu too - a game set up for two machines
+             * can't go on with one: the other player's character and the shared
+             * screen would be left as they were) */
+            ended_in_game = 0;
+            if (g_in_game) {
+                gameview_set_message(NULL);
+                save_quit_to_menu();   /* (does not return) */
+            }
+        }
+        return;
+    }
     me = net_local_player();
     f = nf + 1;
     if (!have(me, f + (uint32_t)delay)) {

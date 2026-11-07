@@ -53,6 +53,8 @@ def main():
     ap.add_argument('--delay', type=int, default=0)
     ap.add_argument('--vlcheck', action='store_true', help='each GE picture compared with the list drawn in software')
     ap.add_argument('--perf', action='store_true', help='perf.log on both (where the time goes)')
+    ap.add_argument('--quit-at', type=float, help='the host quits to the menu (soft pause) at this time')
+    ap.add_argument('--map-at', type=float, help='the joiner opens its map (C: Triangle) at this time, closes it 4 s later')
     a = ap.parse_args()
 
     os.makedirs(a.dir, exist_ok=True)
@@ -76,6 +78,12 @@ def main():
             if os.path.exists(os.path.join(game, old)):
                 os.remove(os.path.join(game, old))
         script = [(t + SHIFT, m) for t, m in script] + wander(40 + SHIFT, a.seconds - 1, n)
+        if a.quit_at and n == 1:
+            script = [e for e in script if e[0] < a.quit_at - 0.5] + [(a.quit_at, START), (a.quit_at + 0.5, DOWN), (a.quit_at + 1.0, CROSS),
+                                                                      (a.quit_at + 1.5, DOWN), (a.quit_at + 2.0, CROSS)]
+        if a.map_at and n == 2:
+            script = [e for e in script if not (a.map_at - 0.5 < e[0] < a.map_at + 4.5)] + [(a.map_at, TRI), (a.map_at + 4, TRI)]
+            script.sort()
         args = [a.ppsspp, '--memstick=' + os.path.join(a.dir, name), '--instance', str(n),
                 '--sync-file', sync, '--sync-count', '2', '--nickname', name.upper(),
                 '--timeout-emulated=%g' % a.seconds, '--press=' + presses(script)]
@@ -87,6 +95,9 @@ def main():
             args.append('--adhoc-delay=%d' % a.delay)
         if a.shots:
             ts = [12, 14, 15.5, 16, 18.5, 20.5, 23, 28, 31, 34, 37, 45, a.seconds - 2]
+            for t0 in (a.quit_at, a.map_at):
+                if t0: ts += [t0 + d for d in (1, 2.5, 4, 6, 9, 14)]
+            ts = sorted(set(round(t, 1) for t in ts if t < a.seconds))
             args.append('--screenshot-at=' + ','.join('%g:%s' % (t, os.path.join(a.dir, '%s_%04.1f.png' % (name, t)))
                                                       for t in ts))
         args.append(os.path.join(game, 'EBOOT.PBP'))
@@ -106,6 +117,8 @@ def main():
     bad = [f for f in common if ha[str(f)] != hb[str(f)]]
     print('checksums: host %d, joiner %d, compared %d, different %d' % (len(ha), len(hb), len(common), len(bad)))
     ok = len(common) >= 20 and not bad
+    if a.quit_at:
+        ok = not bad
     print('PASS' if ok else 'FAIL')
     sys.exit(0 if ok else 1)
 

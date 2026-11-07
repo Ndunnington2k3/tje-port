@@ -2716,7 +2716,7 @@ static int build_screen_list(ViewList *vl, int ox, int oy, int wide, int sprites
  *    by whole cells: the blocks are then cells);
  *  - the map: the stars, kept as a picture, around it.
  * Anything else: drawn the usual way. */
-static struct { int valid, b, px, py, fill; uint32_t key; } ext_dec;
+static struct { int valid, b, px, py, fill, ra, rb; uint32_t key; } ext_dec;   /* (ra, rb: plane_repeats of A, B; -1 not yet) */
 
 static uint32_t ext_key(void)
 {
@@ -2752,6 +2752,7 @@ static void ext_decide(void)
     ext_dec.b = find_border();
     ext_dec.px = ext_dec.py = 0;
     ext_dec.fill = -1;
+    ext_dec.ra = ext_dec.rb = -1;
     if (!ext_dec.b) {
         ext_dec.px = find_period(0);
         ext_dec.py = find_period(1);
@@ -3106,8 +3107,14 @@ static int build_screen_frame(void)
     }
     if (ext_dec.px && ext_dec.py) {
         int pw = psz[vdp_reg[16] & 3], ph = psz[(vdp_reg[16] >> 4) & 3];
-        int ra = plane_repeats((uint32_t)(vdp_reg[2] & 0x38) << 10, pw, ph, ext_dec.px, ext_dec.py);
-        int rb = plane_repeats((uint32_t)(vdp_reg[4] & 7) << 13, pw, ph, ext_dec.px, ext_dec.py);
+        int ra, rb;
+        /* (from the planes' maps and registers alone: once a decision - ext_key) */
+        if (ext_dec.ra < 0) {
+            ext_dec.ra = plane_repeats((uint32_t)(vdp_reg[2] & 0x38) << 10, pw, ph, ext_dec.px, ext_dec.py);
+            ext_dec.rb = plane_repeats((uint32_t)(vdp_reg[4] & 7) << 13, pw, ph, ext_dec.px, ext_dec.py);
+        }
+        ra = ext_dec.ra;
+        rb = ext_dec.rb;
         int wide = ext_dec.fill == 0 ? (ra ? 0 : -9) : ext_dec.fill == 1 ? (rb ? 1 : -9) : (ra && rb ? 2 : -9);
         if (wide < -1) {
             /* (the planes don't repeat so: the pattern's tile, drawn here as the
@@ -3719,6 +3726,10 @@ static void map_tile_row(uint8_t out[8], uint16_t e, int row)
     for (i = 0; i < 8; i++) out[i] = (out[i] & PIX_OPAQUE) ? (out[i] & 15) : 0;
 }
 
+static int map_bg_ok;                   /* (render_map's picture of the planes, and its count) */
+static uint32_t map_bg_gen, *map_bg;
+static uint32_t map_mark_px[4][16 * 8]; /* (the markers shown, as keyed pictures) */
+static int map_mark_at[4][3], map_nmarks;
 static uint32_t map_hash(uint32_t v) { v ^= v >> 16; v *= 0x7FEB352Du; v ^= v >> 15; v *= 0x846CA68Bu; return v ^ (v >> 16); }
 
 static void render_map(int win, int p, uint32_t *out, int w, int h)
@@ -3794,55 +3805,81 @@ static void render_map(int win, int p, uint32_t *out, int w, int h)
                     map[sq_y * 4 + row][sq_x * 5 + col] = (uint16_t)(0xC112 + rd8(MAP_SQUARE + (uint32_t)(row * 5 + col)));
         }
     if (map_tick++ % 8 == 0) map_marks_update(win, p, level);
-    for (y = 0; y < h; y++) {
-        uint32_t *o = out + (size_t)y * GAMEVIEW_MAX_W;
-        int sy = y - oy;
-        for (x = 0; x < w; x++) {
-            /* plane B, scrolled 8 left and 8 up; around the original screen the
-             * starry frame carries on */
-            int sx = x - ox, px = sx + 8, py = sy + 8, c = px >> 3, r = py >> 3;
-            uint16_t e, we;
-            uint8_t t8[8];
-            if (sx < 0 || sy < 0 || sx >= 320 || sy >= VDP_HEIGHT) {
-                /* (around the original screen: more of the unexplored purple) */
-                e = (uint16_t)(0xC112 + rd8(MAP_SQUARE + 6));
-                map_tile_row(t8, e, ((sy % 8) + 8) % 8);
-                o[x] = pal[2][t8[((sx % 8) + 8) % 8]];
-                continue;
+    /* the planes: drawn again only when something on them changed (the map is
+     * still most of the time) - cell by cell, a tile row decoded once for its 8
+     * pixels */
+    {
+        static uint32_t bg[GAMEVIEW_MAX_H][GAMEVIEW_MAX_W], last_sig;
+        static int last_w, last_h;
+        uint32_t sig = 2166136261u;
+        for (row = 0; row < 30; row++) for (col = 0; col < 42; col++) sig = (sig ^ pb[row][col]) * 16777619u;
+        for (row = 0; row < 28; row++) for (col = 0; col < 40; col++) sig = (sig ^ map[row][col]) * 16777619u;
+        for (k = 0; k < 64; k++) sig = (sig ^ pal[k >> 4][k & 15]) * 16777619u;
+        if (sig != last_sig || w != last_w || h != last_h || !map_bg_ok) {
+            last_sig = sig; last_w = w; last_h = h; map_bg_ok = 1;
+            map_bg_gen++;
+            for (y = 0; y < h; y++) {
+                /* (a tile row decoded once for the pixels it covers) */
+                int sy = y - oy;
+                int last_e = -1, last_w = -1, last_o = -1;
+                uint8_t t8[8], tw[8], to[8];
+                for (x = 0; x < w; x++) {
+                    int sx = x - ox;
+                    uint32_t *o = &bg[y][x];
+                    if (sx < 0 || sy < 0 || sx >= 320 || sy >= VDP_HEIGHT) {
+                        /* (around the original screen: more of the unexplored purple) */
+                        if (last_o < 0) { map_tile_row(to, (uint16_t)(0xC112 + rd8(MAP_SQUARE + 6)), ((sy % 8) + 8) % 8); last_o = 1; }
+                        *o = pal[2][to[((sx % 8) + 8) % 8]];
+                        continue;
+                    }
+                    {
+                        /* plane B, scrolled 8 left and 8 up, under the window */
+                        int px = sx + 8, py = sy + 8;
+                        uint16_t e = pb[py >> 3][px >> 3], we = map[sy >> 3][sx >> 3];
+                        int key_w = (sx >> 3) * 2, key_e = (px >> 3) * 2 + 1;
+                        if ((we & 0x7FF) && last_w != key_w) { map_tile_row(tw, we, sy & 7); last_w = key_w; }
+                        if ((we & 0x7FF) && tw[sx & 7]) { *o = pal[(we >> 13) & 3][tw[sx & 7]]; continue; }
+                        if (e & 0x7FF) {
+                            if (last_e != key_e) { map_tile_row(t8, e, py & 7); last_e = key_e; }
+                            if (t8[px & 7]) { *o = pal[(e >> 13) & 3][t8[px & 7]]; continue; }
+                        }
+                        *o = pal[0][0];
+                    }
+                }
             }
-            e = pb[r][c];
-            if (sy >= 0 && sy < VDP_HEIGHT && sx >= 0 && sx < 320 && ((we = map[sy >> 3][sx >> 3]) & 0x7FF)) {
-                map_tile_row(t8, we, sy & 7);
-                if (t8[sx & 7]) { o[x] = pal[(we >> 13) & 3][t8[sx & 7]]; continue; }
-            }
-            if (e & 0x7FF) {
-                map_tile_row(t8, e, ((py % 8) + 8) % 8);
-                if (t8[((px % 8) + 8) % 8]) { o[x] = pal[(e >> 13) & 3][t8[((px % 8) + 8) % 8]]; continue; }
-            }
-            o[x] = pal[0][0];
         }
+        map_bg = &bg[0][0];
+        if (out) for (y = 0; y < h; y++) memcpy(out + (size_t)y * GAMEVIEW_MAX_W, bg[y], (size_t)w * 4);
     }
     /* the markers (the players and the ship piece blink, as DrawMapCharacters does) */
     {
         static const uint32_t icon[4] = {ICON_TOEJAM, ICON_EARL, ICON_ELEVATOR, ICON_SHIP};
         static const int line[4] = {3, 3, 3, 2}, wide[4] = {1, 1, 1, 2};
         int blink_off = (rd16(VBLANK_COUNTER) & 0x18) == 0;
+        map_nmarks = 0;
         for (k = 3; k >= 0; k--) {
             int r, c;
             if (!map_marks[win][k].on || (blink_off && k != 2)) continue;
+            /* (each as a small picture too: the list's keyed overlays) */
+            memset(map_mark_px[map_nmarks], 0, sizeof map_mark_px[0]);
+            map_mark_at[map_nmarks][0] = ox + map_marks[win][k].x;
+            map_mark_at[map_nmarks][1] = oy + map_marks[win][k].y;
+            map_mark_at[map_nmarks][2] = wide[k] * 8;
             for (r = 0; r < 8; r++) {
                 int yy = oy + map_marks[win][k].y + r;
-                if (yy < 0 || yy >= h) continue;
                 for (c = 0; c < wide[k]; c++) {
                     uint8_t t8[8];
                     int i;
                     rom_tile_row(t8, icon[k] + (uint32_t)c * 32, r, 0, 0);
                     for (i = 0; i < 8; i++) {
                         int xx = ox + map_marks[win][k].x + c * 8 + i;
-                        if (t8[i] && xx >= 0 && xx < w) out[(size_t)yy * GAMEVIEW_MAX_W + xx] = pal[line[k]][t8[i]];
+                        if (!t8[i]) continue;
+                        map_mark_px[map_nmarks][r * 16 + c * 8 + i] = 0xFF000000u | pal[line[k]][t8[i]];
+                        if (out && yy >= 0 && yy < h && xx >= 0 && xx < w) out[(size_t)yy * GAMEVIEW_MAX_W + xx] = pal[line[k]][t8[i]];
                     }
                 }
             }
+            map_nmarks++;
         }
     }
 }
@@ -4069,7 +4106,9 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
      * ride screen, LOC_00013540, is then shown here as the game draws it; a
      * player already in it, waiting for the other (ELEVATOR_FLAG 1), keeps their
      * own view) */
-    if (!g_in_game || !player_in_game(p) || alone_riding()) {
+    /* (the game's own map screen - a ship piece found: shown to both players,
+     * the game waiting meanwhile - is the game's picture here too) */
+    if (!g_in_game || !player_in_game(p) || alone_riding() || ((vdp_reg[17] & 0x1F) && vdp_live_picture() && !map_open[p])) {
         frozen_for[player] = 0;
         cam_ok[player] = 0;
         if (window_usual_picture(wp, hp, pixels, pitch)) return 1;
@@ -4162,6 +4201,24 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     oy = (h - VDP_HEIGHT) / 2;
     if (map_open[p] && p == player) {
         win_list[player] = 0;
+        if (as_list && !window_check(player)) {
+            /* (on the GPU: the planes' picture - sent again only when it changed -
+             * and the markers over it) */
+            int k;
+            render_map(player, p, NULL, w, h);
+            vl_begin(&wlist, w, h);
+            ovl_stamp = 0x08000000u | (map_bg_gen & 0x07FFFFFFu);
+            vl_overlay_clip(&wlist, 0, 0, w, h, map_bg, GAMEVIEW_MAX_W);
+            ovl_stamp = 0;
+            for (k = 0; k < map_nmarks; k++) {
+                int n = wlist.noverlays;
+                vl_overlay_clip(&wlist, map_mark_at[k][0], map_mark_at[k][1], map_mark_at[k][2], 8, map_mark_px[k], 16);
+                for (; n < wlist.noverlays; n++) wlist.overlays[n].keyed = 1;
+            }
+            set_list(&wlist);
+            *pixels = NULL;
+            return 1;
+        }
         render_map(player, p, out, w, h);
         *pixels = out;
         *pitch = GAMEVIEW_MAX_W;
