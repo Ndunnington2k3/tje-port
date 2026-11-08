@@ -1011,7 +1011,11 @@ void net_loop_top(void)
         snap_menu = g_menu_pad;
         if (!snap_ok) {
             snap_ok = 1;
-            if (nf == 0 && have_peer) make_package(K_START, (uint32_t)delay);
+            if (nf == 0 && have_peer) {
+                make_package(K_START, (uint32_t)delay);
+                /* (said, not left waiting: Earl would wait for it for ever) */
+                if (!pkg.active) gameview_set_message("Not enough memory to send the game to Earl.");
+            }
         }
     }
 }

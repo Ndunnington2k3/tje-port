@@ -31,6 +31,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <string.h>
 
 PSP_MODULE_INFO("ToeJam & Earl", 0, 1, 0);
@@ -357,28 +358,32 @@ static void perf_write(void)
 /* (at the top of perf.log: the clocks, the sound setting, and a few fixed loops
  * timed - how fast this PSP runs plain code and memory, against PPSSPP's numbers) */
 static volatile uint32_t bench_sink;
-static uint8_t bench_mem[1 << 20] __attribute__((aligned(64)));
+#define BENCH_MEM (1u << 20)
+static uint8_t *bench_mem;   /* (from the heap for the benchmarks only) */
 
 static void perf_header(void)
 {
     uint32_t t0, x = 1, i, j;
     {
-        /* (the largest block malloc still gives) */
-        size_t lo = 0, hi = 64u << 20;
-        while (hi - lo > 16384) {
-            size_t mid = (lo + hi) / 2;
-            void *p = malloc(mid);
-            if (p) { free(p); lo = mid; } else hi = mid;
-        }
+        /* (what malloc still gives: taken a megabyte at a time - touched, so none
+         * of it is only promised - and given back) */
+        static void *blk[96];
+        size_t lo = 0;
+        int nb = 0, k;
+        while (nb < 96 && (blk[nb] = malloc(1u << 20)) != NULL) { memset(blk[nb], 0, 1u << 20); nb++; }
+        lo = (size_t)nb << 20;
+        for (k = 0; k < nb; k++) free(blk[k]);
         perf_printf("cpu %d MHz, bus %d MHz; music chip %d; heap free %u KB, system free %u KB\n",
                     scePowerGetCpuClockFrequencyInt(), scePowerGetBusClockFrequencyInt(), g_options.fm_sound,
                     (unsigned)(lo / 1024), (unsigned)(sceKernelTotalFreeMemSize() / 1024));
     }
     perf_write();
+    bench_mem = (uint8_t *)memalign(64, BENCH_MEM);
     t0 = sceKernelGetSystemTimeLow();
     for (i = 0; i < 20000000u; i++) x = x * 1103515245u + 12345u;
     bench_sink = x;
     perf_printf("bench: 20M multiply-adds %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
+    if (!bench_mem) { perf_write(); return; }
     t0 = sceKernelGetSystemTimeLow();
     for (j = 0; j < 200; j++)
         for (i = 0; i < 8192; i += 4) x += *(volatile uint32_t *)(bench_mem + i);
@@ -386,12 +391,14 @@ static void perf_header(void)
     perf_printf("bench: 8 KB read 200 times (cached) %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
     t0 = sceKernelGetSystemTimeLow();
     for (j = 0; j < 16; j++)
-        for (i = 0; i < sizeof bench_mem; i += 64) x += *(volatile uint32_t *)(bench_mem + ((i * 97) & (sizeof bench_mem - 64)));
+        for (i = 0; i < BENCH_MEM; i += 64) x += *(volatile uint32_t *)(bench_mem + ((i * 97) & (BENCH_MEM - 64)));
     bench_sink = x;
     perf_printf("bench: 256K cache misses %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
     t0 = sceKernelGetSystemTimeLow();
     for (j = 0; j < 16; j++) memcpy(bench_mem + (512 << 10), bench_mem, 512 << 10);
     perf_printf("bench: 8 MB memcpy %u ms\n", (sceKernelGetSystemTimeLow() - t0) / 1000);
+    free(bench_mem);
+    bench_mem = NULL;
 #ifdef TJE_PROF
     perf_printf("profile: one frame in %d measured; a clock read %.2f us (taken out)\n", PROF_EVERY, prof_read_us);
 #endif
@@ -461,7 +468,7 @@ static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
 static void list_check(void)
 {
     static int on = -1, frames, bad_frames;
-    static uint32_t ref[480 * 272];
+    static uint32_t *ref;
     const ViewList *vl = gameview_last_list();
     const uint32_t *fb;
     int x, y, ox, oy;
@@ -476,6 +483,7 @@ static void list_check(void)
     }
     /* (a frozen list is drawn with the GE's tiles as they were: not comparable) */
     if (!on || vl->frozen || vl->w > 480 || vl->h > 272) return;
+    if (!ref && !(ref = (uint32_t *)malloc(480 * 272 * 4))) { on = 0; return; }
     viewlist_render_soft(vl, ref, 480);
     fb = gfx_gu_drawn();
     ox = (SCR_W - vl->w) / 2;

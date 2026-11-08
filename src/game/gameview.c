@@ -2683,7 +2683,9 @@ static int build_screen_list(ViewList *vl, int ox, int oy, int wide, int sprites
     if (vl->nbatches >= VL_MAX_BATCHES || vl->ncells >= VL_MAX_CELLS) { sl_why = "full"; return 0; }
     /* the port's own pictures over the VDP's (vdp_overlay: the title art) */
     {
-        static uint32_t keyed[8][320 * VDP_HEIGHT];
+        /* (each the size of its picture, from the heap: most screens have none) */
+        static uint32_t *keyed[8];
+        static int keyed_cap[8];
         static const uint8_t *was_px[8];
         static uint32_t was_sum[8], gen[8];
         int i;
@@ -2695,6 +2697,13 @@ static int build_screen_list(ViewList *vl, int ox, int oy, int wide, int sprites
             if (!vdp_overlay_get(i, &x, &y, &w, &h, &px, &rgb)) continue;
             if (w > 320 || h > VDP_HEIGHT || w <= 0 || h <= 0) { sl_why = "overlay"; return 0; }
             for (n = 0; n < 16; n++) sum = sum * 31u + rgb[n];
+            if (w * h > keyed_cap[i]) {
+                uint32_t *b = (uint32_t *)realloc(keyed[i], sizeof(uint32_t) * (size_t)(w * h));
+                if (!b) { sl_why = "memory"; return 0; }
+                keyed[i] = b;
+                keyed_cap[i] = w * h;
+                was_px[i] = NULL;
+            }
             if (was_px[i] != px || was_sum[i] != sum) {
                 for (n = 0; n < w * h; n++) keyed[i][n] = px[n] ? 0xFF000000u | rgb[px[n] & 15] : 0;
                 was_px[i] = px;
@@ -3045,10 +3054,20 @@ static void ext_star_overlays(ViewList *vl, int ox, int oy)
 
 /* (tests, TJE_VLCHECK) the list drawn in software against the picture drawn the
  * usual way */
+/* (tests only: a picture-sized buffer taken from the heap when first needed, not
+ * kept in the program's memory for every run) */
+static uint32_t *test_buf(uint32_t **p)
+{
+    if (!*p) *p = (uint32_t *)malloc(sizeof(uint32_t) * GAMEVIEW_MAX_W * GAMEVIEW_MAX_H);
+    if (!*p) { fprintf(stderr, "test buffer: out of memory\n"); exit(1); }
+    return *p;
+}
+
 int g_sl_checked, g_sl_bad;
 static void screen_list_check(void)
 {
-    static uint32_t ref[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+    static uint32_t *ref_p;
+    uint32_t *ref = test_buf(&ref_p);
     const uint32_t *pic;
     int pitch, x, y;
     long bad = 0;
@@ -3308,7 +3327,8 @@ static void render_views_picture(void)
         }
         if (vl_check) {
             /* (tests: the list, drawn as a GPU must, against the picture) */
-            static uint32_t chk[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+            static uint32_t *chk_p;
+            uint32_t *chk = test_buf(&chk_p);
             long bad = 0;
             int x, y;
             viewlist_render_soft(&vlist, chk, GAMEVIEW_MAX_W);
@@ -4067,7 +4087,8 @@ static int window_check(int player)
 
 static void window_compare(const uint32_t *out, int w, int h)
 {
-    static uint32_t ref[GAMEVIEW_MAX_W * GAMEVIEW_MAX_H];
+    static uint32_t *ref_p;
+    uint32_t *ref = test_buf(&ref_p);
     long bad = 0;
     int x, y;
     viewlist_render_soft(&wlist, ref, GAMEVIEW_MAX_W);
