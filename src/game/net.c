@@ -362,7 +362,7 @@ static void make_package(int kind, uint32_t join_to)
     size_t raw_len = 64 + (nh + nj) * 2 + snap_len, plen;
     uint8_t *raw = (uint8_t *)malloc(raw_len), *p = raw, *packed;
     static uint32_t ids;
-    if (!raw) return;
+    if (!raw) { logf_("package: no memory (%u bytes)", (unsigned)raw_len); return; }
     w32(&p, 0x424E4A54u);
     w32(&p, (uint32_t)kind);
     w32(&p, (uint32_t)snd_native());   /* (the host's sound: the recorded music leaves the drum sounds out) */
@@ -379,7 +379,7 @@ static void make_package(int kind, uint32_t join_to)
     memcpy(p, snap, snap_len);
     p += snap_len;
     packed = (uint8_t *)malloc(raw_len + raw_len / 128 + 16);
-    if (!packed) { free(raw); return; }
+    if (!packed) { free(raw); logf_("package: no memory to pack"); return; }
     plen = pack_zeros(raw, (size_t)(p - raw), packed);
     free(raw);
     pkg_clear();
@@ -387,7 +387,7 @@ static void make_package(int kind, uint32_t join_to)
     pkg.len = (uint32_t)plen;
     pkg.id = ++ids ^ (plat_ms() << 8);
     pkg.chunks = (int)((plen + CHUNK - 1) / CHUNK);
-    if (pkg.chunks > MAX_CHUNKS) { pkg_clear(); return; }
+    if (pkg.chunks > MAX_CHUNKS) { logf_("package: too big (%d pieces)", pkg.chunks); pkg_clear(); return; }
     pkg.active = 1;
     peer_has_mine = my_last < snap_frame + nh ? my_last : snap_frame + nh;
     logf_("package %d: frames %u.. (%u + %u inputs), %u bytes in %d pieces", kind, snap_frame, nh, nj,
@@ -422,7 +422,7 @@ static void apply_package(void)
     const uint8_t *p;
     uint32_t kind, fs, nh, nj, slen, f, keep_from = 0, keep_to = 0;
     static uint16_t keep[RING];
-    if (!raw) return;
+    if (!raw) { logf_("package: no memory to unpack (%u bytes)", (unsigned)cap); return; }
     n = unpack_zeros(pkg.data, pkg.len, raw, cap);
     p = raw;
     if (n < 40 || r32(&p) != 0x424E4A54u) { free(raw); net_leave("The game sent was damaged."); return; }
@@ -518,7 +518,7 @@ static void on_chunk(In *in)
     if (!pkg.active || pkg.id != id) {
         pkg_clear();
         pkg.data = (uint8_t *)malloc(len);
-        if (!pkg.data) return;
+        if (!pkg.data) { logf_("package: no memory to receive %u bytes", len); return; }
         pkg.id = id;
         pkg.len = len;
         pkg.chunks = (int)((len + CHUNK - 1) / CHUNK);
@@ -710,6 +710,17 @@ void net_poll(void)
         if (pkg.got_count != was && role == NET_JOIN) got_chunk = 1;
     }
     now = plat_ms();
+    {
+        /* (the log: where things stand, every 2 s) */
+        static uint32_t said;
+        extern int g_in_game;
+        if (log_on < 0) log_on = getenv("TJE_NET_LOG") != NULL;
+        if (log_on > 0 && now - said >= 2000) {
+            said = now;
+            logf_("at %u ms: role %d phase %d peer %d heard %d ms ago, game %d, frame %u, package %d %d/%d", now, role, phase,
+                  have_peer, have_peer ? (int)(now - heard_ms) : -1, g_in_game, nf, pkg.active, pkg.got_count, pkg.chunks);
+        }
+    }
     if (role == NET_JOIN && pkg.active) {
         if (got_chunk) send_got();
         if (pkg.got_count == pkg.chunks && pkg.chunks) {
@@ -973,6 +984,7 @@ void net_loop_top(void)
         /* the game starts: everything from here is the same on both machines
          * (the other player gone already: the game waits for them) */
         uint32_t f;
+        logf_("the game starts (%s)", have_peer ? "with Earl" : "Earl gone");
         reset_lockstep();
         windows_on();
         for (f = 1; f <= (uint32_t)delay; f++) { put(0, f, 0); put(1, f, 0); }
@@ -987,11 +999,11 @@ void net_loop_top(void)
         size_t n = genesis_snapshot(NULL, 0);
         if (n > snap_cap) {
             uint8_t *b = (uint8_t *)realloc(snap, n);
-            if (!b) return;
+            if (!b) { logf_("snapshot: no memory (%u bytes)", (unsigned)n); return; }
             snap = b;
             snap_cap = n;
         }
-        if (genesis_snapshot(snap, snap_cap) != n) return;
+        if (genesis_snapshot(snap, snap_cap) != n) { logf_("snapshot failed"); return; }
         snap_len = n;
         snap_frame = nf;
         snap_pad[0] = g_pad[0];

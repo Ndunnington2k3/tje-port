@@ -51,6 +51,7 @@ def main():
     ap.add_argument('--shots', action='store_true')
     ap.add_argument('--loss', type=int, default=0)
     ap.add_argument('--delay', type=int, default=0)
+    ap.add_argument('--plain', action='store_true', help='as on a real PSP (net.on: the log in net.log; no checksum file - no PASS/FAIL)')
     ap.add_argument('--vlcheck', action='store_true', help='each GE picture compared with the list drawn in software')
     ap.add_argument('--perf', action='store_true', help='perf.log on both (where the time goes)')
     ap.add_argument('--quit-at', type=float, help='the host quits to the menu (soft pause) at this time')
@@ -67,7 +68,14 @@ def main():
         os.makedirs(game, exist_ok=True)
         shutil.copy(a.eboot, os.path.join(game, 'EBOOT.PBP'))
         shutil.copy(a.rom, os.path.join(game, 'tje.bin'))
-        open(os.path.join(game, 'nettest.on'), 'w').close()
+        if a.plain:
+            # (as on a real PSP: no test log or checksum file; net.on - the log in net.log)
+            for old in ('nettest.on',):
+                if os.path.exists(os.path.join(game, old)):
+                    os.remove(os.path.join(game, old))
+            open(os.path.join(game, 'net.on'), 'w').close()
+        else:
+            open(os.path.join(game, 'nettest.on'), 'w').close()
         if a.vlcheck:
             open(os.path.join(game, 'vlcheck.on'), 'w').close()
         elif os.path.exists(os.path.join(game, 'vlcheck.on')):

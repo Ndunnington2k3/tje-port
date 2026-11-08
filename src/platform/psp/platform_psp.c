@@ -591,6 +591,18 @@ int plat_init(int argc, char **argv)
     for (i = (int)strlen(data_dir) - 1; i >= 0 && data_dir[i] != '/'; i--) {}
     data_dir[i + 1] = 0;
     snprintf(rom_path, sizeof rom_path, "%stje.bin", data_dir);
+    {
+        /* (net.on next to EBOOT.PBP: the network's log to net.log) */
+        char path[300];
+        FILE *on;
+        snprintf(path, sizeof path, "%snet.on", data_dir);
+        on = fopen(path, "rb");
+        if (on) {
+            fclose(on);
+            snprintf(path, sizeof path, "%snet.log", data_dir);
+            if (freopen(path, "w", stderr)) { setvbuf(stderr, NULL, _IOLBF, 0); setenv("TJE_NET_LOG", "1", 1); }
+        }
+    }
     for (i = 1; i < argc; i++) if (argv[i][0] != '-') snprintf(rom_path, sizeof rom_path, "%s", argv[i]);
 
     th = sceKernelCreateThread("callbacks", callback_thread, 0x11, 0xFA0, 0, NULL);
