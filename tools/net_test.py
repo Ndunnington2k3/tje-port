@@ -11,6 +11,8 @@ Scenarios:
   jitter   frames take up to JIT ms (environment, default 12) longer at random
   rejoin   the joiner quits part way (no goodbye: a lost connection); a new copy
            joins the game in progress
+  outage   nothing gets through for 9 s part way (longer than the 5 s timeout):
+           the joiner must get back in by itself
   mend     the joiner's memory is changed part way (a desync): the host must
            notice and mend it
 
@@ -61,6 +63,9 @@ def run(sc, exe, rom, d):
         jargs = ['--frames', '3800']
     if sc == 'mend':
         jargs = ['--poke', '4000:FFA24C:7']     # (ToeJam's bucks)
+    if sc == 'outage':
+        env = {'TJE_NET_OUTAGE': '50000:9000'}
+        frames = 7000
     h = start(exe, rom, 'host', HOST + ['--frames', str(frames + (1800 if sc == 'rejoin' else 0)), '--random', '3', '--random-from', '3500'], env, d)
     time.sleep(1)
     j = start(exe, rom, 'join', JOIN + ['--random', '5', '--random-from', '3500'] + (jargs if 'frames' in ' '.join(jargs) else ['--frames', str(frames)] + jargs), env, d)
@@ -73,7 +78,13 @@ def run(sc, exe, rom, d):
         if p:
             p.wait()
     ok = True
-    if sc == 'rejoin':
+    if sc == 'outage':
+        n, bad = compare(d, 'host', 'join', 0)
+        back = log_has(d, 'join', 'restarting from frame') and log_has(d, 'join', 'lost ToeJam') and \
+            not log_has(d, 'join', 'Lost the connection')
+        print('  %d checksums, %d differ; back in by itself: %s' % (n, len(bad), back))
+        ok = n > 40 and not bad and back
+    elif sc == 'rejoin':
         n, bad = compare(d, 'host', 'join', 0)
         n2, bad2 = compare(d, 'host', 'join2', 0)
         print('  first joiner: %d checksums, %d differ; second: %d, %d differ' % (n, len(bad), n2, len(bad2)))
@@ -98,7 +109,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--exe', required=True)
     ap.add_argument('--rom', required=True)
-    ap.add_argument('scenarios', nargs='*', default=['plain', 'loss', 'jitter', 'rejoin', 'mend'])
+    ap.add_argument('scenarios', nargs='*', default=['plain', 'loss', 'jitter', 'rejoin', 'outage', 'mend'])
     a = ap.parse_args()
     fails = 0
     for sc in a.scenarios:

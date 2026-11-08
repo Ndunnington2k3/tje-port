@@ -56,12 +56,31 @@ static int open_adhoc(void)
     return 0;
 }
 
+static unsigned send_fails;
+
 static int ready(void)
 {
     int state = 0;
-    if (pdp >= 0) return 1;
+    if (pdp >= 0) {
+        /* (the group can drop - out of range, interference: a few times a second
+         * it is looked at, and if it has gone it is joined again; the game's own
+         * protocol then finds the other machine again) */
+        static uint32_t looked;
+        uint32_t now = sceKernelGetSystemTimeLow();
+        if (now - looked < 250000) return 1;
+        looked = now;
+        if (sceNetAdhocctlGetState(&state) >= 0 && state == 1) return 1;
+        fprintf(stderr, "net: ad hoc group lost (state %d, %u sends failed): joining it again\n", state, send_fails);
+        sceNetAdhocPdpDelete(pdp, 0);
+        pdp = -1;
+        sceNetAdhocctlDisconnect();
+        if (sceNetAdhocctlConnect(GROUP) >= 0) connecting = 1;
+        return 0;
+    }
     if (!connecting || sceNetAdhocctlGetState(&state) < 0 || state != 1) return 0;
     connecting = 0;
+    if (send_fails) fprintf(stderr, "net: ad hoc group joined again\n");
+    send_fails = 0;
     sceNetGetLocalEtherAddr(my_mac);
     pdp = sceNetAdhocPdpCreate(my_mac, NET_PORT, 0x4000, 0);
     if (pdp < 0) {
@@ -93,7 +112,14 @@ int plat_net_send(const PlatNetAddr *to, const void *data, int len)
     unsigned char mac[6];
     if (!ready()) return -1;
     memcpy(mac, to->b, 6);
-    return sceNetAdhocPdpSend(pdp, mac, (unsigned short)(to->b[6] << 8 | to->b[7]), (void *)data, (unsigned)len, 0, 1) >= 0 ? 0 : -1;
+    {
+        int r = sceNetAdhocPdpSend(pdp, mac, (unsigned short)(to->b[6] << 8 | to->b[7]), (void *)data, (unsigned)len, 0, 1);
+        if (r < 0) {
+            if (!send_fails++) fprintf(stderr, "net: a send failed (%08X)\n", (unsigned)r);
+            return -1;
+        }
+        return 0;
+    }
 }
 
 int plat_net_broadcast(const void *data, int len)

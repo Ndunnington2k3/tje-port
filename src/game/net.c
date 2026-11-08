@@ -39,6 +39,7 @@
 #define RING            16384       /* frames of inputs kept (4.5 minutes) */
 #define SNAP_EVERY      120         /* frames between the host's snapshots */
 #define TIMEOUT_MS      5000
+#define REJOIN_MS       45000   /* (Earl, the link lost in a game: how long he tries to get back) */
 #define CHUNK           1000
 #define MAX_CHUNKS      2048
 #define HASH_EVERY      32
@@ -136,10 +137,27 @@ static void head(Out *o, int type)
 }
 
 static int loss_pct = -1;
+/* (tests, TJE_NET_OUTAGE=FROM:LEN - nothing gets through for LEN ms from FROM ms
+ * after the first packet: the link lost for a while) */
+static int outage_now(void)
+{
+    static int on = -1;
+    static uint32_t from, len, t0;
+    uint32_t t;
+    if (on < 0) {
+        const char *e = getenv("TJE_NET_OUTAGE");
+        on = e && sscanf(e, "%u:%u", &from, &len) == 2;
+        t0 = plat_ms();
+    }
+    if (!on) return 0;
+    t = plat_ms() - t0;
+    return t >= from && t < from + len;
+}
 static void send_to(const PlatNetAddr *to, const Out *o)
 {
     if (loss_pct < 0) loss_pct = getenv("TJE_NET_LOSS") ? atoi(getenv("TJE_NET_LOSS")) : 0;
     if (loss_pct > 0 && rand() % 100 < loss_pct) return;     /* (tests: a poor connection) */
+    if (outage_now()) return;
     plat_net_send(to, o->b, o->n);
 }
 static void send_peer(const Out *o) { if (have_peer) send_to(&peer, o); }
@@ -217,13 +235,15 @@ static void reset_lockstep(void)
     ignore_hashes_to = 0;
 }
 
-static int ended_in_game;   /* (the session ended during a game: pads_after takes this one to the menu) */
+static int ended_in_game;
+static uint32_t rejoin_ms;   /* (Earl, the link lost in a game: trying to get back in since then; 0 not) */   /* (the session ended during a game: pads_after takes this one to the menu) */
 
 static void end_session(void)
 {
     extern int g_in_game;
     if (g_in_game && role != NET_NONE) ended_in_game = 1;
     role = NET_NONE;
+    rejoin_ms = 0;
     have_peer = 0;
     pkg_clear();
     snap_ok = 0;
@@ -465,6 +485,7 @@ static void apply_package(void)
     if ((size_t)(p - raw) + slen > n || !genesis_snapshot_valid(p, slen)) { free(raw); net_leave("The game sent does not match this version."); return; }
     logf_("restarting from frame %u (kind %u)", fs, kind);
     pkg_clear();
+    if (rejoin_ms) { rejoin_ms = 0; gameview_set_message(NULL); }
     in_stall = 0;
     phase = NET_J_PLAYING;
     windows_on();
@@ -657,6 +678,12 @@ static void on_packet(const PlatNetAddr *from, const uint8_t *b, int n)
     if (!have_peer || !plat_net_addr_equal(from, &peer)) return;
     if (role == NET_JOIN && type == P_WELCOME) {
         int result = (int)i8(&in);
+        if (!in.bad && rejoin_ms && result == W_OK) {
+            /* (back: the host sends the game as it is now) */
+            heard_ms = plat_ms();
+            logf_("ToeJam answered: back in the game");
+            return;
+        }
         if (in.bad || phase != NET_J_CONNECTING) return;
         if (result != W_OK) {
             net_leave(result == W_FULL ? "That room is full." : "That room has a different version of the game.");
@@ -706,6 +733,7 @@ void net_poll(void)
     if (role == NET_NONE && !nrooms && !discover_ms) return;
     while ((n = plat_net_recv(&from, buf, sizeof buf)) > 0) {
         int was = pkg.got_count;
+        if (outage_now()) continue;
         on_packet(&from, buf, n);
         if (pkg.got_count != was && role == NET_JOIN) got_chunk = 1;
     }
@@ -739,10 +767,28 @@ void net_poll(void)
             if (phase == NET_H_JOINED) phase = NET_H_WAITING;
             else if (phase == NET_H_PLAYING) phase = NET_H_LOST;
             logf_("lost the other player");
+        } else if (net_in_game()) {
+            /* (in a game: not left at once - the link may come back; the host
+             * waits for Earl, and takes him back with the game as it is then) */
+            if (!rejoin_ms) {
+                rejoin_ms = now ? now : 1;
+                logf_("lost ToeJam: trying to get back in");
+                gameview_set_message("Lost ToeJam. Reconnecting...");
+            } else if (now - rejoin_ms > REJOIN_MS) {
+                net_leave("Lost the connection to ToeJam.");
+                return;
+            }
         } else {
             net_leave("Lost the connection to ToeJam.");
             return;
         }
+    }
+    if (rejoin_ms && role == NET_JOIN && now - kept_ms > 300) {
+        Out o;
+        head(&o, P_JOIN);
+        o32(&o, compat);
+        send_peer(&o);
+        kept_ms = now;
     }
     if (role == NET_JOIN && phase == NET_J_CONNECTING && now - kept_ms > 300) {
         Out o;
