@@ -32,3 +32,7 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+
+# PSP home-menu art (the user's, made from the game's official artwork: kept out of the repo)
+art/psp/*.png
+art/psp/*.at3
