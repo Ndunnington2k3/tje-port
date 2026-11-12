@@ -23,6 +23,13 @@
 #define WHO_LOAD        3           /* values of the new items */
 #define WHO_OPTIONS     4
 #define WHO_NETWORK     5
+/* "Two Player" on one machine: not on a PSP (one screen, one pad - two players
+ * play over the network there) */
+#ifdef __PSP__
+#define WHO_LOCAL_TWO   0
+#else
+#define WHO_LOCAL_TWO   1
+#endif
 
 #define SND_PRIORITY    0x32
 #define SND_BUZZ        0x1A
@@ -113,25 +120,27 @@ void f_0235E2_PlayerSelectMenu(void)
             R.d[0] = 0;
             RETURN();
         }
-        sel = 4;
+        sel = WHO_LOCAL_TWO ? 4 : 3;
     }
     for (;;) {
         Menu m;
-        int i, n = (int16_t)rd16(WHO_COUNT_ROM);
+        int i, n = (int16_t)rd16(WHO_COUNT_ROM), row = WHO_LOCAL_TWO ? 11 : 12;
         menu_init(&m);
         for (i = 0; i < n && i < 8; i++) {
             uint32_t e = WHO_ITEMS_ROM + (uint32_t)i * 8, s = rd32(e + 2);
             char text[MENU_TEXT];
             int k;
+            if (!WHO_LOCAL_TWO && (int16_t)rd16(e + 6) == 0) continue;
             for (k = 0; k < MENU_TEXT - 1 && rd8(s + (uint32_t)k); k++) text[k] = (char)rd8(s + (uint32_t)k);
             text[k] = 0;
-            /* three rows higher than the original (rows 14-18): the six lines,
-             * evenly spaced, sit where the original three were centred */
-            menu_add(&m, (int)rd8(e), (int)rd8(e + 1) - 3, text, (int16_t)rd16(e + 6));
+            /* the lines evenly spaced, centred where the original three were
+             * (rows 14-18): six from row 11, or five from row 12 */
+            menu_add(&m, (int)rd8(e), row, text, (int16_t)rd16(e + 6));
+            row += 2;
         }
-        menu_add(&m, 6, 17, "Load Game", WHO_LOAD);
-        menu_add(&m, 6, 19, "Network Play", WHO_NETWORK);
-        menu_add(&m, 6, 21, "Options", WHO_OPTIONS);
+        menu_add(&m, 6, row, "Load Game", WHO_LOAD);
+        menu_add(&m, 6, row + 2, "Network Play", WHO_NETWORK);
+        menu_add(&m, 6, row + 4, "Options", WHO_OPTIONS);
         m.sel = sel;
         choice = menu_run(&m, MENU_TITLE_WHO);
         sel = m.sel;

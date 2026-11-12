@@ -264,7 +264,9 @@ static void list_frame(Menu *m, unsigned t)
     int i;
     c->n = net_scan(c->rooms, LIST_ROWS);
     if (t % 15) return;
-    menu_set_text(m, c->note, c->n ? " " : "Looking for rooms...");   /* (first: same row as the first room) */
+    /* (the note and the first room share a row: whichever shows goes last - a
+     * blank drawn after it took the note's first letter) */
+    if (c->n) menu_set_text(m, c->note, " ");
     for (i = 0; i < LIST_ROWS; i++) {
         char line[MENU_TEXT];
         if (i < c->n) {
@@ -276,6 +278,7 @@ static void list_frame(Menu *m, unsigned t)
         }
         menu_set_text(m, c->items[i], line);
     }
+    if (!c->n) menu_set_text(m, c->note, "Looking for rooms...");
 }
 
 typedef struct { int status; } WaitCtx;
