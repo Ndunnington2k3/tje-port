@@ -25,6 +25,7 @@ typedef struct {
     int players;           /* 0 = ToeJam, 1 = Earl, 2 = both */
     int floor[2];          /* floor of ToeJam / Earl */
     int ship_pieces;       /* collected so far (of 10) */
+    int mode;              /* difficulty (difficulty.h) */
 } SaveInfo;
 
 /* Summary of a slot (0..SAVE_SLOTS-1) for the file list. Returns info->used. */

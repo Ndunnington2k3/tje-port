@@ -13,6 +13,7 @@ Scenarios:
            joins the game in progress
   outage   nothing gets through for 9 s part way (longer than the 5 s timeout):
            the joiner must get back in by itself
+  nightmare  the host picks Nightmare!: the joiner plays it too (the mode is in RAM)
   mend     the joiner's memory is changed part way (a desync): the host must
            notice and mend it
 
@@ -22,7 +23,9 @@ import argparse, os, subprocess, sys, tempfile, time
 
 BOOT = ['--press', '900:3:S', '--press', '1050:3:S'] + \
        sum([['--press', '%d:3:D' % f] for f in (1200, 1210, 1220, 1230)], []) + ['--press', '1260:3:A']
-HOST = BOOT + ['--press', '1420:3:A', '--press', '1600:3:A', '--press', '2200:3:A', '--press', '2500:3:A']
+HOST = BOOT + ['--press', '1420:3:A', '--press', '1600:3:A', '--press', '2200:3:A', '--press', '2500:3:A',
+               '--press', '2750:3:A']   # (How Tough?: Original)
+HOST_NIGHTMARE = HOST[:-2] + ['--press', '2720:3:D', '--press', '2750:3:A']
 JOIN = BOOT + ['--press', '1400:3:D', '--press', '1420:3:A', '--press', '1800:3:A']
 
 
@@ -66,7 +69,11 @@ def run(sc, exe, rom, d):
     if sc == 'outage':
         env = {'TJE_NET_OUTAGE': '50000:9000'}
         frames = 7000
-    h = start(exe, rom, 'host', HOST + ['--frames', str(frames + (1800 if sc == 'rejoin' else 0)), '--random', '3', '--random-from', '3500'], env, d)
+    hargs = []
+    if sc == 'nightmare':
+        hargs = ['--dumpram', '4900:' + os.path.join(d, 'host_ram.bin')]
+        jargs = ['--dumpram', '4900:' + os.path.join(d, 'join_ram.bin')]
+    h = start(exe, rom, 'host', (HOST_NIGHTMARE if sc == 'nightmare' else HOST) + hargs + ['--frames', str(frames + (1800 if sc == 'rejoin' else 0)), '--random', '3', '--random-from', '3500'], env, d)
     time.sleep(1)
     j = start(exe, rom, 'join', JOIN + ['--random', '5', '--random-from', '3500'] + (jargs if 'frames' in ' '.join(jargs) else ['--frames', str(frames)] + jargs), env, d)
     j2 = None
@@ -78,7 +85,12 @@ def run(sc, exe, rom, d):
         if p:
             p.wait()
     ok = True
-    if sc == 'outage':
+    if sc == 'nightmare':
+        n, bad = compare(d, 'host', 'join', 0)
+        modes = [open(os.path.join(d, w + '_ram.bin'), 'rb').read()[0xF000] for w in ('host', 'join')]
+        print('  %d checksums, %d differ; the mode on each machine: %s (2 = Nightmare)' % (n, len(bad), modes))
+        ok = n > 40 and not bad and modes == [2, 2]
+    elif sc == 'outage':
         n, bad = compare(d, 'host', 'join', 0)
         back = log_has(d, 'join', 'restarting from frame') and log_has(d, 'join', 'lost ToeJam') and \
             not log_has(d, 'join', 'Lost the connection')
@@ -109,7 +121,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--exe', required=True)
     ap.add_argument('--rom', required=True)
-    ap.add_argument('scenarios', nargs='*', default=['plain', 'loss', 'jitter', 'rejoin', 'outage', 'mend'])
+    ap.add_argument('scenarios', nargs='*', default=['plain', 'loss', 'jitter', 'rejoin', 'outage', 'nightmare', 'mend'])
     a = ap.parse_args()
     fails = 0
     for sc in a.scenarios:

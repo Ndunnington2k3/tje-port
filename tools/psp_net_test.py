@@ -21,12 +21,13 @@ def presses(lst):
 
 
 # the title screen from ~10 s: Start there starts the intro, Start again skips it to
-# the Who screen; Network Play is its 5th row
-TO_NET = [(13, START), (14.5, START), (16.5, DOWN), (16.8, DOWN), (17.1, DOWN), (17.4, DOWN), (17.8, CROSS)]
+# the Who screen; Network Play is its 4th row (a PSP has no local Two Player)
+TO_NET = [(13, START), (14.5, START), (16.5, DOWN), (16.8, DOWN), (17.1, DOWN), (17.8, CROSS)]
 SHIFT = 0.0   # (all the times above and below move with the title screen's)
 HOST = TO_NET + [(19.5, CROSS), (21.5, CROSS),            # Host Game, Open Room
                  (32.0, CROSS),                             # lobby: New game (the joiner is in)
-                 (35.0, CROSS)]                             # What: random world
+                 (35.0, CROSS),                             # What: random world
+                 (37.5, CROSS)]                             # How Tough?: Original
 JOIN = TO_NET + [(19.2, DOWN), (19.5, CROSS),             # Join Game
                  (27.0, CROSS)]                             # the room
 

@@ -87,6 +87,8 @@ Replaced so far:
 | `PlayerSelectMenu` ($0235E2) | `menus.c` | Who screen gets "Load Game" (saved-games list) and "Options" (`options_menu.c`) |
 | `GameSelectMenu` ($023654) | `world.c` | What screen gets "Custom World" and the world code screen |
 | `GenerateLevelsForGame` ($004658) | `world.c` | uses a Custom World's seed; remembers every world's seed |
+| `GetScoreForPromo`, `CheckPromotionScore`, `HealthAndLivesChecks` ($00B878, $00B8AE, $00BC28) | `difficulty.c` | Chill Mode: two-thirds scores, energy filled on promotion, lives kept (Original: the translation, untouched) |
+| LOC_00017A86, `ProcessEarthlings`, `SelectARandomPresent`, `MakePlayerFall`, LOC_000143B6 | `difficulty.c` | Nightmare!: floors' earthlings (from three floors up, all places, respawning), bad presents' weights, two-floor falls from 17 up. The mode is the RAM byte $FFF000 (the game never uses $FFE48A-$FFFDFF), so saves, network snapshots and checksums carry it |
 | LOC_00013540 | `transitions.c` | elevator ride screen built behind a frozen picture |
 
 `InGameLoop` is a *split point* in the translator (`SPLIT_LABELS`): code flowing into it becomes a call,

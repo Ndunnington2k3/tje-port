@@ -10,6 +10,7 @@
 #include "core/vdp.h"
 #include "art.h"
 #include "menu.h"
+#include "difficulty.h"
 #include "world.h"
 #include "options_menu.h"
 #include "lan_menu.h"
@@ -78,8 +79,9 @@ void load_game_menu(int two_players)
                     snprintf(floors, sizeof floors, "Floors %d and %d", info[i].floor[0], info[i].floor[1]);
                 else
                     snprintf(floors, sizeof floors, "Floor %d", info[i].floor[info[i].players == 1 ? 1 : 0]);
-                snprintf(line, sizeof line, "%d Ship Piece%s -- %s", info[i].ship_pieces,
-                         info[i].ship_pieces == 1 ? "" : "s", floors);
+                snprintf(line, sizeof line, "%d Ship Piece%s -- %s%s%s", info[i].ship_pieces,
+                         info[i].ship_pieces == 1 ? "" : "s", floors,
+                         info[i].mode != DIFF_ORIGINAL ? " -- " : "", info[i].mode != DIFF_ORIGINAL ? difficulty_name(info[i].mode) : "");
                 menu_add(&m, 10, 11 + i * 4, line, -1);
             }
         }
@@ -218,9 +220,9 @@ who:
         if (what == MENU_ESCAPE) goto who;
         switch (what) {
         case 0:                                   /* Random World */
-            RETURN();
         case 4:                                   /* Fixed World */
-            wr8(FIXED_WORLD_FLAG_M, 1);
+            if (difficulty_menu() < 0) continue;  /* (back: the What screen) */
+            if (what == 4) wr8(FIXED_WORLD_FLAG_M, 1);
             RETURN();
         case 1: {                                 /* Jam Out */
             int song = jam_out_menu();

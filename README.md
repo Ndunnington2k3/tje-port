@@ -90,6 +90,12 @@ Port changes so far (on by default):
   The same code always gives the same world (floors, items, earthlings, ship pieces). The code
   screen starts on the last world played, so a good Random World can be shared; saved games show
   their world's code.
+- **How Tough?** after the What screen: **Chill Mode** (lives never run out; promotions at two
+  thirds of the score, each one filling the energy), **Original**, or **Nightmare!** (each floor
+  gets the earthlings of the floor three above it, floor 1 too, every one of its 20 places filled;
+  earthlings got rid of come back when the floor is entered again and after about a minute on it;
+  bad presents a third more likely; falling from floor 17 or above drops two floors). The mode is
+  kept in saved games, and in network play the host's choice is Earl's too.
 - **Controls** in Options on the Who screen (replacing the game's two fixed layouts): for each player,
   choose an action and the screen asks for each one in turn (Up, Down, Left, Right, Action, Present
   List, Map, Pause): press a key or controller button for each. Each action has a keyboard and a

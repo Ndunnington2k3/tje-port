@@ -4,6 +4,7 @@
  */
 #include "game.h"
 #include "save.h"
+#include "difficulty.h"
 #include "menu.h"
 #include "settings.h"
 #include "world.h"
@@ -360,6 +361,7 @@ static int read_slot(int slot, SaveInfo *info, uint8_t **blob, size_t *len)
     for (i = 0; i < blen; i++) check = check * 31u + data[s.pos + i];
     if (check != sum || !genesis_snapshot_valid(data + s.pos, blen)) { free(data); return -6; }
     info->used = 1;
+    info->mode = difficulty_in(data + s.pos + genesis_snapshot_ram_offset());
     if (blob) {
         *blob = (uint8_t *)malloc(blen);
         if (!*blob) { free(data); return -7; }
