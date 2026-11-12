@@ -38,6 +38,7 @@
 #include "gfx/gfx_soft.h"
 #include "gfx/present.h"
 #include "game/gameview.h"
+#include "gfx/viewlist.h"
 #include "game/viewdiag.h"
 extern int g_gv_gameplay;
 extern int g_gv_win_top_seen;
@@ -605,6 +606,19 @@ paced:
             int pp;
             int ww = tw_w, wh = tw_h;
             if (!gameview_window_frame(k, &ww, &wh, &px, &pp)) continue;
+            if (!px) {
+                /* (a network player's window: a view list - drawn here as the GPU would) */
+                static uint32_t *lp;
+                const ViewList *vl = gameview_last_list();
+                if (!vl) continue;
+                if (!lp) lp = (uint32_t *)malloc(sizeof(uint32_t) * GAMEVIEW_MAX_W * GAMEVIEW_MAX_H);
+                if (!lp) continue;
+                viewlist_render_soft(vl, lp, GAMEVIEW_MAX_W);
+                px = lp;
+                pp = GAMEVIEW_MAX_W;
+                ww = vl->w;
+                wh = vl->h;
+            }
             if (getenv("TJE_PICHASH")) {
                 static FILE *wf;
                 uint32_t hash = 2166136261u;
@@ -634,7 +648,7 @@ paced:
         win = gfx_soft_target(&w, &h);
         for (i = 0; i < nshots; i++)
             if (shots[i].frame == frame && win) save_ppm(shots[i].path, win, w, h, w);
-    } else {
+    } else if (pixels) {
         for (i = 0; i < nshots; i++)
             if (shots[i].frame == frame) save_ppm(shots[i].path, pixels, width, height, pitch);
     }

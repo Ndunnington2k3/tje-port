@@ -2165,6 +2165,51 @@ static void view_half_hud(int top, int x0, int y0, int x1, int y1)
     }
 }
 
+/* The last floor (Funkotron): the game frames its screen with plane B, left
+ * unscrolled - black, a checkered band, a thin line, three cells deep. A wider view
+ * gets the frame round its own edges (the original screen's at 320x224), plane B
+ * otherwise see-through. A cell's place: rx, ry - cells from the nearer side edge,
+ * top or bottom (3: further in); right, bottom - which side. */
+static uint32_t funk_frame_entry(int rx, int ry, int right, int bottom)
+{
+    int ring = rx < ry ? rx : ry;
+    if (ring == 0) return 0xE1D1u;
+    if (ring == 1) return 0xE1CDu;
+    if (ring >= 3) return 0;
+    if (rx == 2 && ry == 2) return 0xE1D0u | (right ? 0x0800u : 0) | (bottom ? 0x1000u : 0);
+    if (ry == 2) return 0xE1CFu | (bottom ? 0x1000u : 0);
+    return 0xE1CEu | (right ? 0x0800u : 0);
+}
+
+/* (a view pixel's frame cell: cells counted from the edge it is nearer, the left
+ * and top ones from 0, the right and bottom ones from the far edge - 24 px in) */
+static int funk_axis(int v, int size, int *cell, int *far, int *within)
+{
+    if (v < 24) { *cell = v >> 3; *far = 0; *within = v & 7; return 1; }
+    if (v >= size - 24) { int d = v - (size - 24); *cell = 2 - (d >> 3); *far = 1; *within = d & 7; return 1; }
+    *cell = 3; *far = 0; *within = (v - 24) & 7;
+    return 0;
+}
+
+/* A row of the frame for gameview_render_view: view row vy of a w x h view; buf as
+ * view_plane_b_row's (screen x, + off) */
+static void funk_frame_row(uint8_t *buf, int off, int w, int h, int vy)
+{
+    int ry, fy, wy, x;
+    funk_axis(vy, h, &ry, &fy, &wy);
+    for (x = 0; x < w; x++) {
+        int rx, fx, wx;
+        uint32_t e;
+        uint8_t t8[8];
+        funk_axis(x, w, &rx, &fx, &wx);
+        e = funk_frame_entry(rx, ry, fx, fy);
+        if (!(e & 0x7FF)) { buf[x] = 0; continue; }
+        tile_row(t8, e, wy);
+        buf[x] = t8[wx];
+    }
+    (void)off;
+}
+
 /* Plane B (the backdrop) for a view whose original screen's top-left is world
  * (cam_x, cam_y): it scrolls at half speed (as VBlank / HBlankJSR set it). */
 static void view_plane_b_row(uint8_t *buf, int off, int x_from, int x_to, int screen_y, int cam_x, int cam_y)
@@ -2271,7 +2316,8 @@ int gameview_render_view(int player, int cam_x, int cam_y, int game_cam, int scr
         int sy = y - oy;
         uint32_t *o = out + (size_t)y * pitch;
         memset(sp, 0, (size_t)w);
-        view_plane_b_row(b, ox, -ox, w - ox, sy, cam_x, cam_y);
+        if (r.level == FINAL_LEVEL) funk_frame_row(b, ox, w, h, y);
+        else view_plane_b_row(b, ox, -ox, w - ox, sy, cam_x, cam_y);
         view_plane_a_row(a, ox, -ox, w - ox, sy, &r, game_cam, screen_h);
         if (sy >= 0 && sy < view_top_window) window_line_clip(a, ox, sy, w);   /* (present list: the window replaces plane A) */
         pieces_row(sp, ox, -ox, w - ox, sy);
@@ -2375,6 +2421,26 @@ static void vl_vram_plane(ViewList *vl, const Region *r, uint32_t base, int ox, 
         }
 }
 
+/* ... and as cells: the 3 x 3 regions (sides 24 px, the middle) each a batch,
+ * cut to its region, its cells counted from its own side */
+static void vl_funk_frame(ViewList *vl, int vx, int vy, int w, int h)
+{
+    int xs[4] = {0, 24, w - 24, w}, ys[4] = {0, 24, h - 24, h}, i, j;
+    if (w < 48 || h < 48) return;
+    for (j = 0; j < 3; j++)
+        for (i = 0; i < 3; i++) {
+            int x, y;
+            if (i == 1 && j == 1) continue;
+            vl_batch(vl, 0, vx + xs[i], vy + ys[j], vx + xs[i + 1], vy + ys[j + 1]);
+            for (y = ys[j]; y < ys[j + 1]; y += 8)
+                for (x = xs[i]; x < xs[i + 1]; x += 8) {
+                    int rx = i == 0 ? x >> 3 : i == 2 ? 2 - ((x - xs[2]) >> 3) : 3;
+                    int ry = j == 0 ? y >> 3 : j == 2 ? 2 - ((y - ys[2]) >> 3) : 3;
+                    vl_cell(vl, vx + x, vy + y, funk_frame_entry(rx, ry, i == 2, j == 2));
+                }
+        }
+}
+
 /* ... of plane B, scrolled at half the camera's speed (view_plane_b_row) */
 static void vl_plane_b(ViewList *vl, int cam_x, int cam_y, int ox, int oy)
 {
@@ -2417,8 +2483,11 @@ static void build_view_list(ViewList *vl, int player, int cam_x, int cam_y, int 
         view_half_hud(game_cam ? VDP_HEIGHT / 2 : 0, vx - ox, vy - oy, vx + w - ox, vy + h - oy);
     pieces_as_cells = 0;
     /* plane B */
-    vl_batch(vl, 0, vx, vy, vx + w, vy + h);
-    vl_plane_b(vl, cam_x, cam_y, ox, oy);
+    if (r.level == FINAL_LEVEL) vl_funk_frame(vl, vx, vy, w, h);
+    else {
+        vl_batch(vl, 0, vx, vy, vx + w, vy + h);
+        vl_plane_b(vl, cam_x, cam_y, ox, oy);
+    }
     /* plane A: the game's own plane where it holds this camera's screen, the floor
      * layout around it (view_plane_a_row) */
     if (game_cam >= 0) {
