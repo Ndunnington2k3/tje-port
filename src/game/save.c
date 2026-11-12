@@ -193,7 +193,9 @@ int g_in_game;   /* the main game loop has started (reset with the machine) */
 
 void f_0014E6_InGameLoop(void)
 {
+    extern int g_gv_ship_scene;
     g_in_game = 1;
+    g_gv_ship_scene = 0;   /* (a restart in the middle of the ship's take-off) */
     /* (a game loaded from a port menu, or quit to the menu from the pause menu,
      * restarts the machine without returning from that menu: Escape pauses again) */
     g_port_menu_active = 0;

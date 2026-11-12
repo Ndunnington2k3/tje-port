@@ -605,7 +605,26 @@ paced:
             const uint32_t *px;
             int pp;
             int ww = tw_w, wh = tw_h;
-            if (!gameview_window_frame(k, &ww, &wh, &px, &pp)) continue;
+            if (!gameview_window_frame(k, &ww, &wh, &px, &pp)) {
+                /* (the window shows the game's own picture) */
+                for (i = 0; i < nshots; i++)
+                    if (shots[i].frame == frame) {
+                        char path[300];
+                        snprintf(path, sizeof path, "%s.p%d.ppm", shots[i].path, k + 1);
+                        if (pixels) save_ppm(path, pixels, width, height, pitch);
+                        else {
+                            /* (the main picture drawn as a list: drawn here as the GPU would) */
+                            static uint32_t *mp;
+                            const ViewList *vl = gameview_last_list();
+                            if (!mp) mp = (uint32_t *)malloc(sizeof(uint32_t) * GAMEVIEW_MAX_W * GAMEVIEW_MAX_H);
+                            if (vl && mp) {
+                                viewlist_render_soft(vl, mp, GAMEVIEW_MAX_W);
+                                save_ppm(path, mp, vl->w, vl->h, GAMEVIEW_MAX_W);
+                            } else save_ppm(path, vdp_framebuffer(), 320, 224, VDP_FB_PITCH);
+                        }
+                    }
+                continue;
+            }
             if (!px) {
                 /* (a network player's window: a view list - drawn here as the GPU would) */
                 static uint32_t *lp;

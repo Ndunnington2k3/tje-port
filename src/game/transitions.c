@@ -96,3 +96,18 @@ void f_009868_CheckBButton(void)
     CY(30);
     RETURN();
 }
+
+/* ---- the ship's take-off (the last piece found) -----------------------------
+ * LOC_0001FDF0 boards the players, flies the ship to Funkotron over the credits
+ * and loads the last floor, all from inside the game's main loop: a window per
+ * player (network play) would draw its player's floor meanwhile. It shows the
+ * game's own picture instead (gameview.c). */
+extern int g_gv_ship_scene;
+
+TJE_OVERRIDE(0x01FDF0)
+void f_01FDF0(void)
+{
+    g_gv_ship_scene = 1;
+    orig_f_01FDF0();
+    g_gv_ship_scene = 0;
+}

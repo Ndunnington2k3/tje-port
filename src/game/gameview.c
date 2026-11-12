@@ -4221,9 +4221,13 @@ static void draw_message(uint32_t *out, int w, int h, const char *text)
 /* the game's own ride screen is up (LOC_00013540 has built it - transitions.c -
  * and everyone in the game is still riding) */
 int g_gv_ride_screen;
+/* the ship's take-off and flight to Funkotron is playing (LOC_0001FDF0, the last
+ * piece found - transitions.c): the game's own picture, in every window */
+int g_gv_ship_scene;
 
 static int alone_riding(void)
 {
+    if (g_gv_ship_scene) return 1;
     int p, any = 0;
     for (p = 0; p < 2; p++)
         if (player_in_game(p)) {
