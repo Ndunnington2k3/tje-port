@@ -171,27 +171,38 @@ static inline uint64_t tile_pixels(uint32_t tile, int row)
  * opaque): all 8 at once, a byte each in a 64-bit word (the byte at the lowest
  * address is the leftmost pixel, the same order on every little- or big-endian
  * machine, as the word only ever goes through memcpy) */
+static inline uint32_t bswap32_(uint32_t v)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_bswap32(v);
+#else
+    return (v >> 24) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) | (v << 24);
+#endif
+}
+
 static void tile_row(uint8_t out[8], uint32_t entry, int row)
 {
-    uint64_t x, opaque, o;
+    /* (in two 32-bit halves: a 32-bit machine - the PSP - has no 64-bit
+     * multiply, and did one in software here a tile row) */
+    uint32_t w[2], t, pal = (entry >> 9) & 0x30, pri = (entry & 0x8000) ? 0x40404040u : 0;
+    uint64_t x;
+    int k;
     uint32_t tile = entry & 0x7FF;
     if (entry & 0x1000) row = 7 - row;
     x = tile_pixels(tile, row);
+    memcpy(w, &x, 8);
     if (entry & 0x0800) {
-        /* (mirrored: the bytes in the opposite order - on either kind of machine,
-         * reversing a word's bytes reverses their order in memory) */
-#if defined(__GNUC__) || defined(__clang__)
-        x = __builtin_bswap64(x);
-#else
-        x = ((x & 0x00FF00FF00FF00FFull) << 8) | ((x >> 8) & 0x00FF00FF00FF00FFull);
-        x = ((x & 0x0000FFFF0000FFFFull) << 16) | ((x >> 16) & 0x0000FFFF0000FFFFull);
-        x = (x << 32) | (x >> 32);
-#endif
+        /* (mirrored: the 8 bytes in the opposite order - each half's bytes reversed,
+         * the halves swapped; the same on either kind of machine) */
+        t = bswap32_(w[0]);
+        w[0] = bswap32_(w[1]);
+        w[1] = t;
     }
-    opaque = (x + 0x7F7F7F7F7F7F7F7Full) & 0x8080808080808080ull;   /* (bit 7 of each non-zero byte) */
-    o = x | opaque | ((opaque >> 7) * (uint64_t)((entry >> 9) & 0x30));
-    if (entry & 0x8000) o |= 0x4040404040404040ull;
-    memcpy(out, &o, 8);
+    for (k = 0; k < 2; k++) {
+        uint32_t op = (w[k] + 0x7F7F7F7Fu) & 0x80808080u;   /* (bit 7 of each non-zero byte) */
+        w[k] |= op | ((op >> 7) * pal) | pri;
+    }
+    memcpy(out, w, 8);
 }
 
 typedef struct {
@@ -1247,6 +1258,8 @@ static void bg_line(int line)
             if (wto > 320) wto = 320;
         }
     }
+    uint32_t pal[64];
+    for (x = 0; x < 64; x++) pal[x] = vdp_palette_rgb(x);   /* (not a call a pixel) */
     plane_row(b, 0, 0, 320, line, 1);
     plane_row(a, 0, 0, 320, line, 0);
     if (wto > wfrom) {
@@ -1259,14 +1272,14 @@ static void bg_line(int line)
     }
     for (x = 0; x < 320; x++) {
         uint8_t pa = a[x], pb = b[x], c;
-        plane_pic[0][line][x] = (pa & PIX_OPAQUE) ? vdp_palette_rgb(pa & 0x3F) : backdrop;
-        plane_pic[1][line][x] = (pb & PIX_OPAQUE) ? vdp_palette_rgb(pb & 0x3F) : backdrop;
+        plane_pic[0][line][x] = (pa & PIX_OPAQUE) ? pal[pa & 0x3F] : backdrop;
+        plane_pic[1][line][x] = (pb & PIX_OPAQUE) ? pal[pb & 0x3F] : backdrop;
         if ((pa & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pa;
         else if ((pb & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) c = pb;
         else if (pa & PIX_OPAQUE) c = pa;
         else if (pb & PIX_OPAQUE) c = pb;
         else { bg_pic[line][x] = backdrop; continue; }
-        bg_pic[line][x] = vdp_palette_rgb(c & 0x3F);
+        bg_pic[line][x] = pal[c & 0x3F];
     }
 }
 
@@ -1297,21 +1310,32 @@ static int ring_of(int bx, int by)
 
 /* Border thickness in blocks (0-3): the outer rings whose blocks do not occur in
  * the two rings inside them. */
+static int cmp_u32(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
 static int find_border(void)
 {
+    /* (the outer rings' blocks sorted, each inner block looked up in them: it was
+     * every inner block against every block, a few million steps a decision) */
+    static uint32_t outer[BW * BH];
     int b;
     for (b = 3; b >= 1; b--) {
-        int inner = 0, shared = 0, bx, by, ox, oy;
+        int inner = 0, shared = 0, bx, by, n = 0;
+        for (by = 0; by < BH; by++)
+            for (bx = 0; bx < BW; bx++)
+                if (ring_of(bx, by) < b) outer[n++] = blocks[by][bx];
+        qsort(outer, (size_t)n, sizeof outer[0], cmp_u32);
         for (by = 0; by < BH; by++)
             for (bx = 0; bx < BW; bx++) {
-                int d = ring_of(bx, by);
+                int d = ring_of(bx, by), lo = 0, hi = n;
+                uint32_t v = blocks[by][bx];
                 if (d < b || d >= b + 2) continue;
                 inner++;
-                for (oy = 0; oy < BH; oy++) {
-                    for (ox = 0; ox < BW; ox++)
-                        if (ring_of(ox, oy) < b && blocks[oy][ox] == blocks[by][bx]) { shared++; goto next; }
-                }
-            next:;
+                while (lo < hi) { int mid = (lo + hi) / 2; if (outer[mid] < v) lo = mid + 1; else hi = mid; }
+                if (lo < n && outer[lo] == v) shared++;
             }
         /* the ring itself must not be one plain colour like the inside */
         if (inner && shared * 10 <= inner) {
@@ -1360,6 +1384,73 @@ static void hash_blocks(uint32_t (*src)[320])
     hash_src = src;
     for (by = 0; by < BH; by++)
         for (bx = 0; bx < BW; bx++) blocks[by][bx] = block_hash(bx, by);
+}
+
+/* The blocks' hashes of the screen and of each plane alone, as hash_blocks would
+ * give them from bg_line's pictures, made line by line without the pictures (the
+ * pictures are three times 280 KB written: on a PSP, cache misses a decision) */
+static uint32_t line_blocks[3][BH][BW];   /* 0 the screen, 1 plane A, 2 plane B */
+#define EXT_RINGS 5   /* (find_border: rings below 3 and the two inside; find_period: 4 from the edge) */
+/* (the colour on top of plane A's pixel pa and B's pb, as bg_line takes it) */
+#define TOP_COLOUR(pa, pb) \
+    (((pa) & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO) ? pal[(pa) & 0x3F] : \
+     ((pb) & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO) ? pal[(pb) & 0x3F] : \
+     ((pa) & PIX_OPAQUE) ? pal[(pa) & 0x3F] : ((pb) & PIX_OPAQUE) ? pal[(pb) & 0x3F] : backdrop)
+
+static void hash_lines(void)
+{
+    static uint8_t a[GAMEVIEW_MAX_W], b[GAMEVIEW_MAX_W];
+    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F), pal[64];
+    int line, x, k, bx;
+    for (x = 0; x < 64; x++) pal[x] = vdp_palette_rgb(x);
+    for (k = 0; k < 3; k++)
+        for (bx = 0; bx < BH * BW; bx++) (&line_blocks[k][0][0])[bx] = 2166136261u;
+    for (line = 0; line < VDP_HEIGHT; line++) {
+        int wfrom = 0, wto = 0, by = line >> 3;
+        uint32_t *h0 = line_blocks[0][by], *h1 = line_blocks[1][by], *h2 = line_blocks[2][by];
+        {
+            int wv = (vdp_reg[18] & 0x1F) * 8, down = vdp_reg[18] & 0x80;
+            int wh = (vdp_reg[17] & 0x1F) * 16, right = vdp_reg[17] & 0x80;
+            int in_v = down ? (line >= wv) : (line < wv);
+            if (in_v) { wfrom = 0; wto = 320; }
+            else if (wh) {
+                if (right) { wfrom = wh; wto = 320; } else { wfrom = 0; wto = wh; }
+                if (wto > 320) wto = 320;
+            }
+        }
+        /* (only the blocks the decision looks at: the outer five rings - the
+         * border's rings and the inside two, the pattern's band - not the middle) */
+        int edge = by < EXT_RINGS || by >= BH - EXT_RINGS, span;
+        for (span = 0; span < (edge ? 1 : 2); span++) {
+            int x0 = edge ? 0 : span ? 320 - EXT_RINGS * 8 : 0, x1 = edge ? 320 : x0 + EXT_RINGS * 8;
+            plane_row(b, 0, x0, x1, line, 1);
+            plane_row(a, 0, x0, x1, line, 0);
+            if (wto > wfrom) {
+                uint32_t base = (uint32_t)(vdp_reg[3] & 0x3C) << 10;
+                int col;
+                for (col = wfrom / 8; col < wto / 8; col++) {
+                    uint32_t ea = (base + (uint32_t)((line >> 3) * 64 + col) * 2) & 0xFFFF;
+                    if (col * 8 + 8 <= x0 || col * 8 >= x1) continue;
+                    tile_row(a + col * 8, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1], line & 7);
+                }
+            }
+        }
+        for (bx = 0; bx < BW; bx++) {
+            if (!edge && bx >= EXT_RINGS && bx < BW - EXT_RINGS) { bx = BW - EXT_RINGS - 1; continue; }
+            /* (a block's row: its 8 colours rotated in, mixed once - no multiply a
+             * pixel; 32-bit only, for the PSP) */
+            uint32_t r0 = 0, r1 = 0, r2 = 0;
+            for (x = bx * 8; x < bx * 8 + 8; x++) {
+                uint8_t pa = a[x], pb = b[x];
+                r1 = ((r1 << 7) | (r1 >> 25)) ^ ((pa & PIX_OPAQUE) ? pal[pa & 0x3F] : backdrop);
+                r2 = ((r2 << 7) | (r2 >> 25)) ^ ((pb & PIX_OPAQUE) ? pal[pb & 0x3F] : backdrop);
+                r0 = ((r0 << 7) | (r0 >> 25)) ^ TOP_COLOUR(pa, pb);
+            }
+            h0[bx] = (h0[bx] ^ mix(r0)) * 16777619u;
+            h1[bx] = (h1[bx] ^ mix(r1)) * 16777619u;
+            h2[bx] = (h2[bx] ^ mix(r2)) * 16777619u;
+        }
+    }
 }
 
 /* Returns 0 if the screen has neither a border nor a repeating pattern: it is
@@ -2757,14 +2848,33 @@ static uint32_t ext_key(void)
 
 static void ext_decide(void)
 {
-    int line, pl;
+    int pl;
+    /* (decisions kept by key: a screen seen before - the title's screens come round
+     * again and again, a new one built the same way a piece a frame - is not
+     * worked out again; working one out costs a PSP a couple of frames' time) */
+    enum { NSEEN = 64 };
+    static struct { uint32_t key; int b, px, py, fill; } seen[NSEEN];
+    static int nseen, next_seen;
     uint32_t key = ext_key();
+    int i;
     if (ext_dec.valid && ext_dec.key == key) return;
+    for (i = 0; i < nseen; i++)
+        if (seen[i].key == key) {
+            ext_dec.valid = 1;
+            ext_dec.key = key;
+            ext_dec.b = seen[i].b;
+            ext_dec.px = seen[i].px;
+            ext_dec.py = seen[i].py;
+            ext_dec.fill = seen[i].fill;
+            ext_dec.ra = ext_dec.rb = -1;
+            return;
+        }
     ext_dec.valid = 1;
     ext_dec.key = key;
-    for (line = 0; line < VDP_HEIGHT; line++) bg_line(line);
-    hash_blocks(bg_pic);
+    hash_lines();
+    memcpy(blocks, line_blocks[0], sizeof blocks);
     ext_dec.b = find_border();
+
     ext_dec.px = ext_dec.py = 0;
     ext_dec.fill = -1;
     ext_dec.ra = ext_dec.rb = -1;
@@ -2772,12 +2882,19 @@ static void ext_decide(void)
         ext_dec.px = find_period(0);
         ext_dec.py = find_period(1);
         for (pl = 0; pl < 2 && !(ext_dec.px && ext_dec.py); pl++) {
-            hash_blocks(plane_pic[pl]);
+            memcpy(blocks, line_blocks[1 + pl], sizeof blocks);
             ext_dec.px = find_period(0);
             ext_dec.py = find_period(1);
             if (ext_dec.px && ext_dec.py) ext_dec.fill = pl;
         }
     }
+    seen[next_seen].key = key;
+    seen[next_seen].b = ext_dec.b;
+    seen[next_seen].px = ext_dec.px;
+    seen[next_seen].py = ext_dec.py;
+    seen[next_seen].fill = ext_dec.fill;
+    next_seen = (next_seen + 1) % NSEEN;
+    if (nseen < NSEEN) nseen++;
 }
 
 /* Does the plane at base (pw x ph cells) repeat every px x py cells in its map? */

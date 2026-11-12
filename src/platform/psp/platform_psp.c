@@ -324,6 +324,7 @@ static char perf_path[300];
 static char perf_text[2048];
 static int perf_len;
 static uint64_t perf_last, perf_game, perf_draw, perf_wait;
+static uint64_t perf_worst, perf_worst_game, perf_worst_draw;
 static unsigned perf_frames;
 static uint32_t perf_write_us;   /* (the last write, charged to "present" by the profiler) */
 static int perf_lists;
@@ -428,6 +429,11 @@ static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
     perf_game += t_start - perf_last;
     perf_draw += t_drawn - t_start;
     perf_wait += t_end - t_drawn;
+    {
+        /* (the second's slowest frame: a hitch an average hides) */
+        uint64_t whole = t_end - perf_last;
+        if (whole > perf_worst) { perf_worst = whole; perf_worst_game = t_start - perf_last; perf_worst_draw = t_drawn - t_start; }
+    }
     perf_last = t_end;
     if (++perf_frames == 60) {
         static unsigned seconds;
@@ -435,6 +441,9 @@ static void perf_end(uint64_t t_start, uint64_t t_drawn, uint64_t t_end)
                     perf_game / 60000.0, perf_draw / 60000.0, perf_wait / 60000.0, perf_lists ? " [GE gameplay]" : "");
         if (perf_none) perf_printf("     (%u frames had nothing new to show: the one before kept)\n", perf_none);
         if (perf_soft) perf_printf("     (%u frames drawn in software)\n", perf_soft);
+        if (perf_worst > 18000)
+            perf_printf("     (slowest frame %.1f ms: game %.1f, draw %.1f)\n", perf_worst / 1000.0, perf_worst_game / 1000.0, perf_worst_draw / 1000.0);
+        perf_worst = 0;
         perf_none = 0;
         perf_soft = 0;
 #ifdef TJE_PROF
