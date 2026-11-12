@@ -36,6 +36,7 @@ int genesis_run(void);
 /* Port data in ROM space: copies data (strings, menu tables...) into an area just
  * after the game's ROM, so game routines can be handed 68000 pointers to it.
  * Returns its 68000 address (0 if full). genesis_port_rom_reset() frees it all. */
+void genesis_patch_rom16(uint32_t a, uint16_t v);   /* (tests) */
 uint32_t genesis_port_rom(const void *data, uint32_t size);
 void genesis_port_rom_reset(void);
 /* Write access to port ROM data placed earlier (NULL if addr is not in it). */

@@ -2063,6 +2063,31 @@ static void view_collect(int level, int cam_x, int cam_y, int x0, int y0, int x1
             draws[ndraws - 1].sat = -1;
         }
     }
+    /* Funkotron's houses, people and plants: the game makes each its object only
+     * near its own screen (LOC_000230DC, from the table at $0B0100: x, y, message;
+     * a zero x starts the next kind, whose 18-byte record at $0AF850 gives the
+     * frames and the animation). Where the view is wider, the ones not (yet)
+     * objects are drawn from the table, in their first frame. */
+    if (level == FINAL_LEVEL && !g_gv_view_strict) {
+        int i, kind = 0;
+        for (i = 0; kind < 30 && i < 400; i++) {
+            uint32_t e = 0x0B0100u + (uint32_t)i * 6, t = 0x0AF850u + (uint32_t)kind * 18, fr;
+            int x = (int16_t)ob16(e), y, idx;
+            if (!x) { kind++; continue; }
+            if (kind == 0x1C && ob8(0xFF802Eu) != 1) continue;   /* (one family or the other, */
+            if (kind == 0x1D && ob8(0xFF802Eu) != 0) continue;   /*  by who is playing) */
+            if (ob8(0xFFE264u + (uint32_t)i)) continue;           /* (its object: drawn as that) */
+            idx = ob8(ob32(t + 4));
+            if (idx >= 0xFE) idx = 0;
+            fr = ob32(ob32(t) + (uint32_t)idx * 4);
+            if (fr < 0x200 || fr >= 0x400000) continue;
+            x -= cam_x;
+            y = (int16_t)ob16(e + 2) - cam_y;
+            if (x < x0 - 96 || x > x1 + 96 || y < y0 - 96 || y > y1 + 160) continue;
+            queue_draw(0, fr, x, y, 0, 0, kind == 6 ? 1 : 0, (int16_t)ob16(e + 2), -1, 0);
+            draws[ndraws - 1].sat = -1;
+        }
+    }
     qsort(draws, (size_t)ndraws, sizeof draws[0], draw_cmp);
     for (k = 0; k < ndraws && npieces < MAX_PIECES; k++) {
         const Draw *d = &draws[k];
@@ -2181,6 +2206,22 @@ static uint32_t funk_frame_entry(int rx, int ry, int right, int bottom)
     return 0xE1CEu | (right ? 0x0800u : 0);
 }
 
+/* Anything else the game puts in plane B there (the big "THE END" at the end of
+ * the game): its cell at original-screen cell (cx, cy), or 0 - the frame's cells
+ * and the empty inside left out. */
+static uint32_t funk_extra_cell(int cx, int cy)
+{
+    static const int psz[4] = {32, 64, 32, 128};
+    int pw = psz[vdp_reg[16] & 3], ph = psz[(vdp_reg[16] >> 4) & 3];
+    uint32_t base = (uint32_t)(vdp_reg[4] & 7) << 13, ea, e, t;
+    if (cx < 0 || cx >= 40 || cy < 0 || cy >= 28) return 0;
+    ea = (base + (uint32_t)((cy & (ph - 1)) * pw + (cx & (pw - 1))) * 2) & 0xFFFF;
+    e = ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1];
+    t = e & 0x7FF;
+    if (t == 0 || (t >= 0x1CD && t <= 0x1D1)) return 0;
+    return e;
+}
+
 /* (a view pixel's frame cell: cells counted from the edge it is nearer, the left
  * and top ones from 0, the right and bottom ones from the far edge - 24 px in) */
 static int funk_axis(int v, int size, int *cell, int *far, int *within)
@@ -2206,6 +2247,22 @@ static void funk_frame_row(uint8_t *buf, int off, int w, int h, int vy)
         if (!(e & 0x7FF)) { buf[x] = 0; continue; }
         tile_row(t8, e, wy);
         buf[x] = t8[wx];
+    }
+    /* (and what else the game shows in plane B, where the original screen is) */
+    {
+        int sy = vy - (h - VDP_HEIGHT) / 2, ox = (w - 320) / 2, cx;
+        if (sy >= 0 && sy < VDP_HEIGHT)
+            for (cx = 0; cx < 40; cx++) {
+                uint32_t e = funk_extra_cell(cx, sy >> 3);
+                uint8_t t8[8];
+                int k;
+                if (!e) continue;
+                tile_row(t8, e, sy & 7);
+                for (k = 0; k < 8; k++) {
+                    int px = ox + cx * 8 + k;
+                    if (px >= 0 && px < w && (t8[k] & PIX_OPAQUE)) buf[px] = t8[k];
+                }
+            }
     }
     (void)off;
 }
@@ -2439,6 +2496,17 @@ static void vl_funk_frame(ViewList *vl, int vx, int vy, int w, int h)
                     vl_cell(vl, vx + x, vy + y, funk_frame_entry(rx, ry, i == 2, j == 2));
                 }
         }
+    /* (and what else the game shows in plane B, where the original screen is) */
+    {
+        int ox = vx + (w - 320) / 2, oy = vy + (h - VDP_HEIGHT) / 2, cx, cy, any = 0;
+        for (cy = 0; cy < 28; cy++)
+            for (cx = 0; cx < 40; cx++) {
+                uint32_t e = funk_extra_cell(cx, cy);
+                if (!e) continue;
+                if (!any) { vl_batch(vl, 0, vx, vy, vx + w, vy + h); any = 1; }
+                vl_cell(vl, ox + cx * 8, oy + cy * 8, e);
+            }
+    }
 }
 
 /* ... of plane B, scrolled at half the camera's speed (view_plane_b_row) */

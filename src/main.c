@@ -10,6 +10,17 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* (tests: a file of this name next to the program) */
+static int test_file(const char *name)
+{
+    char path[1100];
+    FILE *f;
+    snprintf(path, sizeof path, "%s%s", plat_data_dir(), name);
+    if (!(f = fopen(path, "rb"))) return 0;
+    fclose(f);
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     const char *rom;
@@ -31,6 +42,18 @@ int main(int argc, char **argv)
         plat_message("ToeJam & Earl", msg);
         plat_shutdown();
         return 1;
+    }
+    if (getenv("TJE_FUNK_END_TEST") || test_file("funkend.on")) {
+        /* (tests: on Funkotron the two families - who end the game - stand halfway
+         * along the path, on it, instead of at its far end. Their entries
+         * in the final floor's table at $0B0100: x, y, message) */
+        static const struct { uint32_t entry; uint16_t x, y; } fam[] = {
+            {260, 0x0320, 0x02F0}, {262, 0x02E0, 0x02F8}, {273, 0x0360, 0x0300}, {275, 0x0360, 0x0300}};
+        unsigned k;
+        for (k = 0; k < sizeof fam / sizeof fam[0]; k++) {
+            genesis_patch_rom16(0x0B0100u + fam[k].entry * 6, fam[k].x);
+            genesis_patch_rom16(0x0B0100u + fam[k].entry * 6 + 2, fam[k].y);
+        }
     }
     {
         /* --state <file.gsx>: start from a Gens save state (testing / level select) */

@@ -101,6 +101,12 @@ int genesis_load_rom(const char *path)
     return 0;
 }
 
+/* (tests) change a word of the loaded ROM */
+void genesis_patch_rom16(uint32_t a, uint16_t v)
+{
+    if (rom_data && a + 1 < g_rom_size) { rom_data[a] = (uint8_t)(v >> 8); rom_data[a + 1] = (uint8_t)v; }
+}
+
 uint32_t genesis_port_rom(const void *data, uint32_t size)
 {
     uint32_t a;
