@@ -179,14 +179,18 @@ uint8_t vdp_tile_dirty_gpu[2048];
 uint32_t vdp_tile_ver[2048];
 int vdp_stats_on;
 
+static uint32_t vram_epoch;   /* (counts every write to VRAM: copies of the sprite table follow it) */
+
 void vdp_tiles_all_dirty(void)
 {
+    vram_epoch++;
     memset(vdp_tile_dirty, 1, sizeof vdp_tile_dirty);
     memset(vdp_tile_dirty_gpu, 1, sizeof vdp_tile_dirty_gpu);
 }
 
 void vdp_tile_written(uint32_t a)
 {
+    vram_epoch++;
     vdp_tile_dirty[(a & 0xFFFF) >> 5] = 1;
     vdp_tile_dirty_gpu[(a & 0xFFFF) >> 5] = 1;
     vdp_tile_ver[(a & 0xFFFF) >> 5]++;
@@ -197,6 +201,7 @@ static void stat_write(uint32_t a)
     uint32_t pa = (uint32_t)(vdp_reg[2] & 0x38) << 10, pb = (uint32_t)(vdp_reg[4] & 7) << 13;
     uint32_t sat = (uint32_t)(vdp_reg[5] & 0x7F) << 9;
     a &= 0xFFFF;
+    vram_epoch++;
     vdp_tile_dirty[a >> 5] = 1;   /* (decoded copies of this tile, e.g. gameview's, are stale) */
     vdp_tile_dirty_gpu[a >> 5] = 1;
     vdp_tile_ver[a >> 5]++;
@@ -452,6 +457,17 @@ static void render_plane(uint8_t *out, int line, int width, uint32_t base, int h
     int vsmode = (vdp_reg[11] >> 2) & 1;
     int vs0 = vdp_vsram[plane_index];
     plane_dims(&pw, &ph);
+    if (full && !vsmode) {
+        /* (the whole line, one vertical scroll: along one row of the name table) */
+        int y = (line + vs0) & (ph * 8 - 1), row = y & 7, tx = (-1 - (hscroll >> 3)) & (pw - 1);
+        uint32_t rowbase = base + (uint32_t)((y >> 3) * pw) * 2;
+        uint8_t *o = out - 8 + (hscroll & 7);
+        for (col = -1; col <= width / 8; col++, o += 8, tx = (tx + 1) & (pw - 1)) {
+            uint32_t ea = (rowbase + (uint32_t)tx * 2) & 0xFFFF;
+            tile_row8(o, ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1], row);
+        }
+        return;
+    }
     for (col = -1; col <= width / 8; col++) {
         int sx = col * 8 + (hscroll & 7);
         int vscroll, y, tx, ty;
@@ -495,25 +511,51 @@ static void render_window(uint8_t *out, int line, int width, int x_from, int x_t
 
 static int spr_x0, spr_x1;   /* (the span render_sprites wrote in) */
 
+/* The sprite table in link order, decoded (kept while the table is unchanged:
+ * every line walks it) */
+typedef struct { int16_t sy, sx; uint8_t hs, vs; uint16_t attr; } SatSprite;
+static SatSprite sat_list[80];
+static int sat_n;
+static uint32_t sat_key_epoch = 0xFFFFFFFFu, sat_key_base;
+static int sat_key_width;
+
+static void sat_decode(uint32_t base, int width)
+{
+    int maxspr = (width == 320) ? 80 : 64, link = 0, count = 0;
+    if (sat_key_epoch == vram_epoch && sat_key_base == base && sat_key_width == width)
+        return;
+    sat_n = 0;
+    do {
+        const uint8_t *s = &vdp_vram[(base + link * 8) & 0xFFFF];
+        SatSprite *o = &sat_list[sat_n++];
+        o->sy = (int16_t)((((s[0] << 8) | s[1]) & 0x3FF) - 128);
+        o->hs = (uint8_t)(((s[2] >> 2) & 3) + 1);
+        o->vs = (uint8_t)((s[2] & 3) + 1);
+        o->attr = (uint16_t)(((uint32_t)s[4] << 8) | s[5]);
+        o->sx = (int16_t)((((s[6] << 8) | s[7]) & 0x1FF) - 128);
+        link = s[3] & 0x7F;
+        count++;
+    } while (link != 0 && count < maxspr);
+    sat_key_epoch = vram_epoch;
+    sat_key_base = base;
+    sat_key_width = width;
+}
+
 static void render_sprites(uint8_t *out, int line, int width)
 {
     uint32_t base = (width == 320) ? ((uint32_t)(vdp_reg[5] & 0x7E) << 9) : ((uint32_t)(vdp_reg[5] & 0x7F) << 9);
-    int maxspr = (width == 320) ? 80 : 64;
     int perline = (width == 320) ? 20 : 16;
-    int link = 0, count = 0, onl = 0, masked = 0;
+    int k, onl = 0, masked = 0;
     int dotbudget = width;
-    do {
-        const uint8_t *s = &vdp_vram[(base + link * 8) & 0xFFFF];
-        int sy = (((s[0] << 8) | s[1]) & 0x3FF) - 128;
-        int hs = ((s[2] >> 2) & 3) + 1;
-        int vs = (s[2] & 3) + 1;
-        uint32_t attr = ((uint32_t)s[4] << 8) | s[5];
-        int sx = (((s[6] << 8) | s[7]) & 0x1FF) - 128;
-        link = s[3] & 0x7F;
+    sat_decode(base, width);
+    for (k = 0; k < sat_n; k++) {
+        const SatSprite *sp = &sat_list[k];
+        int sy = sp->sy, hs = sp->hs, vs = sp->vs, sx = sp->sx;
+        uint32_t attr = sp->attr;
         if (line >= sy && line < sy + vs * 8) {
 #ifdef TJE_SAT_TRACE
             if (getenv("GVDBGLINE") && line == atoi(getenv("GVDBGLINE")))
-                fprintf(stderr, "VDPline %d: entry %d at %d,%d %dx%d attr %04X onl %d masked %d budget %d\n", line, (int)(s - &vdp_vram[base]) / 8, sx, sy, hs, vs, attr, onl, masked, dotbudget);
+                fprintf(stderr, "VDPline %d: entry %d at %d,%d %dx%d attr %04X onl %d masked %d budget %d\n", line, k, sx, sy, hs, vs, attr, onl, masked, dotbudget);
 #endif
             if (sx == -128 && onl > 0) masked = 1;
             onl++;
@@ -544,8 +586,7 @@ static void render_sprites(uint8_t *out, int line, int width)
             dotbudget -= hs * 8;
             if (dotbudget <= 0) break;
         }
-        count++;
-    } while (link != 0 && count < maxspr);
+    }
 }
 
 
