@@ -666,7 +666,16 @@ paced:
         present_draw(window_w, window_h);
         win = gfx_soft_target(&w, &h);
         for (i = 0; i < nshots; i++)
-            if (shots[i].frame == frame && win) save_ppm(shots[i].path, win, w, h, w);
+            if (shots[i].frame == frame && !pixels && gameview_last_list()) {
+                /* (the picture drawn as a list: drawn here as the GPU would) */
+                static uint32_t *mp;
+                const ViewList *vl = gameview_last_list();
+                if (!mp) mp = (uint32_t *)malloc(sizeof(uint32_t) * GAMEVIEW_MAX_W * GAMEVIEW_MAX_H);
+                if (mp) {
+                    viewlist_render_soft(vl, mp, GAMEVIEW_MAX_W);
+                    save_ppm(shots[i].path, mp, vl->w, vl->h, GAMEVIEW_MAX_W);
+                }
+            } else if (shots[i].frame == frame && win) save_ppm(shots[i].path, win, w, h, w);
     } else if (pixels) {
         for (i = 0; i < nshots; i++)
             if (shots[i].frame == frame) save_ppm(shots[i].path, pixels, width, height, pitch);
