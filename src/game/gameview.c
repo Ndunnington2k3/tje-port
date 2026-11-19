@@ -262,14 +262,15 @@ static void level_row(uint8_t *buf, int off, int x_from, int x_to, const Region 
 }
 
 /* A plane as the VDP shows it now (scroll as set at this moment). plane: 0 = A, 1 = B. */
-static void plane_row(uint8_t *buf, int off, int x_from, int x_to, int screen_y, int plane)
+/* A plane's line (screen row screen_y): its name table, width in cells, the
+ * horizontal scroll and the plane row shown */
+static void plane_line(int screen_y, int plane, uint32_t *base_, int *pw_, int *hs_, int *y_)
 {
     static const int psz[4] = {32, 64, 32, 128};
     int pw = psz[vdp_reg[16] & 3], ph = psz[(vdp_reg[16] >> 4) & 3];
-    uint32_t base = plane ? (uint32_t)(vdp_reg[4] & 7) << 13 : (uint32_t)(vdp_reg[2] & 0x38) << 10;
     uint32_t hsbase = (uint32_t)(vdp_reg[13] & 0x3F) << 10, hsaddr;
     int hl = screen_y < 0 ? 0 : screen_y > VDP_HEIGHT - 1 ? VDP_HEIGHT - 1 : screen_y;
-    int hs, vs, y, col, col0, col1;
+    int hs, vs;
     switch (vdp_reg[11] & 3) {
     case 0: hsaddr = hsbase; break;
     case 2: hsaddr = hsbase + (uint32_t)(hl & ~7) * 4; break;
@@ -280,7 +281,17 @@ static void plane_row(uint8_t *buf, int off, int x_from, int x_to, int screen_y,
     hs = ((vdp_vram[hsaddr] << 8) | vdp_vram[hsaddr + 1]) & 0x3FF;
     if (hs & 0x200) hs -= 0x400;
     vs = vdp_vsram[plane];        /* (whole-screen vertical scroll: the game does not use columns) */
-    y = (screen_y + vs) & (ph * 8 - 1);
+    *base_ = plane ? (uint32_t)(vdp_reg[4] & 7) << 13 : (uint32_t)(vdp_reg[2] & 0x38) << 10;
+    *pw_ = pw;
+    *hs_ = hs;
+    *y_ = (screen_y + vs) & (ph * 8 - 1);
+}
+
+static void plane_row(uint8_t *buf, int off, int x_from, int x_to, int screen_y, int plane)
+{
+    uint32_t base;
+    int pw, hs, y, col, col0, col1;
+    plane_line(screen_y, plane, &base, &pw, &hs, &y);
     col0 = (x_from - (hs & 7)) >> 3;
     col1 = (x_to - (hs & 7) + 7) >> 3;
     for (col = col0 - 1; col <= col1; col++) {
@@ -1225,9 +1236,21 @@ static int have_stars, map_mode;
 
 void gameview_capture_stars(void)
 {
+    static uint32_t last_sig;
     uint32_t base = (uint32_t)(vdp_reg[4] & 7) << 13, backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
+    uint32_t sig = 2166136261u ^ backdrop;
     int ty, tx, y, x;
     if ((vdp_reg[16] & 0x33) != 0x01) return;          /* (expects 64 x 32 planes) */
+    /* (every menu screen asks: the same sky each time - not drawn again unless its
+     * cells, their tiles or the colours changed) */
+    for (x = 0; x < 64; x++) sig = (sig ^ vdp_palette_rgb(x)) * 16777619u;
+    for (x = 0; x < 64 * 32; x++) {
+        uint32_t ea = (base + (uint32_t)x * 2) & 0xFFFF;
+        uint32_t e = ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1];
+        sig = (sig ^ e ^ (vdp_tile_ver[e & 0x7FF] << 16)) * 16777619u;
+    }
+    if (have_stars && sig == last_sig) return;
+    last_sig = sig;
     for (ty = 0; ty < 32; ty++)
         for (tx = 0; tx < 64; tx++) {
             uint32_t ea = (base + (uint32_t)(ty * 64 + tx) * 2) & 0xFFFF;
@@ -1310,32 +1333,37 @@ static int ring_of(int bx, int by)
 
 /* Border thickness in blocks (0-3): the outer rings whose blocks do not occur in
  * the two rings inside them. */
-static int cmp_u32(const void *a, const void *b)
-{
-    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
-    return x < y ? -1 : x > y;
-}
+static uint32_t mix(uint32_t v);
 
 static int find_border(void)
 {
-    /* (the outer rings' blocks sorted, each inner block looked up in them: it was
-     * every inner block against every block, a few million steps a decision) */
-    static uint32_t outer[BW * BH];
+    /* (the outer rings' blocks in a hash set, each inner block looked up in it: it
+     * was every inner block against every block, a few million steps a decision;
+     * then sorted and searched, a sort a ring) */
+#define OUTER_SET 2048   /* (a power of 2, over twice the blocks) */
+    static uint32_t set[OUTER_SET];
+    static uint8_t used[OUTER_SET];
     int b;
     for (b = 3; b >= 1; b--) {
-        int inner = 0, shared = 0, bx, by, n = 0;
+        int inner = 0, shared = 0, bx, by;
+        memset(used, 0, sizeof used);
         for (by = 0; by < BH; by++)
             for (bx = 0; bx < BW; bx++)
-                if (ring_of(bx, by) < b) outer[n++] = blocks[by][bx];
-        qsort(outer, (size_t)n, sizeof outer[0], cmp_u32);
+                if (ring_of(bx, by) < b) {
+                    uint32_t v = blocks[by][bx], h = mix(v) & (OUTER_SET - 1);
+                    while (used[h] && set[h] != v) h = (h + 1) & (OUTER_SET - 1);
+                    used[h] = 1;
+                    set[h] = v;
+                }
         for (by = 0; by < BH; by++)
             for (bx = 0; bx < BW; bx++) {
-                int d = ring_of(bx, by), lo = 0, hi = n;
-                uint32_t v = blocks[by][bx];
+                int d = ring_of(bx, by);
+                uint32_t v = blocks[by][bx], h;
                 if (d < b || d >= b + 2) continue;
                 inner++;
-                while (lo < hi) { int mid = (lo + hi) / 2; if (outer[mid] < v) lo = mid + 1; else hi = mid; }
-                if (lo < n && outer[lo] == v) shared++;
+                h = mix(v) & (OUTER_SET - 1);
+                while (used[h] && set[h] != v) h = (h + 1) & (OUTER_SET - 1);
+                if (used[h]) shared++;
             }
         /* the ring itself must not be one plain colour like the inside */
         if (inner && shared * 10 <= inner) {
@@ -1391,23 +1419,57 @@ static void hash_blocks(uint32_t (*src)[320])
  * pictures are three times 280 KB written: on a PSP, cache misses a decision) */
 static uint32_t line_blocks[3][BH][BW];   /* 0 the screen, 1 plane A, 2 plane B */
 #define EXT_RINGS 5   /* (find_border: rings below 3 and the two inside; find_period: 4 from the edge) */
-/* (the colour on top of plane A's pixel pa and B's pb, as bg_line takes it) */
-#define TOP_COLOUR(pa, pb) \
-    (((pa) & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO) ? pal[(pa) & 0x3F] : \
-     ((pb) & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO) ? pal[(pb) & 0x3F] : \
-     ((pa) & PIX_OPAQUE) ? pal[(pa) & 0x3F] : ((pb) & PIX_OPAQUE) ? pal[(pb) & 0x3F] : backdrop)
+/* (a block's row - 8 entries of plane A at pa, of B at pb - hashed: the colours
+ * on top, of A, of B, each rotated in and mixed once - no multiply a pixel;
+ * 32-bit only, for the PSP) */
+static void block_row_hash(const uint8_t *pa, const uint8_t *pb, const uint32_t *rgb,
+                           uint32_t *h0, uint32_t *h1, uint32_t *h2)
+{
+    uint32_t r0 = 0, r1 = 0, r2 = 0, wa[2], wb[2], wt[2];
+    const uint8_t *t = (const uint8_t *)wt;
+    int k, x;
+    memcpy(wa, pa, 8);
+    memcpy(wb, pb, 8);
+    for (k = 0; k < 2; k++) {
+        /* (the entry on top, four at a time: A where it is opaque, unless B has
+         * priority and A not) */
+        uint32_t A = wa[k], B = wb[k];
+        uint32_t win = (A >> 7) & ((A >> 6) | ~((B >> 7) & (B >> 6))) & 0x01010101u;
+        uint32_t m = win * 0xFFu;
+        wt[k] = (A & m) | (B & ~m);
+    }
+    for (x = 0; x < 8; x++) {
+        r1 = ((r1 << 7) | (r1 >> 25)) ^ rgb[pa[x]];
+        r2 = ((r2 << 7) | (r2 >> 25)) ^ rgb[pb[x]];
+        r0 = ((r0 << 7) | (r0 >> 25)) ^ rgb[t[x]];
+    }
+    *h0 = mix(r0);
+    *h1 = mix(r1);
+    *h2 = mix(r2);
+}
+
+#define HASH_MEMO 4096   /* (a power of 2: block rows hashed, by their pair of cell rows) */
+static struct { uint32_t ka, kb, r0, r1, r2; } memo[HASH_MEMO];
+static uint8_t memo_used[HASH_MEMO];
+static int memo_n;
 
 static void hash_lines(void)
 {
     static uint8_t a[GAMEVIEW_MAX_W], b[GAMEVIEW_MAX_W];
-    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F), pal[64];
+    static uint32_t rgb[256];       /* (a line-buffer entry's colour: the backdrop where not opaque) */
+    uint32_t backdrop = vdp_palette_rgb(vdp_reg[7] & 0x3F);
     int line, x, k, bx;
-    for (x = 0; x < 64; x++) pal[x] = vdp_palette_rgb(x);
+    for (x = 0; x < 256; x++) rgb[x] = (x & PIX_OPAQUE) ? vdp_palette_rgb(x & 0x3F) : backdrop;
+
+    memset(memo_used, 0, sizeof memo_used);
+    memo_n = 0;
     for (k = 0; k < 3; k++)
         for (bx = 0; bx < BH * BW; bx++) (&line_blocks[k][0][0])[bx] = 2166136261u;
     for (line = 0; line < VDP_HEIGHT; line++) {
         int wfrom = 0, wto = 0, by = line >> 3;
         uint32_t *h0 = line_blocks[0][by], *h1 = line_blocks[1][by], *h2 = line_blocks[2][by];
+        uint32_t base_a, base_b;
+        int pw_a, pw_b, hs_a, hs_b, y_a, y_b;
         {
             int wv = (vdp_reg[18] & 0x1F) * 8, down = vdp_reg[18] & 0x80;
             int wh = (vdp_reg[17] & 0x1F) * 16, right = vdp_reg[17] & 0x80;
@@ -1421,6 +1483,53 @@ static void hash_lines(void)
         /* (only the blocks the decision looks at: the outer five rings - the
          * border's rings and the inside two, the pattern's band - not the middle) */
         int edge = by < EXT_RINGS || by >= BH - EXT_RINGS, span;
+        plane_line(line, 0, &base_a, &pw_a, &hs_a, &y_a);
+        plane_line(line, 1, &base_b, &pw_b, &hs_b, &y_b);
+        if (!(hs_a & 7) && !(hs_b & 7)) {
+            /* both planes' cells on the blocks: a block's row is one cell row of
+             * each, and the same pair of cell rows hashes the same - worked out
+             * once (most of a border or a pattern repeats) */
+            uint32_t wbase = (uint32_t)(vdp_reg[3] & 0x3C) << 10;
+            for (bx = 0; bx < BW; bx++) {
+                uint32_t ea, ka, kb, h;
+                if (!edge && bx >= EXT_RINGS && bx < BW - EXT_RINGS) { bx = BW - EXT_RINGS - 1; continue; }
+                if (bx * 8 >= wfrom && bx * 8 < wto) {
+                    ea = (wbase + (uint32_t)((line >> 3) * 64 + bx) * 2) & 0xFFFF;
+                    ka = (((uint32_t)vdp_vram[ea] << 8 | vdp_vram[ea + 1]) << 3) | (uint32_t)(line & 7);
+                } else {
+                    ea = (base_a + (uint32_t)((y_a >> 3) * pw_a + ((bx - (hs_a >> 3)) & (pw_a - 1))) * 2) & 0xFFFF;
+                    ka = (((uint32_t)vdp_vram[ea] << 8 | vdp_vram[ea + 1]) << 3) | (uint32_t)(y_a & 7);
+                }
+                ea = (base_b + (uint32_t)((y_b >> 3) * pw_b + ((bx - (hs_b >> 3)) & (pw_b - 1))) * 2) & 0xFFFF;
+                kb = (((uint32_t)vdp_vram[ea] << 8 | vdp_vram[ea + 1]) << 3) | (uint32_t)(y_b & 7);
+                h = mix(ka * 2654435761u ^ kb) & (HASH_MEMO - 1);
+                while (memo_used[h] && (memo[h].ka != ka || memo[h].kb != kb)) h = (h + 1) & (HASH_MEMO - 1);
+                if (!memo_used[h]) {
+                    uint8_t pa8[8], pb8[8];
+                    uint32_t r0, r1, r2;
+                    tile_row(pa8, ka >> 3, (int)(ka & 7));
+                    tile_row(pb8, kb >> 3, (int)(kb & 7));
+                    block_row_hash(pa8, pb8, rgb, &r0, &r1, &r2);
+                    if (memo_n < HASH_MEMO * 3 / 4) {   /* (kept while there is room) */
+                        memo[h].ka = ka;
+                        memo[h].kb = kb;
+                        memo[h].r0 = r0;
+                        memo[h].r1 = r1;
+                        memo[h].r2 = r2;
+                        memo_used[h] = 1;
+                        memo_n++;
+                    }
+                    h0[bx] = (h0[bx] ^ r0) * 16777619u;
+                    h1[bx] = (h1[bx] ^ r1) * 16777619u;
+                    h2[bx] = (h2[bx] ^ r2) * 16777619u;
+                    continue;
+                }
+                h0[bx] = (h0[bx] ^ memo[h].r0) * 16777619u;
+                h1[bx] = (h1[bx] ^ memo[h].r1) * 16777619u;
+                h2[bx] = (h2[bx] ^ memo[h].r2) * 16777619u;
+            }
+            continue;
+        }
         for (span = 0; span < (edge ? 1 : 2); span++) {
             int x0 = edge ? 0 : span ? 320 - EXT_RINGS * 8 : 0, x1 = edge ? 320 : x0 + EXT_RINGS * 8;
             plane_row(b, 0, x0, x1, line, 1);
@@ -1437,18 +1546,11 @@ static void hash_lines(void)
         }
         for (bx = 0; bx < BW; bx++) {
             if (!edge && bx >= EXT_RINGS && bx < BW - EXT_RINGS) { bx = BW - EXT_RINGS - 1; continue; }
-            /* (a block's row: its 8 colours rotated in, mixed once - no multiply a
-             * pixel; 32-bit only, for the PSP) */
-            uint32_t r0 = 0, r1 = 0, r2 = 0;
-            for (x = bx * 8; x < bx * 8 + 8; x++) {
-                uint8_t pa = a[x], pb = b[x];
-                r1 = ((r1 << 7) | (r1 >> 25)) ^ ((pa & PIX_OPAQUE) ? pal[pa & 0x3F] : backdrop);
-                r2 = ((r2 << 7) | (r2 >> 25)) ^ ((pb & PIX_OPAQUE) ? pal[pb & 0x3F] : backdrop);
-                r0 = ((r0 << 7) | (r0 >> 25)) ^ TOP_COLOUR(pa, pb);
-            }
-            h0[bx] = (h0[bx] ^ mix(r0)) * 16777619u;
-            h1[bx] = (h1[bx] ^ mix(r1)) * 16777619u;
-            h2[bx] = (h2[bx] ^ mix(r2)) * 16777619u;
+            uint32_t r0, r1, r2;
+            block_row_hash(a + bx * 8, b + bx * 8, rgb, &r0, &r1, &r2);
+            h0[bx] = (h0[bx] ^ r0) * 16777619u;
+            h1[bx] = (h1[bx] ^ r1) * 16777619u;
+            h2[bx] = (h2[bx] ^ r2) * 16777619u;
         }
     }
 }
@@ -1472,6 +1574,32 @@ static void copy_inside(void)
         int r = y + off_y;
         if (r < 0 || r >= pic_h) continue;
         memcpy(picture + (size_t)r * GAMEVIEW_MAX_W + x0 + off_x, vfb + (size_t)y * VDP_FB_PITCH + x0, sizeof(uint32_t) * (size_t)n);
+    }
+}
+
+/* A row of the picture outside the original screen, a border (b blocks deep)
+ * carried on outwards: its tiles, picked from along its top and bottom stretch
+ * (bg_pic), staggered so they do not look repeated - a block at a time (the
+ * original screen's own pixels on the row left for the caller). */
+static void border_row(uint32_t *o, int w, int ox, int ry, int b)
+{
+    int by = floor_div(ry, 8), yo = ry - by * 8, span = BW - 2 * b, x = 0;
+    int inside = ry >= 0 && ry < VDP_HEIGHT;
+    while (x < w) {
+        int rx = x - ox, bx, xo, n, sbx, sby;
+        uint32_t h;
+        if (inside && rx >= 0 && rx < 320) { x = ox + 320 > x ? ox + 320 : x + 1; continue; }
+        bx = floor_div(rx, 8);
+        xo = rx - bx * 8;
+        n = 8 - xo;
+        if (n > w - x) n = w - x;
+        if (inside && rx < 0 && rx + n > 0) n = -rx;
+        h = mix((uint32_t)bx * 2654435761u ^ (uint32_t)by * 2246822519u);
+        sbx = b + (int)(h % (uint32_t)span);
+        sby = (int)((h >> 16) % (uint32_t)b);
+        if ((h >> 8) & 1) sby = BH - 1 - sby;
+        memcpy(o + x, &bg_pic[sby * 8 + yo][sbx * 8 + xo], sizeof(uint32_t) * (size_t)n);
+        x += n;
     }
 }
 
@@ -1525,21 +1653,21 @@ static int build_extended_screen(void)
     for (y = 0; y < pic_h; y++) {
         int ry = y - off_y;
         uint32_t *o = picture + (size_t)y * GAMEVIEW_MAX_W;
+        if (b) {
+            /* the border carried on outwards (border_row); the original, as it is */
+            border_row(o, pic_w, off_x, ry, b);
+            if (ry >= 0 && ry < VDP_HEIGHT)
+                for (x = 0; x < 320; x++)
+                    if (x + off_x >= 0 && x + off_x < pic_w) o[x + off_x] = vfb[(size_t)ry * VDP_FB_PITCH + (size_t)x];
+            continue;
+        }
         for (x = 0; x < pic_w; x++) {
             int rx = x - off_x;
             if (rx >= 0 && rx < 320 && ry >= 0 && ry < VDP_HEIGHT) {
                 o[x] = vfb[(size_t)ry * VDP_FB_PITCH + (size_t)rx];   /* the original, as it is */
                 continue;
             }
-            if (b) {
-                /* the border carried on outwards: its tiles, picked from along its
-                 * top and bottom stretch, staggered so they do not look repeated */
-                int bx = floor_div(rx, 8), by = floor_div(ry, 8), span = BW - 2 * b;
-                uint32_t h = mix((uint32_t)bx * 2654435761u ^ (uint32_t)by * 2246822519u);
-                int sbx = b + (int)(h % (uint32_t)span), sby = (int)((h >> 16) % (uint32_t)b);
-                if ((h >> 8) & 1) sby = BH - 1 - sby;
-                o[x] = bg_pic[sby * 8 + (ry - by * 8)][sbx * 8 + (rx - bx * 8)];
-            } else {
+            {
                 int sx = rx % (px * 8), sy = ry % (py * 8);
                 if (sx < 0) sx += px * 8;
                 if (sy < 0) sy += py * 8;
@@ -1550,6 +1678,15 @@ static int build_extended_screen(void)
     return 1;
 }
 
+/* (held, the picture drawn from a list: the original screen's rows as the VDP
+ * draws them go over the held list as an overlay; rows of the window or the
+ * status bar left out - the list's own show there) */
+static int vl_check_on(void);
+static uint8_t hold_skip[VDP_HEIGHT];
+static uint32_t hold_px[320 * VDP_HEIGHT];
+static ViewList *hold_list;
+static int hold_list_overlays;
+
 static void hold_line(int line)
 {
     int r = line + off_y, x, wv, in_window;
@@ -1557,6 +1694,8 @@ static void hold_line(int line)
     if (!vdp_live_picture() || vdp_width() != 320 || (vdp_reg[17] & 0x1F)) { frame_ok = 0; holding = 0; return; }
     wv = (vdp_reg[18] & 0x1F) * 8;
     in_window = (vdp_reg[18] & 0x80) ? line >= wv : line < wv;
+    hold_skip[line] = (uint8_t)(in_window || r < 0 || r >= pic_h || band_row[r]);
+    if (g_gv_use_list && last_was_list && !vl_check_on()) return;   /* (the overlay: frame_main) */
     if (in_window && window_row_filler(line / 8)) return;
     if (in_window) { draw_band(line); return; }
     if (r >= 0 && r < pic_h && !band_row[r]) {
@@ -1630,6 +1769,11 @@ static void gameview_line_frame(int line)
         g_gv_snap_age = snap_age;
         present_wanted_view(&w, &h);
         gameview_set_size(w, h);
+        if (hold_list) {
+            /* (the list held last frame: its own overlays again) */
+            hold_list->noverlays = hold_list_overlays;
+            hold_list = NULL;
+        }
         {
             static int held, held_x, held_y, prev_ok;
             int was = prev_ok;
@@ -1806,6 +1950,43 @@ static int frame_main(const uint32_t **pixels, int *width, int *height, int *pit
         }
         last_ok = 0;
         return 0;
+    }
+    if (frame_ok == 4 && g_gv_use_list && last_was_list && !vl_check_on()) {
+        /* held, from a list: the list last shown, its GPU tiles kept as they were
+         * (the game is setting up the next floor behind it), and over it the
+         * original screen as the VDP draws it (hold_line) */
+        ViewList *vl = shown_list;
+        int y, x;
+        if (hold_list != vl) {
+            if (hold_list) hold_list->noverlays = hold_list_overlays;
+            hold_list = vl;
+            hold_list_overlays = vl->noverlays;
+        }
+        if (hold_list_overlays < VL_MAX_OVERLAYS) {
+            VlOverlay *ov = &vl->overlays[hold_list_overlays];
+            for (y = 0; y < VDP_HEIGHT; y++) {
+                uint32_t *o = hold_px + (size_t)y * 320;
+                const uint32_t *src = vdp_framebuffer() + (size_t)y * VDP_FB_PITCH;
+                if (hold_skip[y]) memset(o, 0, sizeof(uint32_t) * 320);
+                else for (x = 0; x < 320; x++) o[x] = 0xFF000000u | src[x];
+            }
+            memset(ov, 0, sizeof *ov);
+            ov->x = off_x;
+            ov->y = off_y;
+            ov->w = 320;
+            ov->h = VDP_HEIGHT;
+            ov->pitch = 320;
+            ov->px = hold_px;
+            ov->keyed = 1;
+            vl->noverlays = hold_list_overlays + 1;
+        }
+        vl->frozen = 1;
+        set_list(vl);
+        *pixels = NULL;
+        *width = last_w;
+        *height = last_h;
+        *pitch = GAMEVIEW_MAX_W;
+        return 1;
     }
     if (frame_ok == 2 || frame_ok == 3 || frame_ok == 4) {
         last_ok = 1;
@@ -3258,22 +3439,9 @@ static int ext_border_overlays(ViewList *vl, int ox, int oy)
         }
     if (sum != last_sum || key != last_key) {
         gen++;
-        for (y = 0; y < vl->h; y++) {
-            int ry = y - oy;
-            uint32_t *o = border_out + (size_t)y * GAMEVIEW_MAX_W;
-            for (x = 0; x < vl->w; x++) {
-                int rx = x - ox, bx, by, sbx, sby;
-                uint32_t h;
-                if (rx >= 0 && rx < 320 && ry >= 0 && ry < VDP_HEIGHT) { x = ox + 319; continue; }
-                bx = floor_div(rx, 8);
-                by = floor_div(ry, 8);
-                h = mix((uint32_t)bx * 2654435761u ^ (uint32_t)by * 2246822519u);
-                sbx = b + (int)(h % (uint32_t)span);
-                sby = (int)((h >> 16) % (uint32_t)b);
-                if ((h >> 8) & 1) sby = BH - 1 - sby;
-                o[x] = bg_pic[sby * 8 + (ry - by * 8)][sbx * 8 + (rx - bx * 8)];
-            }
-        }
+        for (y = 0; y < vl->h; y++)
+            border_row(border_out + (size_t)y * GAMEVIEW_MAX_W, vl->w, ox, y - oy, b);
+        (void)span;
         last_sum = sum;
         last_key = key;
     }

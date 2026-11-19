@@ -91,6 +91,7 @@ static uint32_t genesis_rgb(uint16_t c)
 static void update_palette(int i)
 {
     palette_rgb[i] = genesis_rgb(vdp_cram[i]);
+    vdp_cram_version++;   /* (every change of the colours: copies of them follow it) */
 }
 
 void vdp_reset(void)
@@ -245,7 +246,6 @@ static void port_write(uint32_t v)
         int i = (addr >> 1) & 0x3F;
         vdp_cram[i] = (uint16_t)(v & 0x0EEE);
         update_palette(i);
-        vdp_cram_version++;
         break;
     }
     case 5: {
@@ -391,23 +391,48 @@ uint32_t vdp_read_hv(void)
 #define PIX_OPAQUE 0x80
 #define PIX_PRIO   0x40
 
+/* a tile row's 8 pixels as line-buffer entries, by colour number: one table for
+ * each palette line and priority (entry bits 13-15). (Straight from VRAM: a
+ * decoded copy of the tiles would be twice the size, and the PSP's data cache
+ * is small.) */
+static uint8_t tile_lut[8][16];
+static int tile_lut_ready;
+
+static void tile_lut_init(void)
+{
+    int k, c;
+    for (k = 0; k < 8; k++)
+        for (c = 0; c < 16; c++) {
+            uint8_t prio = (k & 4) ? PIX_PRIO : 0, pal = (uint8_t)((k & 3) << 4);
+            tile_lut[k][c] = (uint8_t)(c ? (PIX_OPAQUE | prio | pal | c) : prio);
+        }
+    tile_lut_ready = 1;
+}
+
+/* all 8 pixels of a tile row at o (flips as the entry says) */
+static inline void tile_row8(uint8_t *o, uint32_t entry, int row)
+{
+    const uint8_t *lut = tile_lut[((entry >> 13) & 4) | ((entry >> 13) & 3)];
+    const uint8_t *p;
+    if (entry & 0x1000) row = 7 - row;
+    p = &vdp_vram[((entry & 0x7FF) * 32 + (uint32_t)row * 4)];
+    if (!(entry & 0x0800)) {
+        o[0] = lut[p[0] >> 4]; o[1] = lut[p[0] & 15]; o[2] = lut[p[1] >> 4]; o[3] = lut[p[1] & 15];
+        o[4] = lut[p[2] >> 4]; o[5] = lut[p[2] & 15]; o[6] = lut[p[3] >> 4]; o[7] = lut[p[3] & 15];
+    } else {
+        o[0] = lut[p[3] & 15]; o[1] = lut[p[3] >> 4]; o[2] = lut[p[2] & 15]; o[3] = lut[p[2] >> 4];
+        o[4] = lut[p[1] & 15]; o[5] = lut[p[1] >> 4]; o[6] = lut[p[0] & 15]; o[7] = lut[p[0] >> 4];
+    }
+}
+
 static void draw_tile_row(uint8_t *out, int x, uint32_t entry, int row, int width)
 {
-    uint32_t tile = entry & 0x7FF;
-    uint32_t pal = (entry >> 9) & 0x30;
-    uint32_t prio = (entry & 0x8000) ? PIX_PRIO : 0;
-    const uint8_t *p;
+    uint8_t tmp[8];
     int i;
-    if (entry & 0x1000) row = 7 - row;
-    p = &vdp_vram[(tile * 32 + row * 4) & 0xFFFF];
-    for (i = 0; i < 8; i++) {
-        int px = (entry & 0x0800) ? 7 - i : i;
-        uint8_t b = p[px >> 1];
-        uint32_t c = (px & 1) ? (b & 0x0F) : (b >> 4);
-        int sx = x + i;
-        if (sx < 0 || sx >= width) continue;
-        out[sx] = (uint8_t)(c ? (PIX_OPAQUE | prio | pal | c) : prio);
-    }
+    if (x >= 0 && x + 8 <= width) { tile_row8(out + x, entry, row); return; }
+    tile_row8(tmp, entry, row);
+    for (i = 0; i < 8; i++)
+        if (x + i >= 0 && x + i < width) out[x + i] = tmp[i];
 }
 
 static int plane_dims(int *w, int *h)
@@ -418,11 +443,14 @@ static int plane_dims(int *w, int *h)
     return 0;
 }
 
+/* (out: a line buffer with 8 entries to spare either side - the whole line's
+ * tiles are drawn there unclipped) */
 static void render_plane(uint8_t *out, int line, int width, uint32_t base, int hscroll, int plane_index,
                          int x_from, int x_to)
 {
-    int pw, ph, col;
+    int pw, ph, col, full = x_from <= 0 && x_to >= width;
     int vsmode = (vdp_reg[11] >> 2) & 1;
+    int vs0 = vdp_vsram[plane_index];
     plane_dims(&pw, &ph);
     for (col = -1; col <= width / 8; col++) {
         int sx = col * 8 + (hscroll & 7);
@@ -430,20 +458,21 @@ static void render_plane(uint8_t *out, int line, int width, uint32_t base, int h
         uint32_t ea;
         uint32_t entry;
         if (sx + 8 <= x_from || sx >= x_to) continue;
-        {
+        if (vsmode) {
             int vcol = (sx < 0 ? 0 : sx) / 16;
             if (vcol > 19) vcol = 19;
-            vscroll = vsmode ? vdp_vsram[vcol * 2 + plane_index] : vdp_vsram[plane_index];
-        }
+            vscroll = vdp_vsram[vcol * 2 + plane_index];
+        } else vscroll = vs0;
         y = (line + vscroll) & (ph * 8 - 1);
         tx = (col - (hscroll >> 3)) & (pw - 1);
         ty = y >> 3;
         ea = (base + (uint32_t)(ty * pw + tx) * 2) & 0xFFFF;
         entry = ((uint32_t)vdp_vram[ea] << 8) | vdp_vram[ea + 1];
-        {
+        if (full) tile_row8(out + sx, entry, y & 7);
+        else {
             uint8_t tmp[8];
             int i;
-            draw_tile_row(tmp, 0, entry, y & 7, 8);
+            tile_row8(tmp, entry, y & 7);
             for (i = 0; i < 8; i++) {
                 int x = sx + i;
                 if (x >= x_from && x < x_to && x >= 0 && x < width) out[x] = tmp[i];
@@ -463,6 +492,8 @@ static void render_window(uint8_t *out, int line, int width, int x_from, int x_t
         draw_tile_row(out, col * 8, entry, line & 7, width);
     }
 }
+
+static int spr_x0, spr_x1;   /* (the span render_sprites wrote in) */
 
 static void render_sprites(uint8_t *out, int line, int width)
 {
@@ -498,11 +529,15 @@ static void render_sprites(uint8_t *out, int line, int width)
                     uint8_t tmp[8];
                     int i;
                     /* row already flipped at sprite level; draw unflipped vertically */
-                    draw_tile_row(tmp, 0, entry & ~0x1000u, row & 7, 8);
+                    tile_row8(tmp, entry & ~0x1000u, row & 7);
                     for (i = 0; i < 8; i++) {
                         int x = sx + c * 8 + i;
                         if (x < 0 || x >= width) continue;
-                        if ((tmp[i] & PIX_OPAQUE) && !(out[x] & PIX_OPAQUE)) out[x] = tmp[i];
+                        if ((tmp[i] & PIX_OPAQUE) && !(out[x] & PIX_OPAQUE)) {
+                            out[x] = tmp[i];
+                            if (x < spr_x0) spr_x0 = x;
+                            if (x >= spr_x1) spr_x1 = x + 1;
+                        }
                     }
                 }
             }
@@ -512,6 +547,8 @@ static void render_sprites(uint8_t *out, int line, int width)
         count++;
     } while (link != 0 && count < maxspr);
 }
+
+
 
 int (*vdp_line_wanted)(int line);
 int vdp_lines_skipped;
@@ -524,7 +561,11 @@ int vdp_lines_alike(const VdpLineState *a, const VdpLineState *b)
 
 void vdp_render_line(int line)
 {
-    uint8_t la[VDP_MAX_WIDTH], lb[VDP_MAX_WIDTH], ls[VDP_MAX_WIDTH];
+    /* (the planes' buffers as words: merged 4 entries at a time; 8 entries to spare
+     * either side, render_plane) */
+    uint32_t la_[(VDP_MAX_WIDTH + 32) / 4], lb_[(VDP_MAX_WIDTH + 32) / 4];
+    uint8_t ls[VDP_MAX_WIDTH];
+    uint8_t *la = (uint8_t *)la_ + 16, *lb = (uint8_t *)lb_ + 16;
     int width = vdp_width();
     uint32_t *fb = &framebuffer[line * VDP_FB_PITCH];
     uint32_t bg = palette_rgb[vdp_reg[7] & 0x3F];
@@ -593,8 +634,8 @@ void vdp_render_line(int line)
         }
     }
 
-    memset(la, 0, sizeof la);
-    memset(lb, 0, sizeof lb);
+    if (!tile_lut_ready) tile_lut_init();
+    /* (planes A and B, with the window, cover the whole line: only the sprites' buffer starts empty) */
     memset(ls, 0, sizeof ls);
     render_plane(lb, line, width, (uint32_t)(vdp_reg[4] & 7) << 13, hsb, 1, 0, width);
     if (win_to > win_from) {
@@ -604,20 +645,44 @@ void vdp_render_line(int line)
     } else {
         render_plane(la, line, width, (uint32_t)(vdp_reg[2] & 0x38) << 10, hsa, 0, 0, width);
     }
+    spr_x0 = width;
+    spr_x1 = 0;
     render_sprites(ls, line, width);
 
-    for (x = 0; x < width; x++) {
-        uint8_t a = la[x], b = lb[x], s = ls[x];
-        uint8_t c = 0;
-        int have = 0;
-        /* highest priority first */
-        if ((s & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) { c = s; have = 1; }
-        else if ((a & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) { c = a; have = 1; }
-        else if ((b & (PIX_OPAQUE | PIX_PRIO)) == (PIX_OPAQUE | PIX_PRIO)) { c = b; have = 1; }
-        else if (s & PIX_OPAQUE) { c = s; have = 1; }
-        else if (a & PIX_OPAQUE) { c = a; have = 1; }
-        else if (b & PIX_OPAQUE) { c = b; have = 1; }
-        fb[x] = have ? palette_rgb[c & 0x3F] : bg;
+    {
+        /* which shows (highest priority first: a sprite, plane A, plane B with
+         * priority, then without; else the backdrop): A or B first; then the
+         * sprites where they are; then the colour of an entry (the backdrop for
+         * one not opaque) */
+        static uint32_t pal256[256];
+        static uint32_t pal_bg = 1u << 31;
+        static uint16_t pal_ver;
+        if (pal_bg != bg || pal_ver != vdp_cram_version) {
+            int i;
+            for (i = 0; i < 256; i++) pal256[i] = (i & PIX_OPAQUE) ? palette_rgb[i & 0x3F] : bg;
+            pal_bg = bg;
+            pal_ver = vdp_cram_version;
+        }
+        {
+            /* A shows where it is opaque, unless B has priority and A not: four
+             * entries a word */
+            uint32_t *wa = la_ + 4;
+            const uint32_t *wb = lb_ + 4;
+            int n = (width + 3) / 4, i;
+            for (i = 0; i < n; i++) {
+                uint32_t A = wa[i], B = wb[i];
+                uint32_t aop = (A >> 7) & 0x01010101u, apr = (A >> 6) & 0x01010101u;
+                uint32_t bhi = (B >> 7) & (B >> 6) & 0x01010101u;
+                uint32_t win = aop & (apr | ~bhi) & 0x01010101u;
+                uint32_t m = win * 0xFFu;
+                wa[i] = (A & m) | (B & ~m);
+            }
+        }
+        for (x = spr_x0; x < spr_x1; x++) {
+            uint8_t s = ls[x], ab = la[x];
+            if ((s & PIX_OPAQUE) && ((s & PIX_PRIO) || (ab & (PIX_OPAQUE | PIX_PRIO)) != (PIX_OPAQUE | PIX_PRIO))) la[x] = s;
+        }
+        for (x = 0; x < width; x++) fb[x] = pal256[la[x]];
     }
     for (; x < VDP_MAX_WIDTH; x++) fb[x] = 0;
     draw_overlays(fb, line, width);
