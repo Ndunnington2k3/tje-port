@@ -1152,6 +1152,10 @@ static uint32_t top_window_lines[VDP_HEIGHT][320];
  * that player's half: how many lines of each half were window this frame. */
 static int half_window_lines[2];
 static uint8_t line_window[VDP_HEIGHT];   /* each line this frame: 0 not window, 1 window from the top, 2 from the bottom */
+/* Earl playing alone: his present list (and menus) open above the status bar, a
+ * bottom window taller than the bar; its lines above the bar's (window row 23)
+ * are shown as the VDP draws them, icons and all, as the top one is. */
+#define BOTTOM_LIST_END 184
 int g_gv_windows;                          /* each player in a window of their own (gameview_window_frame) */
 static int views_done;                     /* the views' picture is drawn for this frame */
 static int view_skip_half_hud;   /* the view being drawn is under its player's menu */
@@ -1864,7 +1868,8 @@ static void gameview_line_frame(int line)
         /* (split and two windows: every line, for held halves, menus and the bar) */
         /* (two windows: only the lines the VDP draws - the others are not its
          * picture and nothing here reads them) */
-        if ((nregions == 2 || g_gv_windows || !(vdp_reg[18] & 0x80)) && !(g_gv_windows && !wants_vdp_line_(line)))
+        if ((nregions == 2 || g_gv_windows || !(vdp_reg[18] & 0x80) || (in_window && line < BOTTOM_LIST_END)) &&
+            !(g_gv_windows && !wants_vdp_line_(line)))
             memcpy(top_window_lines[line], vdp_framebuffer() + (size_t)line * VDP_FB_PITCH, sizeof top_window_lines[0]);
     }
 }
@@ -2303,7 +2308,15 @@ static void view_collect(int level, int cam_x, int cam_y, int x0, int y0, int x1
 /* The fixed band of sprites across the middle of the screen (entries 1-10: the
  * hint/message box; the divider in split screen), as the game last sent them,
  * added to the pieces in front, for a view whose original screen is 224 high. */
+static void view_screen_sprites_at(int e_from, int e_to, int top, int h, int origin, int x0, int y0, int x1, int y1);
 static void view_screen_sprites(int e_from, int e_to, int top, int h, int x0, int y0, int x1, int y1)
+{
+    view_screen_sprites_at(e_from, e_to, top, h, top, x0, y0, x1, y1);
+}
+
+/* (as view_screen_sprites, the lines from top to top + h taken, their y counted
+ * from line `origin`) */
+static void view_screen_sprites_at(int e_from, int e_to, int top, int h, int origin, int x0, int y0, int x1, int y1)
 {
     /* (from the table in VRAM: the game writes these entries there directly) */
     uint32_t base = (uint32_t)(vdp_reg[5] & 0x7E) << 9;
@@ -2322,7 +2335,7 @@ static void view_screen_sprites(int e_from, int e_to, int top, int h, int x0, in
         Piece *p;
         if (e_from == 1 && !linked[e]) continue;
         if (sy < top || sy >= top + h || sy <= -120) continue;
-        sy -= top;
+        sy -= origin;
         p = &pieces[npieces];
         p->rank = RANK_FRONT;
         p->cy0 = -(1 << 20);
@@ -2353,7 +2366,17 @@ static void view_screen_sprites(int e_from, int e_to, int top, int h, int x0, in
  * for a one-player view. */
 static void view_band(int x0, int y0, int x1, int y1)
 {
-    view_screen_sprites(1, 10, -32, VDP_HEIGHT + 32, x0, y0, x1, y1);
+    int first = npieces, i;
+    /* (from a little above the screen: where they are, not 32 lines lower) */
+    view_screen_sprites_at(1, 10, -32, VDP_HEIGHT + 32, 0, x0, y0, x1, y1);
+    /* Earl's present list (a bottom window over the bar) is shown flush with the
+     * view's bottom edge: its edge, these sprites, goes with it. */
+    if (!g_gv_windows && nregions != 2 && (vdp_reg[18] & 0x80) && win_from > 0 && win_from < BOTTOM_LIST_END &&
+        win_to == VDP_HEIGHT) {
+        int shift = (y1 - y0 + VDP_HEIGHT) / 2 - hud_end;
+        for (i = first; i < npieces; i++)
+            if (pieces[i].y + pieces[i].h > win_from - 8) pieces[i].y += shift;
+    }
 }
 
 /* In split screen the game puts each player's level number and life bar at the
@@ -3723,7 +3746,12 @@ static void render_views_picture(void)
         if (top) vl_overlay(&vlist, (pic_w - 320) / 2, (pic_h - VDP_HEIGHT) / 2, 320, top, &top_window_lines[0][0], 320);
         if (win_to == VDP_HEIGHT && win_from > 0) {
             bar_h = hud_end - win_from;
-            if (bar_h > 0 && bar_h <= VDP_HEIGHT) vl_status_bar(&vlist, win_from, hud_end, (pic_w - 320) / 2, pic_h - bar_h);
+            if (bar_h > 0 && bar_h <= VDP_HEIGHT) {
+                vl_status_bar(&vlist, win_from, hud_end, (pic_w - 320) / 2, pic_h - bar_h);
+                if (win_from < BOTTOM_LIST_END)   /* (Earl's list over it, as the VDP drew it) */
+                    vl_overlay(&vlist, (pic_w - 320) / 2, pic_h - bar_h, 320, BOTTOM_LIST_END - win_from,
+                               &top_window_lines[win_from][0], 320);
+            }
             (void)bar;
         }
         if (g_gv_use_list && !g_gv_windows) { list_ready = 1; layout_copy_on = 0; return; }
@@ -3744,7 +3772,9 @@ static void render_views_picture(void)
             if (bar_h > 0 && bar_h <= VDP_HEIGHT) {
                 static uint32_t bar[VDP_HEIGHT][320];
                 render_status_bar(&bar[0][0], 320, win_from, hud_end);
-                for (line = 0; line < bar_h; line++) paste_centred_row(pic_h - bar_h + line, bar[line]);
+                for (line = 0; line < bar_h; line++)
+                    paste_centred_row(pic_h - bar_h + line,
+                                      win_from + line < BOTTOM_LIST_END ? top_window_lines[win_from + line] : bar[line]);
             }
         }
         if (vl_check) {
@@ -3848,7 +3878,9 @@ static void paste_line(uint32_t *out, int w, int h, int r, int x0, int line, int
 #define SPRITE_TABLE    0xFFB65Au       /* the game's copy of the sprite table */
 #define PROMOTION(p)    (0xFFA250u + (uint32_t)(p))
 #define ACTIVE_PRESENT(p) (0xFFDE50u + (uint32_t)(p))
-#define LEVEL_OF(p)     ((p) ? EARLS_LEVEL : TOEJAMS_LEVEL)
+/* (a player's floor: the floor of their screen - one player alone, Earl too, is on
+ * the first) */
+#define LEVEL_OF(p)     ((p) && player_in_game(0) ? EARLS_LEVEL : TOEJAMS_LEVEL)
 
 static uint16_t bar_map[5][40];
 
@@ -4796,9 +4828,12 @@ static int wants_vdp_line_(int line)
     if (!g_gv_windows) {
         if ((pic_w == 320 && pic_h == VDP_HEIGHT) || nregions == 2) return 1;
         /* (one view: the status bar - the window at the bottom - is built from
-         * game memory, render_status_bar; only a window at the top, the present
-         * list, is shown as the VDP draws it) */
-        if (vdp_reg[18] & 0x80) return 0;
+         * game memory, render_status_bar; a window at the top, the present list,
+         * and Earl's above the bar are shown as the VDP draws them) */
+        if (vdp_reg[18] & 0x80) {
+            wv = (vdp_reg[18] & 0x1F) * 8;
+            return line >= wv && line < BOTTOM_LIST_END;
+        }
     } else {
         /* (a window showing the game's own picture: its elevator ride screen -
          * gameview_window_frame) */

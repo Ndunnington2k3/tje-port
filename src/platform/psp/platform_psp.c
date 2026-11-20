@@ -253,6 +253,14 @@ static void read_controls(void)
     if (c.Lx > 192) h |= PSP_CTRL_RIGHT;
     if (c.Ly < 64) h |= PSP_CTRL_UP;
     if (c.Ly > 192) h |= PSP_CTRL_DOWN;
+    /* (the stick alone is not input to the PSP's idle timer: without this, play by
+     * the stick dims the screen, then sleeps. Ticked once a second at most.) */
+    {
+        static unsigned stick_frames;
+        if (c.Lx < 64 || c.Lx > 192 || c.Ly < 64 || c.Ly > 192) {
+            if (stick_frames++ % 60 == 0) scePowerTick(PSP_POWER_TICK_ALL);
+        } else stick_frames = 0;
+    }
     if (capturing >= 0) {
         unsigned now = h & ~capture_before;
         int i;

@@ -17,7 +17,7 @@
 
 /* RAM (names from GameConstants.X68) */
 #define PLAYER_INDICATOR      0xFF802Eu   /* 0 ToeJam, 1 Earl, 2 both */
-#define TOEJAMS_CURRENT_LEVEL 0xFF912Cu   /* Earl's is the next word */
+#define TOEJAMS_CURRENT_LEVEL 0xFF912Cu   /* the first screen's floor (the second's is the next word) */
 #define MAP_UNCOVERED      0xFF91ECu  /* 7 bytes a floor: a bit per map square uncovered */
 #define MAP_UNCOVERED_END  0xFF9358u  /* with the map screen's copy at $FF92A2 */
 #define HIGHEST_LEVEL         0xFF9132u
@@ -95,7 +95,11 @@ static int player_active(int p)
     return who == 2 || (int)who == p;
 }
 
-static int player_floor(int p) { return (int)rd8(TOEJAMS_CURRENT_LEVEL + 2u * (uint32_t)p); }
+/* A player's floor: their own level byte ($4C of the player). ($FF912C and the
+ * word after it are the floors of the game's two screens: one player alone -
+ * Earl too - is on the first.) */
+#define PLAYER_LEVEL(p)       (0xFFA2A6u + 0x80u * (uint32_t)(p))
+static int player_floor(int p) { return (int)rd8(PLAYER_LEVEL(p)); }
 
 /* Called at the top of every main-loop pass: a player arriving on a floor
  * gets that floor's start recorded. */
@@ -314,8 +318,8 @@ static void info_from_ram(SaveInfo *info, const uint8_t *ram)
     info->world = ram[FIXED_WORLD_FLAG & 0xFFFFu] ? WORLD_FIXED : g_world_kind == WORLD_CUSTOM ? WORLD_CUSTOM : WORLD_RANDOM;
     info->seed = g_world_seed;
     info->players = ram[PLAYER_INDICATOR & 0xFFFFu];
-    info->floor[0] = ram[TOEJAMS_CURRENT_LEVEL & 0xFFFFu];
-    info->floor[1] = ram[(TOEJAMS_CURRENT_LEVEL + 2u) & 0xFFFFu];
+    info->floor[0] = ram[PLAYER_LEVEL(0) & 0xFFFFu];
+    info->floor[1] = ram[PLAYER_LEVEL(1) & 0xFFFFu];
     info->ship_pieces = count_ship_pieces(ram);
 }
 
