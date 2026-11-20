@@ -55,6 +55,7 @@ typedef struct {
     size_t len;
     int elevator;          /* taken as a player stepped out of an elevator */
     unsigned stamp;        /* order taken */
+    int floors[2];         /* each player's floor then */
 } FloorSnap;
 
 static FloorSnap floor_snap[MAX_FLOORS];
@@ -78,6 +79,7 @@ static void snap_clear(void)
     latest_floor = -1;
 }
 
+static int player_floor(int p);
 static void snap_store(int floor, uint8_t *blob, size_t len, int elevator)
 {
     FloorSnap *f = &floor_snap[floor];
@@ -86,6 +88,8 @@ static void snap_store(int floor, uint8_t *blob, size_t len, int elevator)
     f->len = len;
     f->elevator = elevator;
     f->stamp = ++snap_counter;
+    f->floors[0] = player_floor(0);
+    f->floors[1] = player_floor(1);
     latest_floor = floor;
 }
 
@@ -119,7 +123,11 @@ static void watch_arrivals(void)
         return;
     /* Keep the elevator arrival if we have one: a floor reached by falling is
      * restarted from where its elevator dropped the player off earlier. */
-    if (!elevator && floor_snap[floor].blob && floor_snap[floor].elevator) {
+    /* (two players: only while the other is still on the floor they were on
+     * then - a restart from it would put them back where they were) */
+    if (!elevator && floor_snap[floor].blob && floor_snap[floor].elevator &&
+        (rd8(PLAYER_INDICATOR) != 2 ||
+         (floor_snap[floor].floors[0] == player_floor(0) && floor_snap[floor].floors[1] == player_floor(1)))) {
         floor_snap[floor].stamp = ++snap_counter;
         latest_floor = floor;
         return;

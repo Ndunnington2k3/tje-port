@@ -3880,7 +3880,12 @@ static void paste_line(uint32_t *out, int w, int h, int r, int x0, int line, int
 #define ACTIVE_PRESENT(p) (0xFFDE50u + (uint32_t)(p))
 /* (a player's floor: the floor of their screen - one player alone, Earl too, is on
  * the first) */
-#define LEVEL_OF(p)     ((p) && player_in_game(0) ? EARLS_LEVEL : TOEJAMS_LEVEL)
+#define SCREEN_OF(p)    ((p) && player_in_game(0) ? 1 : 0)
+#define LEVEL_OF(p)     (SCREEN_OF(p) ? EARLS_LEVEL : TOEJAMS_LEVEL)
+#define TILES_OF(p)     (SCREEN_OF(p) ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES)
+/* The controller of player p: their own, swapped when the one player chose with
+ * the other (LOC_00FF801C, MovePadInputIntoD0) */
+#define PAD_OF(p)       ((p) ^ (rd8(0xFF801Cu) ? 1 : 0))
 
 static uint16_t bar_map[5][40];
 
@@ -4096,7 +4101,8 @@ void gameview_map_input(uint16_t pad[2])
      * the same) */
     int p, playing = g_gv_windows && g_in_game && rd8(TOEJAMS_LEVEL) != FINAL_LEVEL;
     for (p = 0; p < 2; p++) {
-        uint16_t now = pad[p], down = (uint16_t)(now & ~prev[p]);
+        int c = PAD_OF(p);   /* (the player's controller) */
+        uint16_t now = pad[c], down = (uint16_t)(now & ~prev[p]);
         prev[p] = now;
         if (!playing || !player_in_game(p)) { map_open[p] = 0; soft_pause[p].open = 0; continue; }
         if (soft_pause[p].open) {
@@ -4117,7 +4123,7 @@ void gameview_map_input(uint16_t pad[2])
                     save_quit_to_menu();   /* (network play: leaving the game) */
                 } else { soft_pause[p].ask = 0; soft_pause[p].sel = 1; }
             }
-            pad[p] = 0;   /* (the character waits) */
+            pad[c] = 0;   /* (the character waits) */
             continue;
         }
         if (down & PAD_START) {
@@ -4126,13 +4132,13 @@ void gameview_map_input(uint16_t pad[2])
             soft_pause[p].sel = 0;
             soft_pause[p].ask = 0;
             map_open[p] = 0;
-            pad[p] = 0;
+            pad[c] = 0;
             continue;
         }
-        pad[p] &= (uint16_t)~PAD_START;
+        pad[c] &= (uint16_t)~PAD_START;
         if (map_open[p]) {
             if (down & (PAD_C | PAD_B)) map_open[p] = 0;
-            pad[p] = 0;   /* (the character waits) */
+            pad[c] = 0;   /* (the character waits) */
             continue;
         }
         if (!rd8(MENU_FLAG(p))) {
@@ -4140,7 +4146,7 @@ void gameview_map_input(uint16_t pad[2])
                 map_open[p] = 1;
                 map_tick = 0;
             }
-            pad[p] &= (uint16_t)~PAD_C;   /* (never the game's map: it would stop the game) */
+            pad[c] &= (uint16_t)~PAD_C;   /* (never the game's map: it would stop the game) */
         }
     }
 }
@@ -4215,7 +4221,7 @@ static uint32_t map_hash(uint32_t v) { v ^= v >> 16; v *= 0x7FEB352Du; v ^= v >>
 static void render_map(int win, int p, uint32_t *out, int w, int h)
 {
     static uint16_t map[28][40], pb[30][42];
-    uint32_t pal[4][16], tiles = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+    uint32_t pal[4][16], tiles = TILES_OF(p);
     int level = (int)rd8(LEVEL_OF(p)), ox = (w - 320) / 2, oy = (h - VDP_HEIGHT) / 2;
     int row, col, x, y, k, sq_x, sq_y;
     for (k = 0; k < 48; k++) pal[k >> 4][k & 15] = vdp_color_rgb((uint16_t)rd16(MAP_PALETTES + (uint32_t)k * 2));
@@ -4618,7 +4624,7 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     }
     live = g_gv_gameplay && frame_ok == 1;
     split = rd8(SPLIT_SCREEN) != 0;
-    lt = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+    lt = TILES_OF(p);
     if (win_last[player].ok)
         for (i = 0; i < (int)sizeof win_layout[0]; i++) changed += rd8(lt + (uint32_t)i) != win_layout[player][i];
     {
@@ -4715,12 +4721,12 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
      * part of the menu's frame, which comes with the menu below) */
     if (as_list) {
         vl_begin(&wlist, w, h);
-        build_view_list(&wlist, p, cam_x, cam_y, -1, VDP_HEIGHT, 0, 0, w, h,
+        build_view_list(&wlist, SCREEN_OF(p), cam_x, cam_y, -1, VDP_HEIGHT, 0, 0, w, h,
                         !split && !rd8(MENU_FLAG(0)) && !rd8(MENU_FLAG(1)));
     }
     if (!as_list || window_check(player)) {
         views_setup_cameras();
-        gameview_render_view(p, cam_x, cam_y, -1, VDP_HEIGHT, out, w, h, GAMEVIEW_MAX_W,
+        gameview_render_view(SCREEN_OF(p), cam_x, cam_y, -1, VDP_HEIGHT, out, w, h, GAMEVIEW_MAX_W,
                              !split && !rd8(MENU_FLAG(0)) && !rd8(MENU_FLAG(1)));
     }
     layout_copy_on = 0;
@@ -4733,7 +4739,7 @@ int gameview_window_frame(int player, int *wp, int *hp, const uint32_t **pixels,
     win_last[player].level = (int)rd8(LEVEL_OF(p));
     {
         int i;
-        uint32_t lt = p ? EARL_LEVEL_TILES : TOEJAM_LEVEL_TILES;
+        uint32_t lt = TILES_OF(p);
         for (i = 0; i < (int)sizeof win_layout[0]; i++) win_layout[player][i] = (uint8_t)rd8(lt + (uint32_t)i);
     }
     /* the player's menu: their half of the screen when the window covers it (in
